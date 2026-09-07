@@ -3,7 +3,7 @@ from datetime import date
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from .. import config, database, notify, reminders, services
+from .. import database, notify, reminders, services
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -38,7 +38,7 @@ def create_task(payload: TaskIn):
         return {"ok": False, "error": "empty_title"}
     apartment = payload.apartment or None
     # only accept a real apartment code, otherwise treat as a general task
-    if apartment and apartment not in config.APARTMENTS.values():
+    if apartment and apartment not in services.apartment_names():
         apartment = None
     dtime = (payload.deadline_time or "").strip() or None
     tid = database.add_task(apartment, title, payload.deadline or None, dtime)

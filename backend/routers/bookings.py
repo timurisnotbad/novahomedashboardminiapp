@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from .. import database, services
+from .. import auth, database, services
 
-router = APIRouter(prefix="/bookings", tags=["bookings"])
+# raw bookings carry phones and money — owner only
+router = APIRouter(prefix="/bookings", tags=["bookings"], dependencies=[Depends(auth.owner_guard)])
 
 
 @router.get("")

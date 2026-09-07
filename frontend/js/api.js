@@ -15,18 +15,31 @@
   // Owner access key: the bot appends ?okey=... to the dashboard URL for owner
   // ids only (fallback for clients that pass no initData, e.g. macOS Telegram).
   // Persist it so later opens without the parameter stay unlocked.
+  let sessionKey = "";
   try {
-    const okey = new URLSearchParams(window.location.search).get("okey");
-    if (okey) localStorage.setItem("nh_okey", okey);
+    const params = new URLSearchParams(window.location.search);
+    const okey = params.get("okey");
+    if (okey) {
+      sessionKey = okey;
+      try { localStorage.setItem("nh_okey", okey); } catch (e) { /* private mode */ }
+      // don't leave the key in the address bar / history / screenshots
+      try {
+        params.delete("okey");
+        const q = params.toString();
+        history.replaceState(null, "", window.location.pathname + (q ? "?" + q : "") + window.location.hash);
+      } catch (e) { /* ignore */ }
+    }
   } catch (e) { /* ignore */ }
 
   function ownerKey() {
     try {
-      return localStorage.getItem("nh_okey") || "";
+      return localStorage.getItem("nh_okey") || sessionKey || "";
     } catch (e) {
-      return "";
+      return sessionKey || "";
     }
   }
+
+  const TIMEOUT_MS = 20000;
 
   async function req(path, options) {
     options = options || {};
@@ -34,8 +47,25 @@
       "X-Telegram-Init-Data": initData(),
       "X-Owner-Key": ownerKey(),
     });
-    const res = await fetch(BASE + path, options);
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    // a hung tunnel must not leave the screen on a skeleton forever
+    const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), TIMEOUT_MS) : null;
+    if (ctl) options.signal = ctl.signal;
+    let res;
+    try {
+      res = await fetch(BASE + path, options);
+    } catch (e) {
+      const err = new Error(e && e.name === "AbortError" ? "timeout" : "network");
+      err.status = 0;
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (!res.ok) {
+      const err = new Error("HTTP " + res.status);
+      err.status = res.status;
+      throw err;
+    }
     return res.json();
   }
 

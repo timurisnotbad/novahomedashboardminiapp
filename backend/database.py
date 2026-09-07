@@ -252,7 +252,7 @@ BOOKING_COLUMNS = [
 
 
 def _booking_rows(bookings: Iterable[dict]) -> list[tuple]:
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")  # local time, like every other timestamp
     rows = []
     for b in bookings:
         client = b.get("client") or {}
@@ -376,7 +376,7 @@ def get_cleaning_status(apartment_name: str, cleaning_date: str) -> str:
 
 
 def set_cleaning_status(apartment_name: str, cleaning_date: str, status: str) -> None:
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     with get_conn() as conn:
         conn.execute(
             """
@@ -474,32 +474,44 @@ def arrival_for(staff_id, work_date) -> dict | None:
 # ---------------------------------------------------------------------------
 # Cleaning sessions (до / после)
 # ---------------------------------------------------------------------------
-def open_session(apartment: str, work_date: str) -> dict | None:
-    """The unfinished session for this apartment today, if any."""
+def open_session(apartment: str) -> dict | None:
+    """The unfinished session for this apartment, whatever day it started on
+    (a cleaning that started at 23:40 is still open after midnight)."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM cleaning_sessions WHERE apartment = ? AND work_date = ? "
+            "SELECT * FROM cleaning_sessions WHERE apartment = ? "
             "AND finished_at IS NULL ORDER BY id DESC LIMIT 1",
-            (apartment, work_date),
+            (apartment,),
         ).fetchone()
         return dict(row) if row else None
 
 
-def open_session_for_staff(staff_id: int, work_date: str) -> dict | None:
+def open_session_for_staff(staff_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM cleaning_sessions WHERE staff_id = ? AND work_date = ? "
+            "SELECT * FROM cleaning_sessions WHERE staff_id = ? "
             "AND finished_at IS NULL ORDER BY id DESC LIMIT 1",
-            (staff_id, work_date),
+            (staff_id,),
         ).fetchone()
         return dict(row) if row else None
 
 
-def open_sessions(work_date: str) -> list[dict]:
+def open_sessions() -> list[dict]:
+    """All unfinished sessions, oldest first."""
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT * FROM cleaning_sessions WHERE work_date = ? AND finished_at IS NULL "
-            "ORDER BY started_at", (work_date,),
+            "SELECT * FROM cleaning_sessions WHERE finished_at IS NULL ORDER BY started_at"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def stale_open_sessions(started_before: str) -> list[dict]:
+    """Unfinished sessions that started before the given timestamp — the
+    cleaner never sent the «после» report."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE finished_at IS NULL AND started_at < ? "
+            "ORDER BY started_at", (started_before,),
         )
         return [dict(r) for r in cur.fetchall()]
 
@@ -822,12 +834,32 @@ def all_penalties() -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def attendance_for(work_date) -> list[dict]:
+def attendance_for(work_date, arrived_only: bool = True) -> list[dict]:
+    """Attendance rows for a day. By default only real arrivals — the roll
+    call also stores no-show rows (status 'absent', arrived_at NULL) for the
+    statistics, and those must not look like arrivals elsewhere."""
+    q = "SELECT * FROM attendance WHERE work_date = ?"
+    if arrived_only:
+        q += " AND arrived_at IS NOT NULL"
+    with get_conn() as conn:
+        cur = conn.execute(q + " ORDER BY arrived_at", (work_date,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def count_bookings() -> int:
+    with get_conn() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0])
+
+
+def prune_booking_snapshots(end_before: str) -> int:
+    """Forget snapshots of stays that ended long ago (they only exist to
+    detect edits of upcoming/current bookings)."""
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT * FROM attendance WHERE work_date = ? ORDER BY arrived_at", (work_date,)
+            "DELETE FROM booking_snapshots WHERE end_date IS NOT NULL AND end_date < ?",
+            (end_before,),
         )
-        return [dict(r) for r in cur.fetchall()]
+        return cur.rowcount
 
 
 def known_booking_ids() -> set:
@@ -879,7 +911,7 @@ def list_tasks() -> list[dict]:
 
 
 def set_task_status(task_id: int, status: str) -> None:
-    done_at = datetime.utcnow().isoformat(timespec="seconds") if status == "done" else None
+    done_at = datetime.now().isoformat(timespec="seconds") if status == "done" else None
     with get_conn() as conn:
         conn.execute(
             "UPDATE tasks SET status = ?, done_at = ? WHERE id = ?",

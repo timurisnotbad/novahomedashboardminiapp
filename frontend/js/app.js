@@ -62,6 +62,13 @@
   let current = "today";
   const cache = {};
 
+  function errorText(e) {
+    const st = e && e.status;
+    if (st === 403) return "Нет доступа. Откройте дашборд через кнопку «📊 Дашборд» в боте @novahomedashboardbot.";
+    if (e && e.message === "timeout") return "Сервер не отвечает (20 с). Потяните вниз, чтобы повторить.";
+    return "Не удалось загрузить данные. Проверьте соединение.";
+  }
+
   function setActiveNav(name) {
     document.querySelectorAll(".nav-item").forEach((btn) => {
       btn.classList.toggle("is-active", btn.dataset.screen === name);
@@ -81,7 +88,7 @@
         const data = await cfg.load();
         cache[name] = data;
       } catch (e) {
-        container.innerHTML = ui.empty("Не удалось загрузить данные. Проверьте соединение.");
+        container.innerHTML = ui.empty(errorText(e));
         return;
       }
     }
@@ -98,7 +105,7 @@
     } else if ((name === "guests" || name === "finance" || name === "prices" || name === "control") && !isOwner()) {
       name = "today";
     } else if (name === "control") {
-      loadControl();
+      loadControl(true); // always fresh: the bot writes here all day
     }
     current = name;
     setActiveNav(name);
@@ -207,18 +214,35 @@
   }
 
   // ---- Sync -----------------------------------------------------------------
+  let syncing = false;
+  let lastSyncAt = 0;
   async function doSync() {
+    if (syncing) return;
     const btn = document.getElementById("sync-btn");
     btn.classList.add("spinning");
+    syncing = true;
     try {
-      const res = await api.sync();
+      // the RC pull is slow and the tunnel is shared: at most once per 30 s,
+      // otherwise just re-read what the server already has
+      const pullRC = Date.now() - lastSyncAt > 30000;
+      let res = null;
+      if (pullRC) {
+        res = await api.sync();
+        lastSyncAt = Date.now();
+      }
       Object.keys(cache).forEach((k) => delete cache[k]);
+      const cs = NH.screens.control.state;
+      cs.att = null; cs.clean = null; cs.buy = null;
+      if (current === "control") loadControl(true);
+      else if (current === "payments") loadRecon();
       await loadScreen(current, true);
-      ui.toast(res.success ? `Обновлено: ${res.bookings_synced} броней` : "Ошибка синхронизации");
+      if (res) ui.toast(res.success ? `Обновлено: ${res.bookings_synced} броней` : "Ошибка синхронизации");
+      else ui.toast("Обновлено");
       ui.haptic("success");
     } catch (e) {
-      ui.toast("Ошибка синхронизации");
+      ui.toast(e && e.status === 403 ? "Нет доступа" : "Ошибка синхронизации");
     } finally {
+      syncing = false;
       btn.classList.remove("spinning");
     }
   }
@@ -284,7 +308,7 @@
       : api.getAttendanceStats(month);
     call
       .then((d) => { cs[v] = d; })
-      .catch(() => ui.toast("Не удалось загрузить"))
+      .catch((e) => ui.toast(errorText(e)))
       .finally(() => { cs.loading = false; renderControl(); });
   }
 
@@ -419,7 +443,7 @@
       }
       const rm = e.target.closest("[data-recon-month]");
       if (rm) {
-        const rv = NH.screens.finance.recon;
+        const rv = NH.screens.payrecon.state;
         rv.off = Math.min(0, rv.off + parseInt(rm.dataset.reconMonth, 10));
         loadRecon();
         return;
@@ -660,15 +684,26 @@
   async function boot() {
     initTelegram();
     bindEvents();
+    let noAccess = false;
     try {
       const me = await api.getMe();
       role = me && me.role === "owner" ? "owner" : "staff";
       canPayments = !!(me && me.can_payments);
+      noAccess = !!(me && me.has_access === false);
     } catch (e) {
       role = "staff"; // if /me fails, stay locked down (never leak Касса)
       canPayments = false;
     }
     applyRole();
+    if (noAccess) {
+      // opened from a bare link (not through the bot): nothing will load
+      document.getElementById("screen-today").innerHTML = ui.empty(
+        "Откройте дашборд через кнопку «📊 Дашборд» в боте @novahomedashboardbot — " +
+        "по прямой ссылке данные не показываются."
+      );
+      setActiveNav("today");
+      return;
+    }
     navigate("today", true);
   }
 

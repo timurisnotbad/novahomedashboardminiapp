@@ -1,11 +1,11 @@
 from datetime import date
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from .. import database
+from .. import auth, database
 
-router = APIRouter(prefix="/payments", tags=["payments"])
+router = APIRouter(prefix="/payments", tags=["payments"], dependencies=[Depends(auth.owner_guard)])
 
 
 class PaymentIn(BaseModel):

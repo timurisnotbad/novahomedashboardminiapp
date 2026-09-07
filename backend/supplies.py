@@ -12,8 +12,12 @@ from collections import OrderedDict
 
 from . import database
 
+# Deliberately narrow: "надо"/"купить" start too many ordinary sentences in
+# the work chat ("надо позвонить гостю"). "нужно" is kept because staff were
+# taught this exact form; in groups the bot additionally requires an apartment
+# code, a comma-separated list or a quantity (see looks_like_list).
 TRIGGER_RE = re.compile(
-    r"(?iu)^\s*(?:нужно|надо|купить|закупить|докупить|kerak|sotib\s+olish\s+kerak)\b[\s:—-]*"
+    r"(?iu)^\s*(?:нужно|нужны|закупить|докупить|закупка|kerak|sotib\s+olish\s+kerak)\b[\s:—-]*"
 )
 _QTY_TAIL = re.compile(r"(?iu)^(.*?)[\s×x*]+(\d{1,3})\s*(?:шт\.?|штук|dona|pcs)?\s*$")
 _QTY_HEAD = re.compile(r"(?iu)^(\d{1,3})\s*(?:шт\.?|штук|dona|pcs)?\s+(.+)$")
@@ -46,6 +50,14 @@ def parse_items(text: str, match_apartment) -> tuple[str | None, list[tuple[str,
                 qty, it = int(m.group(1)), m.group(2).strip()
         items.append((it[:80], max(1, qty)))
     return apt, items
+
+
+def looks_like_list(apt, items: list[tuple[str, int]]) -> bool:
+    """In a group chat only act on messages that are clearly a shopping list:
+    an apartment is named, or several items, or an explicit quantity."""
+    if apt or len(items) > 1:
+        return True
+    return bool(items) and items[0][1] > 1
 
 
 def aggregate(rows: list[dict]) -> list[dict]:

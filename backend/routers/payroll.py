@@ -21,7 +21,8 @@ def payroll(month: str = ""):
     terms = {t["staff"]: t for t in database.all_staff_terms()}
     payments = database.salary_payments_month(ym)
     penalties = database.penalties_month(ym)
-    attendance = database.attendance_month(ym)
+    # real arrivals only: the roll call also stores no-show rows (arrived_at NULL)
+    attendance = [a for a in database.attendance_month(ym) if a.get("arrived_at")]
 
     # union of names: terms + this month's activity + registry (suggestions)
     names = set(terms)

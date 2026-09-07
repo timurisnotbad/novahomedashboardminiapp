@@ -148,6 +148,15 @@ PAY_VIEWERS = [t for t in os.environ.get("PAY_VIEWERS", "").replace(",", " ").sp
 # the Оплаты block on clients that pass no initData (macOS Telegram).
 PAY_KEY = os.environ.get("PAY_KEY", "").strip()
 
+# Staff access key: the API accepts requests only from people who opened the
+# dashboard through the bot (valid Telegram initData, or this key that the bot
+# appends to the URL for everyone else — desktop clients pass no initData).
+# Derived from the bot token when not set, so no .env change is needed.
+STAFF_KEY = os.environ.get("STAFF_KEY", "").strip()
+if not STAFF_KEY and BOT_TOKEN:
+    import hashlib as _hashlib
+    STAFF_KEY = _hashlib.sha256(("staff:" + BOT_TOKEN).encode()).hexdigest()[:24]
+
 
 def notify_targets() -> list[int]:
     seen: list[int] = []
@@ -203,9 +212,13 @@ ATTEND_REMIND_T = _parse_hhmm(os.environ.get("ATTEND_REMIND", "10:00"), (10, 0))
 ATTEND_EARLIEST_T = _parse_hhmm(os.environ.get("ATTEND_EARLIEST", "09:00"), (9, 0))
 ATTEND_DEADLINE_T = _parse_hhmm(os.environ.get("ATTEND_DEADLINE", "14:00"), (14, 0))
 
-# Cleaning sessions still open at this time are closed automatically (marked
-# as "not finished by the cleaner") so the statistics stay clean.
-SESSIONS_AUTOCLOSE_T = _parse_hhmm(os.environ.get("SESSIONS_AUTOCLOSE", "23:00"), (23, 0))
+# A cleaning session with no «после» report for this many hours is closed
+# automatically (marked as "not finished by the cleaner") so the statistics
+# stay clean and the cleaner is not blocked from starting the next apartment.
+try:
+    SESSION_MAX_HOURS = float(os.environ.get("SESSION_MAX_HOURS", "8") or 8)
+except ValueError:
+    SESSION_MAX_HOURS = 8.0
 
 # End-of-day cleaning control: post to the group which checkouts still have
 # no cleaning report.

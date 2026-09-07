@@ -131,6 +131,31 @@ def can_payments(raw: str, owner_key: str = "") -> bool:
     return ok
 
 
+def has_access(raw: str, key: str = "") -> bool:
+    """Any legitimate dashboard user: owner, pay viewer, or staff who opened
+    the app through the bot (valid initData signature, or the staff key the bot
+    appends to the URL for clients that pass no initData). Everyone else — a
+    random visitor who found the domain — gets nothing."""
+    if not config.BOT_TOKEN or not config.OWNER_TELEGRAM_IDS:
+        return True  # dev mode
+    if key_ok(key):
+        return True
+    if key and config.PAY_KEY and hmac.compare_digest(key, config.PAY_KEY):
+        return True
+    if key and config.STAFF_KEY and hmac.compare_digest(key, config.STAFF_KEY):
+        return True
+    return parse_init_data(raw) is not None
+
+
+# FastAPI dependency applied to every data endpoint.
+async def access_guard(
+    x_telegram_init_data: str = Header(default=""),  # noqa: B008
+    x_owner_key: str = Header(default=""),  # noqa: B008
+):
+    if not has_access(x_telegram_init_data, x_owner_key):
+        raise HTTPException(status_code=403, detail="Откройте дашборд через кнопку в боте")
+
+
 # FastAPI dependency for the payments reconciliation endpoints.
 async def pay_guard(
     x_telegram_init_data: str = Header(default=""),  # noqa: B008

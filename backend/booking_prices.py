@@ -12,6 +12,7 @@ is not installed. On the server, install once:
 """
 import logging
 import re
+import threading
 import time
 from datetime import date
 
@@ -47,6 +48,14 @@ COMPETITORS = [
 # in-memory cache: key "checkin|checkout" -> (epoch, data)
 _CACHE: dict[str, tuple[float, dict]] = {}
 _CACHE_TTL = 30 * 60  # 30 minutes
+# one Chromium at a time: two owners clicking at once must not launch two browsers
+_SCRAPE_LOCK = threading.Lock()
+
+
+def _prune_cache() -> None:
+    cutoff = time.time() - _CACHE_TTL
+    for k in [k for k, (ts, _d) in _CACHE.items() if ts < cutoff]:
+        _CACHE.pop(k, None)
 
 
 def _url(base: str, checkin: date, checkout: date) -> str:
@@ -135,11 +144,20 @@ def _scrape_one(page, base: str, checkin: date, checkout: date, is_ours: bool) -
 def scrape_prices(checkin: date, checkout: date, use_cache: bool = True) -> dict:
     """Return {ok, error, checkin, checkout, nights, ours[], competitors[]}."""
     key = f"{checkin.isoformat()}|{checkout.isoformat()}"
+    _prune_cache()
     if use_cache and key in _CACHE:
         ts, cached = _CACHE[key]
         if time.time() - ts < _CACHE_TTL:
             return {**cached, "cached": True}
 
+    with _SCRAPE_LOCK:
+        # a parallel caller may have just filled the cache while we waited
+        if use_cache and key in _CACHE and time.time() - _CACHE[key][0] < _CACHE_TTL:
+            return {**_CACHE[key][1], "cached": True}
+        return _scrape_all(key, checkin, checkout)
+
+
+def _scrape_all(key: str, checkin: date, checkout: date) -> dict:
     nights = max(1, (checkout - checkin).days)
     result = {
         "ok": True, "error": None,

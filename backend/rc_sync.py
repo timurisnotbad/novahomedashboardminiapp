@@ -60,6 +60,17 @@ def refresh_apartments() -> None:
             len(config.APARTMENTS),
         )
         return
+    # Two RC objects with the same title would merge into one apartment in the
+    # dashboard (names are the key for cleanings, sessions, statistics). Keep
+    # them apart with a stable suffix by id order: "BLV 2A-156", "BLV 2A-156 ·2".
+    seen: dict[str, int] = {}
+    for aid in sorted(found):
+        name = found[aid]
+        n = seen.get(name, 0) + 1
+        seen[name] = n
+        if n > 1:
+            found[aid] = f"{name} ·{n}"
+            logger.warning("RC apartments: duplicate title %r (id %s) renamed to %r", name, aid, found[aid])
     added = set(found) - set(config.APARTMENTS)
     config.APARTMENTS.clear()
     config.APARTMENTS.update(found)
@@ -104,12 +115,20 @@ def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
     )
     resp.raise_for_status()
 
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise RuntimeError(f"RC returned unexpected payload ({type(data).__name__})")
     bookings: list[dict] = []
-    for item in resp.json().get("items", []):
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
         apt_id = item.get("apartment_id")
         apt_name = config.APARTMENTS.get(apt_id, str(apt_id))
-        for event in item.get("events", []):
-            if event.get("is_delete"):
+        for event in item.get("events") or []:
+            if not isinstance(event, dict) or event.get("is_delete"):
+                continue
+            if not event.get("begin_date") or not event.get("end_date"):
+                logger.warning("RC event %s without dates skipped", event.get("id"))
                 continue
             client = event.get("client") or {}
             bookings.append({
@@ -137,6 +156,11 @@ def sync_to_db() -> int:
         else:
             refresh_apartments()  # pick up units newly added in RC
             bookings = fetch_bookings(today - timedelta(days=1), today + timedelta(days=30))
+            # An expired session sometimes yields "200 OK, 0 items" rather than
+            # an error. 18 units never have zero bookings for a month — treat
+            # that as a failed sync instead of wiping the calendar.
+            if not bookings and database.count_bookings() > 0:
+                raise RuntimeError("RC returned 0 bookings — keeping the previous data (token/cookies?)")
         database.replace_all_bookings(bookings)
         database.log_sync(len(bookings), True)
         return len(bookings)

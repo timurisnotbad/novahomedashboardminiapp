@@ -22,6 +22,18 @@ def _fmt_ru_date(d: date) -> str:
     return f"{d.day} {RU_MONTHS[d.month]}, {RU_WEEKDAYS[d.weekday()]}"
 
 
+def apartment_names() -> list[str]:
+    """All known units: the static map (refreshed from RC inside the backend
+    process) plus names seen in synced bookings — so the bot process, which
+    never sees the in-memory refresh, still counts every unit."""
+    names = set(config.APARTMENTS.values())
+    try:
+        names.update(database.distinct_apartments())
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(n for n in names if n)
+
+
 def _booking_view(b: dict) -> dict:
     return {
         "id": b.get("id"),
@@ -123,8 +135,10 @@ def build_day(target: date) -> dict:
 
     # count distinct apartments in-house, capped at the real inventory, so a
     # stray overlapping request in RC can never push occupancy above 100%.
-    occupied = len({b["apartment_name"] for b in current} & set(config.APARTMENTS.values()))
-    occupancy_pct = round(occupied / config.TOTAL_APARTMENTS * 100, 1) if config.TOTAL_APARTMENTS else 0
+    names = apartment_names()
+    total = len(names) or config.TOTAL_APARTMENTS
+    occupied = len({b["apartment_name"] for b in current} & set(names))
+    occupancy_pct = round(occupied / total * 100, 1) if total else 0
 
     # new bookings in the last 24h
     cutoff = datetime.now() - timedelta(hours=24)
@@ -157,7 +171,7 @@ def build_day(target: date) -> dict:
             "checkouts_today": len(checkouts),
             "cleanings_today": len(cleanings),
             "occupied": occupied,
-            "total": config.TOTAL_APARTMENTS,
+            "total": total,
             "occupancy_pct": occupancy_pct,
         },
         "finance": {
@@ -262,7 +276,8 @@ def build_occupancy(target: date, span: int = 7) -> dict:
     date_strs = [_iso(d) for d in dates]
 
     apartments = []
-    for apt_id, apt_name in config.APARTMENTS.items():
+    names = apartment_names()
+    for apt_name in names:
         days = []
         for ds in date_strs:
             occupant = None
@@ -280,7 +295,7 @@ def build_occupancy(target: date, span: int = 7) -> dict:
             })
         apartments.append({"name": apt_name, "days": days})
 
-    total_cells = span * config.TOTAL_APARTMENTS
+    total_cells = span * len(names)
     occupied_cells = sum(
         1 for a in apartments for d in a["days"] if d["status"] == "occupied"
     )
@@ -335,7 +350,7 @@ def build_tasks(target: date) -> dict:
     return {
         "today": _iso(target),
         "tasks": tasks,
-        "apartments": list(config.APARTMENTS.values()),
+        "apartments": apartment_names(),
         "counts": {
             "open": len(open_tasks),
             "due_soon": due_soon,

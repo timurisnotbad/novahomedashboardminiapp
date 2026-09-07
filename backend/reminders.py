@@ -38,15 +38,21 @@ def check_due_tasks(now: datetime | None = None) -> None:
     for task in database.open_tasks_with_deadline():
         dt = _deadline_dt(task)
         if dt is not None:
-            for hours, kind in _THRESHOLDS:
-                mark = dt - timedelta(hours=hours)
-                if mark <= now < dt and not database.task_notif_sent(task["id"], kind):
-                    if database.mark_task_notif(task["id"], kind):
-                        left = "1 час" if hours == 1 else f"{hours} ч"
-                        notify.send(
-                            f"⏰ Через {left} — дедлайн задачи:\n{_label(task)}\n"
-                            f"Срок: {dt.strftime('%d.%m %H:%M')}"
-                        )
+            # After downtime several thresholds may be due at once: send only
+            # the nearest one, mark the others as handled (no 4-message burst).
+            due = [(hours, kind) for hours, kind in _THRESHOLDS
+                   if dt - timedelta(hours=hours) <= now < dt
+                   and not database.task_notif_sent(task["id"], kind)]
+            if not due:
+                continue
+            hours, kind = min(due)
+            for _h, k in due:
+                database.mark_task_notif(task["id"], k)
+            left = "1 час" if hours == 1 else f"{hours} ч"
+            notify.send(
+                f"⏰ Через {left} — дедлайн задачи:\n{_label(task)}\n"
+                f"Срок: {dt.strftime('%d.%m %H:%M')}"
+            )
         else:
             try:
                 dd = date.fromisoformat(task["deadline"])
@@ -161,6 +167,10 @@ def check_booking_changes() -> None:
                 if target and (_touches(target, b) or _touches(target, old)):
                     schedule_dirty = True
     database.upsert_booking_snapshots(bookings)
+    try:  # snapshots of stays that ended over a year ago are dead weight
+        database.prune_booking_snapshots((date.today() - timedelta(days=365)).isoformat())
+    except Exception:  # noqa: BLE001
+        logger.exception("snapshot prune failed")
     if target and schedule_dirty:
         try:
             text = services.build_tomorrow_schedule_text(target)

@@ -38,18 +38,22 @@ def _webapp_url(uid=None) -> str:
     knows who the owners are, hands the key only to them, and the frontend
     stores it locally."""
     url = config.WEBAPP_URL
-    url += ("&" if "?" in url else "?") + "v=19"  # cache-buster per release
+    url += ("&" if "?" in url else "?") + "v=20"  # cache-buster per release
     if config.OWNER_KEY and uid and uid in config.OWNER_TELEGRAM_IDS:
-        url += "&okey=" + config.OWNER_KEY
-    elif config.PAY_KEY and uid:
+        return url + "&okey=" + config.OWNER_KEY
+    if config.PAY_KEY and uid:
         # PAY_VIEWERS get their own key so the Оплаты block works on clients
         # that pass no initData (macOS Telegram)
         try:
             from backend import auth as _auth
             if uid in _auth.pay_viewer_ids():
-                url += "&okey=" + config.PAY_KEY
+                return url + "&okey=" + config.PAY_KEY
         except Exception:  # noqa: BLE001
             logger.exception("pay viewer url check failed")
+    if config.STAFF_KEY and uid:
+        # everyone else: the staff key proves the app was opened from the bot
+        # (the API rejects bare visits to the domain)
+        url += "&okey=" + config.STAFF_KEY
     return url
 
 
@@ -152,6 +156,9 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await msg.reply_text(f"✅ Привязано: {parts[1].lower()} → {where}")
 
 
+_loc_status: dict[int, str] = {}  # uid -> last attendance status (to report transitions once)
+
+
 async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Mark staff arrival from a live location inside the work zone."""
     msg = update.effective_message
@@ -198,20 +205,24 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception:  # noqa: BLE001
         logger.exception("check_arrival failed")
         return
+    status = res.get("status")
     logger.info(
         "attendance: status=%s distance=%.0fm radius=%sm",
-        res.get("status"), res.get("distance", -1), config.WORK_RADIUS_M,
+        status, res.get("distance", -1), config.WORK_RADIUS_M,
     )
-    if res.get("status") == "recorded":
+    prev = _loc_status.get(uid)
+    _loc_status[uid] = status
+    if status == "recorded":
         if res.get("notify"):
             notify.send(res["notify"], topic="attendance")
         try:
             await msg.reply_text(res["reply"])
         except Exception:  # noqa: BLE001
             pass
-    elif not is_edit:
+    elif not is_edit or (status == "too_late" and prev not in (None, "too_late")):
         # "outside" / "already": answer once (on the initial share) so the person
-        # gets feedback, but don't repeat on every live-location tick.
+        # gets feedback, but don't repeat on every live-location tick. The one
+        # transition worth announcing: still travelling when the window closed.
         try:
             await msg.reply_text(res["reply"])
         except Exception:  # noqa: BLE001
@@ -260,14 +271,15 @@ def _parse_price_dates(text: str):
 
 async def _send_html(bot, chat_id, text: str) -> None:
     """Send an HTML message, splitting if it exceeds Telegram's 4096 limit."""
-    while text:
-        chunk, text = text[:4000], text[4000:]
-        if text:  # break on a newline so tags aren't split mid-line
-            cut = chunk.rfind("\n")
-            if cut > 0:
-                text, chunk = chunk[cut + 1:] + text, chunk[:cut]
+    for chunk in notify.split_text(text):
         await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML,
                                disable_notification=config.quiet_now())
+
+
+async def _reply_long(msg, text: str) -> None:
+    """reply_text that never hits 'message is too long'."""
+    for chunk in notify.split_text(text):
+        await msg.reply_text(chunk)
 
 
 async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -355,7 +367,7 @@ async def staff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append(f"  • {nm} — {uid}")
     lines.append("")
     lines.append("Убрать уволенного: /staff_del <id>")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_long(update.message, "\n".join(lines))
 
 
 async def staff_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -386,15 +398,18 @@ async def staff_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # to that cleaner; a later "103" from the same person closes it and the
 # duration is recorded. Someone else's "103" can't close it — no mix-ups.
 _REPORT_TTL = 15 * 60  # seconds to pair media with a number
-_pending_media: dict[int, tuple[str, str, float]] = {}   # uid -> (kind, file_id, ts)
+# uid -> [(kind, file_id, ts), ...] — several кружки may precede one number
+_pending_media: dict[int, list[tuple[str, str, float]]] = {}
 _pending_apt: dict[int, tuple[str, str, float]] = {}     # uid -> (apartment, phase, ts)
 _album_apt: dict[str, str] = {}                          # media_group_id -> apartment
+_album_prompted: set[str] = set()                        # albums already asked for a number
 
 _CYR2LAT = str.maketrans({"А": "A", "В": "B", "Б": "B", "С": "C", "Е": "E"})
 
-# words that mark a report as "before cleaning"
+# words that mark a report as "before cleaning" — "до 103", "oldin 103";
+# "до 15:00" (a time) is not one of them
 _START_RE = re.compile(
-    r"(?iu)(?:^|[^\w])(до|oldin|avval|before|start|старт|начало|начала|начинаю)(?=$|[^\w])"
+    r"(?iu)(?:^|[^\w])(до(?!\s*\d{1,2}[:.]\d{2})|oldin|avval|before|start|старт|начало|начала|начинаю)(?=$|[^\w])"
 )
 
 _apt_cache: list = [0.0, []]  # [expires_ts, names]
@@ -512,13 +527,27 @@ def _minutes_between(earlier_iso: str | None, now: datetime.datetime):
     return mins if mins >= 0 else None
 
 
+def _force_close(session: dict, now: datetime.datetime) -> None:
+    """Close a session nobody finished (owner's /сброс, or too old)."""
+    dur = _minutes_between(session.get("started_at"), now) or 0
+    database.finish_session(session["id"], now.isoformat(timespec="seconds"), dur, True)
+    try:
+        database.set_cleaning_status(session["apartment"], session.get("work_date") or now.date().isoformat(), "done")
+    except Exception:  # noqa: BLE001
+        logger.exception("set_cleaning_status on force close failed")
+
+
 def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.datetime) -> dict:
     """Apply a ДО/ПОСЛЕ report to the cleaning sessions (runs in a thread).
     Returns the caption for the forwarded media and the reply to the sender."""
     today = now.date().isoformat()
     ts = now.isoformat(timespec="seconds")
     hm = now.strftime("%H:%M")
-    cur = database.open_session(apt, today)
+    max_min = int(config.SESSION_MAX_HOURS * 60)
+    cur = database.open_session(apt)
+    if cur and (_minutes_between(cur.get("started_at"), now) or 0) > max_min:
+        _force_close(cur, now)  # a stale leftover must not block anyone
+        cur = None
 
     if phase == "start":
         if cur:
@@ -535,7 +564,10 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
                          f"{_hm(cur.get('started_at'))}. Пока уборка не закрыта, "
                          f"начать её заново нельзя.",
             }
-        mine = database.open_session_for_staff(uid, today)
+        mine = database.open_session_for_staff(uid)
+        if mine and (_minutes_between(mine.get("started_at"), now) or 0) > max_min:
+            _force_close(mine, now)  # yesterday's forgotten «после» — don't block today
+            mine = None
         if mine:
             return {
                 "caption": None,
@@ -574,7 +606,8 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
             }
         dur = _minutes_between(cur.get("started_at"), now) or 0
         database.finish_session(cur["id"], ts, dur)
-        database.set_cleaning_status(apt, today, "done")
+        # a cleaning that crossed midnight belongs to the day it started
+        database.set_cleaning_status(apt, cur.get("work_date") or today, "done")
         return {
             "caption": f"✅ ПОСЛЕ · {apt} · {who} · {_hm(cur.get('started_at'))}–{hm} · {_fmt_dur(dur)}",
             "reply": f"✅ {apt} — уборка завершена, {_fmt_dur(dur)}. Спасибо!",
@@ -597,20 +630,42 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
     }
 
 
-async def _process_report(context, msg, user, apt: str, phase: str, kind: str, file_id: str) -> None:
+async def _process_report(context, msg, user, apt: str, phase: str, media: list) -> None:
+    """`media` — one or more (kind, file_id) the person sent for this report."""
     now = datetime.datetime.now()
     try:
         res = await asyncio.to_thread(_session_step, apt, phase, user.id, _display_name(user), now)
     except Exception:  # noqa: BLE001
         logger.exception("session step failed")
-        res = {"caption": f"🧹 {apt} · {_display_name(user)} · {now.strftime('%H:%M')}",
-               "reply": f"✅ Принято: {apt}."}
+        try:  # never say "принято" when nothing was recorded
+            await msg.reply_text(f"⚠️ Не удалось записать отчёт по {apt}. Отправьте ещё раз через минуту.")
+        except Exception:  # noqa: BLE001
+            pass
+        return
     if res.get("caption"):
-        await _forward_report(context, kind, file_id, res["caption"], msg.chat_id, msg.message_thread_id)
+        for i, (kind, file_id) in enumerate(media):
+            cap = res["caption"] if i == 0 else None
+            await _forward_report(context, kind, file_id, cap, msg.chat_id, msg.message_thread_id)
     try:
         await msg.reply_text(res["reply"])
     except Exception:  # noqa: BLE001
         pass
+
+
+async def _in_cleaning_topic(msg) -> bool:
+    """In a forum group with a bound «Уборки» topic, media counts as a report
+    only inside that topic (a photo in General is just a photo). Private chats
+    and groups without topic bindings accept reports anywhere."""
+    if msg.chat.type == "private":
+        return True
+    try:
+        thread = await asyncio.to_thread(database.get_topic, msg.chat_id, "cleaning")
+        bound = await asyncio.to_thread(database.all_topics)
+    except Exception:  # noqa: BLE001
+        return True
+    if not any(t["chat_id"] == msg.chat_id for t in bound):
+        return True  # no topics configured for this chat
+    return (thread or None) == (msg.message_thread_id or None)
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -636,6 +691,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     apt = _match_apartment(caption, allow_bare=True)
     phase = _report_phase(caption)
     if not apt:
+        if not await _in_cleaning_topic(msg):
+            return  # a photo somewhere else in the group — not a report
         pend = _pending_apt.pop(uid, None)
         if pend and now_ts - pend[2] < _REPORT_TTL:
             apt, phase = pend[0], pend[1]
@@ -644,13 +701,21 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if len(_album_apt) > 200:
                 _album_apt.clear()
             _album_apt[mgid] = apt
-        await _process_report(context, msg, user, apt, phase, kind, file_id)
+        await _process_report(context, msg, user, apt, phase, [(kind, file_id)])
         return
 
-    # number not known yet: hold the media and ask for it
+    # number not known yet: hold the media and ask for it (once per album)
     if len(_pending_media) > 200:
         _pending_media.clear()
-    _pending_media[uid] = (kind, file_id, now_ts)
+    lst = [m for m in _pending_media.get(uid, []) if now_ts - m[2] < _REPORT_TTL]
+    lst.append((kind, file_id, now_ts))
+    _pending_media[uid] = lst[-10:]
+    if mgid:
+        if mgid in _album_prompted:
+            return
+        if len(_album_prompted) > 500:
+            _album_prompted.clear()
+        _album_prompted.add(mgid)
     try:
         await msg.reply_text(
             "Принял! Теперь напишите номер квартиры:\n"
@@ -674,10 +739,21 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     uid = user.id
     now_ts = datetime.datetime.now().timestamp()
     private = msg.chat.type == "private"
-    pend = _pending_media.get(uid)
-    waiting = bool(pend) and now_ts - pend[2] < _REPORT_TTL
+    pend_all = _pending_media.get(uid) or []
+    pend = [m for m in pend_all if now_ts - m[2] < _REPORT_TTL]
+    waiting = bool(pend)
+    expired = bool(pend_all) and not waiting  # asked for a number, answer came too late
 
     if not waiting and not private:
+        if expired and _match_apartment(msg.text, allow_bare=True):
+            _pending_media.pop(uid, None)
+            try:
+                await msg.reply_text(
+                    "⌛ Прошло больше 15 минут — кружок уже не привязать. "
+                    "Пришлите его ещё раз вместе с номером."
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return  # ordinary group chatter — not our business
 
     apt = _match_apartment(msg.text, allow_bare=waiting or private)
@@ -692,8 +768,7 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     phase = _report_phase(msg.text)
     if waiting:
         _pending_media.pop(uid, None)
-        kind, file_id, _ts = pend
-        await _process_report(context, msg, user, apt, phase, kind, file_id)
+        await _process_report(context, msg, user, apt, phase, [(k, f) for k, f, _t in pend])
     elif private:
         # number first, media to follow (private chat only)
         if len(_pending_apt) > 200:
@@ -714,11 +789,10 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
         return
     now = datetime.datetime.now()
-    today = now.date().isoformat()
     parts = (msg.text or "").split(maxsplit=1)
     apt = _match_apartment(parts[1], allow_bare=True) if len(parts) > 1 else None
     if not apt:
-        open_ = await asyncio.to_thread(database.open_sessions, today)
+        open_ = await asyncio.to_thread(database.open_sessions)
         if not open_:
             await msg.reply_text("Открытых уборок сейчас нет.")
             return
@@ -727,15 +801,13 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             lines.append(f"  • {s['apartment']} — {s.get('staff_name')} с {_hm(s.get('started_at'))}")
         lines.append("")
         lines.append("Закрыть принудительно: /сброс <номер>")
-        await msg.reply_text("\n".join(lines))
+        await _reply_long(msg, "\n".join(lines))
         return
-    cur = await asyncio.to_thread(database.open_session, apt, today)
+    cur = await asyncio.to_thread(database.open_session, apt)
     if not cur:
         await msg.reply_text(f"Открытой уборки {apt} нет.")
         return
-    dur = _minutes_between(cur.get("started_at"), now) or 0
-    await asyncio.to_thread(database.finish_session, cur["id"], now.isoformat(timespec="seconds"), dur, True)
-    await asyncio.to_thread(database.set_cleaning_status, apt, today, "done")
+    await asyncio.to_thread(_force_close, cur, now)
     await msg.reply_text(
         f"✅ Уборка {apt} ({cur.get('staff_name')}, с {_hm(cur.get('started_at'))}) закрыта "
         f"принудительно — в статистике помечена как незавершённая."
@@ -743,24 +815,26 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def sessions_autoclose(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """SESSIONS_AUTOCLOSE (23:00): close sessions nobody finished, tell the owner."""
+    """Every 30 min: close sessions older than SESSION_MAX_HOURS with no
+    «после» report (the cleaner forgot), and tell the owner. Age-based rather
+    than a fixed hour, so a late 22:40–23:20 cleaning is left alone."""
     now = datetime.datetime.now()
-    today = now.date().isoformat()
+    cutoff = (now - datetime.timedelta(hours=config.SESSION_MAX_HOURS)).isoformat(timespec="seconds")
     try:
-        open_ = await asyncio.to_thread(database.open_sessions, today)
+        stale = await asyncio.to_thread(database.stale_open_sessions, cutoff)
     except Exception:  # noqa: BLE001
         logger.exception("autoclose read failed")
         return
-    if not open_:
+    if not stale:
         return
-    lines = ["🌙 Автозакрытие уборок без отчёта «после»:"]
-    for s in open_:
-        dur = _minutes_between(s.get("started_at"), now) or 0
+    lines = [f"🌙 Автозакрытие уборок без отчёта «после» (прошло больше {config.SESSION_MAX_HOURS:g} ч):"]
+    for s in stale:
         try:
-            await asyncio.to_thread(database.finish_session, s["id"], now.isoformat(timespec="seconds"), dur, True)
+            await asyncio.to_thread(_force_close, s, now)
         except Exception:  # noqa: BLE001
             logger.exception("autoclose failed for %s", s.get("apartment"))
-        lines.append(f"  • {s['apartment']} — {s.get('staff_name')}, начата {_hm(s.get('started_at'))}")
+        lines.append(f"  • {s['apartment']} — {s.get('staff_name')}, начата "
+                     f"{(s.get('started_at') or '')[5:10]} {_hm(s.get('started_at'))}")
     for uid in config.OWNER_TELEGRAM_IDS:
         try:
             await context.bot.send_message(chat_id=uid, text="\n".join(lines),
@@ -777,16 +851,20 @@ async def on_supplies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = update.effective_user
     if not msg or not user or not msg.text or not supplies.is_request(msg.text):
         return
-    _register(user)
+    private = msg.chat.type == "private"
     apt, items = supplies.parse_items(msg.text, lambda t: _match_apartment(t, allow_bare=True))
     if not items:
-        try:
-            await msg.reply_text(
-                "Что купить? Напишите, например:\n«нужно 103 полотенца 2, шампунь, туалетная бумага»"
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        if private:
+            try:
+                await msg.reply_text(
+                    "Что купить? Напишите, например:\n«нужно 103 полотенца 2, шампунь, туалетная бумага»"
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return
+    if not private and not supplies.looks_like_list(apt, items):
+        return  # "нужно перезвонить гостю" in the group is not a shopping list
+    _register(user)
     who = _display_name(user)
     now = datetime.datetime.now().isoformat(timespec="minutes")
     for item, qty in items:
@@ -805,7 +883,7 @@ async def on_supplies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def supplies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/нужно — show the open shopping list."""
     text = await asyncio.to_thread(supplies.format_list)
-    await update.effective_message.reply_text(text)
+    await _reply_long(update.effective_message, text)
 
 
 def _fmt_sum(x: float) -> str:
@@ -838,7 +916,10 @@ async def on_channel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = (msg.caption or msg.text or "").strip()
     if not text:
         return
-    post_date = (msg.date or datetime.datetime.now()).date()
+    # Telegram gives UTC-aware timestamps; everything else in the DB is local
+    # (Tashkent) time, and the month filter relies on it.
+    posted = msg.date.astimezone().replace(tzinfo=None) if msg.date else datetime.datetime.now()
+    post_date = posted.date()
     try:
         parsed = pay_parse.parse_payment(text, post_date, _apartment_names())
         parsed["_raw"] = text
@@ -847,7 +928,7 @@ async def on_channel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await asyncio.to_thread(
             database.upsert_channel_payment,
             msg.chat_id, msg.message_id,
-            (msg.date or datetime.datetime.now()).isoformat(timespec="minutes"),
+            posted.isoformat(timespec="minutes"),
             text[:1000], parsed, bid, score,
         )
         logger.info(
@@ -930,6 +1011,7 @@ async def attendance_deadline(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not absent:
         lines.append("Все на месте 💪")
     notify.send("\n".join(lines), topic="attendance")
+    _loc_status.clear()  # tomorrow starts fresh
 
 
 async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -944,7 +1026,7 @@ async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
     today_s = today.isoformat()
     todays = [c for c in cleanings if c.get("cleaning_date") == today_s]
     try:
-        open_ = await asyncio.to_thread(database.open_sessions, today_s)
+        open_ = await asyncio.to_thread(database.open_sessions)
         sessions = await asyncio.to_thread(database.sessions_for_date, today_s)
     except Exception:  # noqa: BLE001
         open_, sessions = [], []
@@ -1003,7 +1085,7 @@ async def attendance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         t = (r.get("arrived_at") or "")[11:16]
         st = "вовремя ✅" if r.get("on_time") else f"опоздание {r.get('late_minutes')} мин ⚠️"
         lines.append(f"• {r.get('staff_name')} — {t} ({st})")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_long(update.message, "\n".join(lines))
 
 
 async def daily_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1063,8 +1145,8 @@ def main() -> None:
         app.job_queue.run_daily(attendance_deadline, time=datetime.time(hour=dh, minute=dm, tzinfo=LOCAL_TZ))
         ch, cm = config.CLEANING_CHECK_T
         app.job_queue.run_daily(cleaning_watch, time=datetime.time(hour=ch, minute=cm, tzinfo=LOCAL_TZ))
-        ah, am = config.SESSIONS_AUTOCLOSE_T
-        app.job_queue.run_daily(sessions_autoclose, time=datetime.time(hour=ah, minute=am, tzinfo=LOCAL_TZ))
+        # forgotten «после» reports: close sessions older than SESSION_MAX_HOURS
+        app.job_queue.run_repeating(sessions_autoclose, interval=30 * 60, first=120)
 
     logger.info("Bot started (demo_mode=%s)", config.DEMO_MODE)
     # ALL_TYPES guards against a token whose allowed_updates was ever narrowed by

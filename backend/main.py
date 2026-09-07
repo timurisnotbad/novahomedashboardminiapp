@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -53,12 +53,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API routers
+# API routers — every data endpoint requires a legitimate dashboard user
+# (see auth.access_guard); owner-only routers add their own stricter guard.
 for r in (dashboard.router, bookings.router, cleaning.router,
           occupancy.router, payments.router, sync.router, finance.router,
           tasks.router, prices.router, penalties.router, payroll.router,
           payrecon.router, control.router):
-    app.include_router(r, prefix=config.API_PREFIX)
+    app.include_router(r, prefix=config.API_PREFIX, dependencies=[Depends(auth.access_guard)])
 
 
 @app.middleware("http")
@@ -86,6 +87,8 @@ def me(request: Request):
         "role": role,
         "is_owner": role == "owner",
         "can_payments": role == "owner" or auth.can_payments(init, okey),
+        # False → the app was opened from a bare link, not through the bot
+        "has_access": auth.has_access(init, okey),
     }
 
 
