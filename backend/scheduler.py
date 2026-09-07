@@ -14,7 +14,7 @@ _scheduler: BackgroundScheduler | None = None
 def _evening_summary():
     try:
         text = services.build_tomorrow_schedule_text(date.today() + timedelta(days=1))
-        notify.send(text)
+        notify.send(text, topic="cleaning")
         logger.info("Evening summary sent")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Evening summary failed: %s", exc)

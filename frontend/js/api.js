@@ -85,6 +85,22 @@
       }),
     getPrices: (checkin, checkout, refresh) =>
       req(`/prices?checkin=${checkin || ""}&checkout=${checkout || ""}${refresh ? "&refresh=1" : ""}`),
+    getAttendanceStats: (month) => req(`/control/attendance?month=${month || ""}`),
+    getCleaningStats: (month) => req(`/control/cleaning?month=${month || ""}`),
+    getSupplies: () => req("/control/supplies"),
+    addSupply: (payload) =>
+      req("/control/supplies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    setSupplyBought: (id, bought) =>
+      req(`/control/supplies/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bought }),
+      }),
+    delSupply: (id) => req(`/control/supplies/${id}`, { method: "DELETE" }),
     getTasks: () => req("/tasks"),
     addTask: (payload) =>
       req("/tasks", {

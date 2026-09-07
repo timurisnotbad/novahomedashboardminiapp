@@ -32,7 +32,7 @@
   const TITLES = {
     today: "Сегодня", tomorrow: "Завтра", cleaning: "Уборки", guests: "Гости",
     week: "Неделя", finance: "Касса", prices: "Цены", tasks: "Задачи",
-    payments: "Оплаты",
+    payments: "Оплаты", control: "Контроль",
   };
 
   function applyRole() {
@@ -55,6 +55,8 @@
     tasks: { el: "screen-tasks", mod: () => NH.screens.tasks, load: api.getTasks },
     payments: { el: "screen-payments", mod: () => NH.screens.payrecon,
       load: () => NH.screens.payrecon.state },
+    control: { el: "screen-control", mod: () => NH.screens.control,
+      load: () => NH.screens.control.state },
   };
 
   let current = "today";
@@ -93,8 +95,10 @@
     if (name === "payments") {
       if (!(isOwner() || canPayments)) name = "today";
       else loadRecon();
-    } else if ((name === "guests" || name === "finance" || name === "prices") && !isOwner()) {
+    } else if ((name === "guests" || name === "finance" || name === "prices" || name === "control") && !isOwner()) {
       name = "today";
+    } else if (name === "control") {
+      loadControl();
     }
     current = name;
     setActiveNav(name);
@@ -261,6 +265,29 @@
     applyRole();
   }
 
+  function renderControl() {
+    const el = document.getElementById("screen-control");
+    if (el) el.innerHTML = NH.screens.control.render();
+    applyRole();
+  }
+
+  // «Контроль»: fetch the data of the active sub-view (явка / уборки / закупки)
+  function loadControl(force) {
+    const cs = NH.screens.control.state;
+    const v = cs.view;
+    if (!force && cs[v]) { renderControl(); return; }
+    cs.loading = true;
+    renderControl();
+    const month = NH.screens.control.ym(cs.off);
+    const call = v === "clean" ? api.getCleaningStats(month)
+      : v === "buy" ? api.getSupplies()
+      : api.getAttendanceStats(month);
+    call
+      .then((d) => { cs[v] = d; })
+      .catch(() => ui.toast("Не удалось загрузить"))
+      .finally(() => { cs.loading = false; renderControl(); });
+  }
+
   function renderPrices() {
     const el = document.getElementById("screen-prices");
     if (el) el.innerHTML = NH.screens.prices.render();
@@ -349,6 +376,45 @@
           loadPayroll();
         }
         renderFinance();
+        return;
+      }
+      // контроль: sub-view / month / shopping list
+      const cv = e.target.closest("[data-ctl-view]");
+      if (cv) {
+        NH.screens.control.state.view = cv.dataset.ctlView;
+        loadControl();
+        return;
+      }
+      const cmn = e.target.closest("[data-ctl-month]");
+      if (cmn) {
+        const cs = NH.screens.control.state;
+        cs.off = Math.min(0, cs.off + parseInt(cmn.dataset.ctlMonth, 10));
+        cs.att = null; cs.clean = null;
+        loadControl(true);
+        return;
+      }
+      if (e.target.closest("[data-sup-add]")) {
+        const item = ((document.getElementById("sup-item") || {}).value || "").trim();
+        const qty = parseInt((document.getElementById("sup-qty") || {}).value || "1", 10) || 1;
+        const apt = ((document.getElementById("sup-apt") || {}).value || "").trim();
+        if (!item) { ui.toast("Напишите, что купить"); return; }
+        ui.haptic("light");
+        api.addSupply({ item, qty, apartment: apt || null })
+          .then(() => loadControl(true))
+          .catch(() => ui.toast("Не удалось сохранить"));
+        return;
+      }
+      const st = e.target.closest("[data-sup-toggle]");
+      if (st) {
+        ui.haptic(st.dataset.bought === "1" ? "success" : "light");
+        api.setSupplyBought(st.dataset.id, st.dataset.bought === "1")
+          .then(() => loadControl(true))
+          .catch(() => ui.toast("Ошибка"));
+        return;
+      }
+      const sd = e.target.closest("[data-sup-del]");
+      if (sd) {
+        api.delSupply(sd.dataset.id).then(() => loadControl(true)).catch(() => {});
         return;
       }
       const rm = e.target.closest("[data-recon-month]");

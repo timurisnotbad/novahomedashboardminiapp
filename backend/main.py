@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, config, database, rc_sync, reminders, scheduler
-from .routers import bookings, cleaning, dashboard, finance, occupancy, payments, payrecon, payroll, penalties, prices, sync, tasks
+from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
+                      payrecon, payroll, penalties, prices, sync, tasks)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nova")
@@ -56,7 +57,7 @@ app.add_middleware(
 for r in (dashboard.router, bookings.router, cleaning.router,
           occupancy.router, payments.router, sync.router, finance.router,
           tasks.router, prices.router, penalties.router, payroll.router,
-          payrecon.router):
+          payrecon.router, control.router):
     app.include_router(r, prefix=config.API_PREFIX)
 
 

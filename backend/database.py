@@ -177,6 +177,34 @@ CREATE TABLE IF NOT EXISTS penalties (
     at TIMESTAMP
 );
 
+-- cleaning sessions: "до" (start) / "после" (finish) reports per apartment,
+-- locked to the cleaner who started; duration + travel time from the previous
+-- apartment (or from the morning arrival) are computed at finish/start time
+CREATE TABLE IF NOT EXISTS cleaning_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    apartment TEXT,
+    staff_id INTEGER,
+    staff_name TEXT,
+    work_date DATE,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    duration_min INTEGER,
+    travel_min INTEGER,
+    no_before INTEGER DEFAULT 0,   -- finished without a "до" report
+    forced INTEGER DEFAULT 0       -- closed by the owner / at night, not by the cleaner
+);
+
+-- shopping list: what the cleaners ask to buy ("нужно 103 полотенца 2, шампунь")
+CREATE TABLE IF NOT EXISTS supplies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    apartment TEXT,
+    item TEXT NOT NULL,
+    qty INTEGER DEFAULT 1,
+    staff_name TEXT,
+    created_at TIMESTAMP,
+    bought_at TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_bookings_begin ON bookings(begin_date);
 CREATE INDEX IF NOT EXISTS idx_bookings_end ON bookings(end_date);
 """
@@ -204,6 +232,15 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
         if "deadline_time" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN deadline_time TEXT")
+        # attendance log: explicit status (ok / late / absent) — no-shows are
+        # recorded too, so the monthly statistics are complete
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(attendance)").fetchall()]
+        if "status" not in cols:
+            conn.execute("ALTER TABLE attendance ADD COLUMN status TEXT")
+            conn.execute(
+                "UPDATE attendance SET status = CASE WHEN on_time THEN 'ok' ELSE 'late' END "
+                "WHERE status IS NULL AND arrived_at IS NOT NULL"
+            )
 
 
 BOOKING_COLUMNS = [
@@ -404,12 +441,175 @@ def record_arrival(staff_id, staff_name, work_date, arrived_at, lat, lng, on_tim
     with get_conn() as conn:
         cur = conn.execute(
             "INSERT OR IGNORE INTO attendance "
-            "(staff_id, staff_name, work_date, arrived_at, lat, lng, on_time, late_minutes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(staff_id, staff_name, work_date, arrived_at, lat, lng, on_time, late_minutes, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (staff_id, staff_name, work_date, arrived_at, lat, lng,
-             1 if on_time else 0, int(late_minutes)),
+             1 if on_time else 0, int(late_minutes), "ok" if on_time else "late"),
         )
         return cur.rowcount > 0
+
+
+def record_absent(staff_id, staff_name, work_date) -> bool:
+    """Log a no-show at the roll call (once per staff per day) so the monthly
+    attendance statistics include absences, not only arrivals."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO attendance "
+            "(staff_id, staff_name, work_date, arrived_at, on_time, late_minutes, status) "
+            "VALUES (?, ?, ?, NULL, 0, 0, 'absent')",
+            (staff_id, staff_name, work_date),
+        )
+        return cur.rowcount > 0
+
+
+def arrival_for(staff_id, work_date) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM attendance WHERE staff_id = ? AND work_date = ? AND arrived_at IS NOT NULL",
+            (staff_id, work_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Cleaning sessions (до / после)
+# ---------------------------------------------------------------------------
+def open_session(apartment: str, work_date: str) -> dict | None:
+    """The unfinished session for this apartment today, if any."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE apartment = ? AND work_date = ? "
+            "AND finished_at IS NULL ORDER BY id DESC LIMIT 1",
+            (apartment, work_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def open_session_for_staff(staff_id: int, work_date: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE staff_id = ? AND work_date = ? "
+            "AND finished_at IS NULL ORDER BY id DESC LIMIT 1",
+            (staff_id, work_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def open_sessions(work_date: str) -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE work_date = ? AND finished_at IS NULL "
+            "ORDER BY started_at", (work_date,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def start_session(apartment, staff_id, staff_name, work_date, started_at, travel_min) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO cleaning_sessions (apartment, staff_id, staff_name, work_date, "
+            "started_at, travel_min) VALUES (?, ?, ?, ?, ?, ?)",
+            (apartment, staff_id, staff_name, work_date, started_at, travel_min),
+        )
+        return cur.lastrowid
+
+
+def finish_session(session_id: int, finished_at: str, duration_min, forced: bool = False) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE cleaning_sessions SET finished_at = ?, duration_min = ?, forced = ? WHERE id = ?",
+            (finished_at, duration_min, 1 if forced else 0, session_id),
+        )
+
+
+def add_closed_session(apartment, staff_id, staff_name, work_date, finished_at) -> int:
+    """A "после" report with no "до" before it: record the cleaning as done
+    without timing."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO cleaning_sessions (apartment, staff_id, staff_name, work_date, "
+            "finished_at, no_before) VALUES (?, ?, ?, ?, ?, 1)",
+            (apartment, staff_id, staff_name, work_date, finished_at),
+        )
+        return cur.lastrowid
+
+
+def last_finished_session(staff_id: int, work_date: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE staff_id = ? AND work_date = ? "
+            "AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+            (staff_id, work_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def session_for(apartment: str, work_date: str) -> dict | None:
+    """Latest session (open or closed) of this apartment on this date — what
+    the dashboard card shows."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE apartment = ? AND work_date = ? "
+            "ORDER BY id DESC LIMIT 1", (apartment, work_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def sessions_for_date(work_date: str) -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE work_date = ? ORDER BY id", (work_date,)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def cleaning_sessions_month(ym: str) -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM cleaning_sessions WHERE work_date LIKE ? ORDER BY work_date DESC, id DESC",
+            (ym + "%",),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Supplies (shopping list)
+# ---------------------------------------------------------------------------
+def add_supply(apartment, item: str, qty: int, staff_name: str, created_at: str) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO supplies (apartment, item, qty, staff_name, created_at) VALUES (?, ?, ?, ?, ?)",
+            (apartment or None, item, max(1, int(qty or 1)), staff_name or "", created_at),
+        )
+        return cur.lastrowid
+
+
+def open_supplies() -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM supplies WHERE bought_at IS NULL ORDER BY created_at, id"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def bought_supplies(limit: int = 60) -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM supplies WHERE bought_at IS NOT NULL ORDER BY bought_at DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def set_supply_bought(supply_id: int, bought: bool) -> None:
+    at = datetime.now().isoformat(timespec="minutes") if bought else None
+    with get_conn() as conn:
+        conn.execute("UPDATE supplies SET bought_at = ? WHERE id = ?", (at, supply_id))
+
+
+def delete_supply(supply_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM supplies WHERE id = ?", (supply_id,))
 
 
 def set_topic(chat_id: int, role: str, thread_id, name: str = "") -> None:

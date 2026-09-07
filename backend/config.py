@@ -201,7 +201,11 @@ def _parse_hhmm(raw: str, default: tuple[int, int]) -> tuple[int, int]:
 # check-ins from ATTEND_EARLIEST until ATTEND_DEADLINE, then post the roll call.
 ATTEND_REMIND_T = _parse_hhmm(os.environ.get("ATTEND_REMIND", "10:00"), (10, 0))
 ATTEND_EARLIEST_T = _parse_hhmm(os.environ.get("ATTEND_EARLIEST", "09:00"), (9, 0))
-ATTEND_DEADLINE_T = _parse_hhmm(os.environ.get("ATTEND_DEADLINE", "12:30"), (12, 30))
+ATTEND_DEADLINE_T = _parse_hhmm(os.environ.get("ATTEND_DEADLINE", "14:00"), (14, 0))
+
+# Cleaning sessions still open at this time are closed automatically (marked
+# as "not finished by the cleaner") so the statistics stay clean.
+SESSIONS_AUTOCLOSE_T = _parse_hhmm(os.environ.get("SESSIONS_AUTOCLOSE", "23:00"), (23, 0))
 
 # End-of-day cleaning control: post to the group which checkouts still have
 # no cleaning report.

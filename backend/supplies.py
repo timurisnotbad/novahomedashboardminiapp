@@ -1,0 +1,78 @@
+"""Shopping list ("расходники"): parse the cleaners' requests and format the
+list for the owner.
+
+A request is a message starting with "нужно" / "надо" / "купить" / "kerak",
+optionally an apartment code, then items separated by commas:
+    нужно 103 полотенца 2, шампунь, туалетная бумага
+    kerak B-051 sochiq 4
+A quantity is a number next to the item ("полотенца 2", "2 полотенца", "x2").
+"""
+import re
+from collections import OrderedDict
+
+from . import database
+
+TRIGGER_RE = re.compile(
+    r"(?iu)^\s*(?:нужно|надо|купить|закупить|докупить|kerak|sotib\s+olish\s+kerak)\b[\s:—-]*"
+)
+_QTY_TAIL = re.compile(r"(?iu)^(.*?)[\s×x*]+(\d{1,3})\s*(?:шт\.?|штук|dona|pcs)?\s*$")
+_QTY_HEAD = re.compile(r"(?iu)^(\d{1,3})\s*(?:шт\.?|штук|dona|pcs)?\s+(.+)$")
+
+
+def is_request(text: str) -> bool:
+    return bool(text) and TRIGGER_RE.match(text) is not None
+
+
+def parse_items(text: str, match_apartment) -> tuple[str | None, list[tuple[str, int]]]:
+    """Return (apartment or None, [(item, qty), ...]). `match_apartment` is the
+    bot's apartment matcher (accepts bare 3-digit numbers)."""
+    body = TRIGGER_RE.sub("", text or "", count=1).strip()
+    apt = match_apartment(body) if body else None
+    if apt:
+        # drop the token that named the apartment ("103", "б-051", "B-051:")
+        body = re.sub(r"^\s*\S*\d{3}\S*\s*[:—-]?\s*", "", body, count=1)
+    items: list[tuple[str, int]] = []
+    for raw in re.split(r"[,;\n]|\s+и\s+|\s+va\s+", body):
+        it = raw.strip(" .;:-—")
+        if not it:
+            continue
+        qty = 1
+        m = _QTY_TAIL.match(it)
+        if m and m.group(1).strip():
+            it, qty = m.group(1).strip(), int(m.group(2))
+        else:
+            m = _QTY_HEAD.match(it)
+            if m:
+                qty, it = int(m.group(1)), m.group(2).strip()
+        items.append((it[:80], max(1, qty)))
+    return apt, items
+
+
+def aggregate(rows: list[dict]) -> list[dict]:
+    """Group open rows by item name (case-insensitive): total qty + apartments."""
+    agg: "OrderedDict[str, dict]" = OrderedDict()
+    for r in rows:
+        key = (r.get("item") or "").strip().lower()
+        if not key:
+            continue
+        a = agg.setdefault(key, {"item": (r.get("item") or "").strip(), "qty": 0, "apartments": [], "ids": []})
+        a["qty"] += int(r.get("qty") or 1)
+        apt = r.get("apartment")
+        if apt and apt not in a["apartments"]:
+            a["apartments"].append(apt)
+        a["ids"].append(r.get("id"))
+    return list(agg.values())
+
+
+def format_list(rows: list[dict] | None = None) -> str:
+    rows = database.open_supplies() if rows is None else rows
+    if not rows:
+        return "🛒 Список закупок пуст."
+    lines = [f"🛒 Закупить ({len(rows)} позиц.):"]
+    for a in aggregate(rows):
+        where = f" ({', '.join(a['apartments'])})" if a["apartments"] else ""
+        qty = f" ×{a['qty']}" if a["qty"] > 1 else ""
+        lines.append(f"  • {a['item']}{qty}{where}")
+    lines.append("")
+    lines.append("Отметить купленное — в дашборде: Контроль → Закупки.")
+    return "\n".join(lines)

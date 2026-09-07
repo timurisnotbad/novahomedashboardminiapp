@@ -22,6 +22,17 @@
     }
     const win = c.window_hours != null ? ` · окно ${c.window_hours} ч` : "";
 
+    // who is cleaning / cleaned (from the до/после reports in the bot)
+    let who = "";
+    if (c.cleaner && inProgress && c.started_at) {
+      who = `<div class="clean-line clean-who">🟡 убирает ${esc(c.cleaner)} с ${esc(c.started_at)}</div>`;
+    } else if (c.cleaner && done) {
+      const t = c.started_at && c.finished_at
+        ? `${esc(c.started_at)}–${esc(c.finished_at)}${c.duration_min != null ? " · " + fmtDur(c.duration_min) : ""}`
+        : (c.finished_at ? `в ${esc(c.finished_at)}` : "");
+      who = `<div class="clean-line clean-who">✅ ${esc(c.cleaner)}${t ? " · " + t : ""}</div>`;
+    }
+
     return `
       <div class="clean-card list" data-apt="${esc(c.apartment)}" data-date="${esc(c.cleaning_date)}">
         <div class="li">
@@ -29,8 +40,13 @@
           <div class="li__main"></div>
           ${statusPill}
         </div>
-        <div class="clean-line">${dep} → ${nextInfo}${win}</div>
+        <div class="clean-line">${dep} → ${nextInfo}${win}</div>${who}
       </div>`;
+  }
+
+  function fmtDur(m) {
+    const h = Math.floor(m / 60), r = m % 60;
+    return h ? `${h} ч ${String(r).padStart(2, "0")} мин` : `${r} мин`;
   }
 
   NH.cleaningCard = { cleaningCard };

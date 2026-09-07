@@ -165,7 +165,8 @@ def check_booking_changes() -> None:
         try:
             text = services.build_tomorrow_schedule_text(target)
             notify.send(
-                "🔄 График изменился после вечернего отчёта — актуальная версия:\n\n" + text
+                "🔄 График изменился после вечернего отчёта — актуальная версия:\n\n" + text,
+                topic="cleaning",
             )
         except Exception:  # noqa: BLE001
             logger.exception("After-hours schedule refresh failed")

@@ -58,7 +58,7 @@ def _cleaning_for(apt: str, cleaning_date: str, bookings: list[dict]) -> dict:
     reason = "turnover" if next_checkin == cleaning_date else "checkout"
     status = database.get_cleaning_status(apt, cleaning_date)
     window_hours = None
-    return {
+    entry = {
         "apartment": apt,
         "cleaning_date": cleaning_date,
         "reason": reason,
@@ -67,6 +67,17 @@ def _cleaning_for(apt: str, cleaning_date: str, bookings: list[dict]) -> dict:
         "status": status,
         "window_hours": window_hours,
     }
+    # who is cleaning / cleaned it and how long it took (from the до/после reports)
+    try:
+        s = database.session_for(apt, cleaning_date)
+    except Exception:  # noqa: BLE001
+        s = None
+    if s:
+        entry["cleaner"] = s.get("staff_name") or ""
+        entry["started_at"] = (s.get("started_at") or "")[11:16] or None
+        entry["finished_at"] = (s.get("finished_at") or "")[11:16] or None
+        entry["duration_min"] = s.get("duration_min")
+    return entry
 
 
 def _window_hours(departure_time: str | None, next_arrival: str | None, same_day: bool) -> int | None:
