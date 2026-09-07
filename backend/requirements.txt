@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+requests>=2.31
+apscheduler>=3.10
+python-telegram-bot>=20.7
+playwright>=1.40   # Booking.com price monitor (run once: playwright install chromium)
