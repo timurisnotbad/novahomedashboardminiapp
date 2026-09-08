@@ -19,6 +19,13 @@ from . import database
 TRIGGER_RE = re.compile(
     r"(?iu)^\s*(?:нужно|нужны|закупить|докупить|закупка|kerak|sotib\s+olish\s+kerak)\b[\s:—-]*"
 )
+# Uzbek puts the verb last: "103 ga 2 ta sochiq va shampun kerak"
+TRIGGER_TAIL_RE = re.compile(r"(?iu)[\s,]*\b(?:kerak|керак)\s*[.!]*\s*$")
+# for the bot's MessageHandler: either form
+TRIGGER_ANY_RE = re.compile(
+    r"(?iu)^\s*(?:нужно|нужны|закупить|докупить|закупка|kerak|sotib\s+olish\s+kerak)\b"
+    r"|\b(?:kerak|керак)\s*[.!]*\s*$"
+)
 # quantities are 1–2 digits: a 3-digit number is an apartment, never a count
 _QTY_TAIL = re.compile(r"(?iu)^(.*?)[\s×x*]+(\d{1,2})\s*(?:шт\.?|штук|dona|ta|pcs)?\s*$")
 _QTY_HEAD = re.compile(r"(?iu)^(\d{1,2})\s*(?:шт\.?|штук|dona|ta|pcs)?\s+(.+)$")
@@ -29,13 +36,14 @@ _APT_TOKEN = re.compile(
 
 
 def is_request(text: str) -> bool:
-    return bool(text) and TRIGGER_RE.match(text) is not None
+    return bool(text) and (TRIGGER_RE.match(text) is not None or TRIGGER_TAIL_RE.search(text) is not None)
 
 
 def parse_items(text: str, match_apartment) -> tuple[str | None, list[tuple[str, int]]]:
     """Return (apartment or None, [(item, qty), ...]). `match_apartment` is the
     bot's apartment matcher (accepts bare 3-digit numbers)."""
-    body = TRIGGER_RE.sub("", text or "", count=1).strip()
+    body = TRIGGER_RE.sub("", text or "", count=1)
+    body = TRIGGER_TAIL_RE.sub("", body, count=1).strip()
     apt = match_apartment(body) if body else None
     if apt:
         # drop the token that named the apartment, wherever it is:
@@ -44,7 +52,9 @@ def parse_items(text: str, match_apartment) -> tuple[str | None, list[tuple[str,
     items: list[tuple[str, int]] = []
     for raw in re.split(r"[,;\n]|\s+и\s+|\s+va\s+", body):
         it = re.sub(r"\s+", " ", raw).strip(" .;:-—")
-        if not it or re.fullmatch(r"(?iu)(в|для|на|uchun|ga)", it):
+        # leftovers of the apartment phrase: "в", "для", Uzbek postpositions "ga"/"da"
+        it = re.sub(r"(?iu)^(?:в|для|на|ga|da|uchun)\s+", "", it).strip()
+        if not it or re.fullmatch(r"(?iu)(в|для|на|uchun|ga|da)", it):
             continue
         qty = 1
         m = _QTY_TAIL.match(it)

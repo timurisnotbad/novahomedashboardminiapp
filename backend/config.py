@@ -178,6 +178,12 @@ FINANCE_CACHE_TTL = int(os.environ.get("FINANCE_CACHE_TTL", "60"))
 # Misc
 # ---------------------------------------------------------------------------
 SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "15"))
+# how far ahead bookings are mirrored from RC (prepayments in the payments
+# channel often arrive 1–2 months before check-in and must find their booking)
+try:
+    SYNC_DAYS_AHEAD = max(30, int(os.environ.get("SYNC_DAYS_AHEAD", "60") or 60))
+except ValueError:
+    SYNC_DAYS_AHEAD = 60
 
 
 # ---------------------------------------------------------------------------

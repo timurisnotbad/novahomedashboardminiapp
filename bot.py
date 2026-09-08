@@ -440,20 +440,29 @@ def _match_apartment(text: str, allow_bare: bool = False):
     if not text:
         return None
     names = _apartment_names()
-    up = text.upper().translate(_CYR2LAT)
-    # 1) the full name as a whole token sequence: "BLV 2A-156", "B-103", "б 103"
-    t = " " + re.sub(r"[^A-Z0-9]+", " ", up).strip() + " "
+    up = text.upper()
+    # 1) the full name as a whole token sequence: "BLV 2A-156", "B-103", "б 103".
+    #    Cyrillic→Latin only for code-like tokens (single letters, letter+digits);
+    #    ordinary words («убрала») must never turn into apartment letters.
+    toks = []
+    for tok in re.findall(r"[A-ZА-ЯЁ0-9]+", up):
+        if len(tok) == 1 or any(ch.isdigit() for ch in tok):
+            tok = tok.translate(_CYR2LAT)
+        toks.append(tok)
+    t = " " + " ".join(toks) + " "
     for name in names:
-        n = re.sub(r"[^A-Z0-9]+", " ", str(name).upper()).strip()
+        n = " ".join(re.findall(r"[A-ZА-ЯЁ0-9]+", str(name).upper()))
         if n and f" {n} " in t:
             return name
-    # 2) letter+digits glued or split by a dash: "B103", "b-103", "б103"
-    for letter, num in re.findall(r"(?<![A-Z0-9])([A-Z])\s*-?\s*(\d{3})(?![0-9])", up):
-        cand = f"{letter}-{num}"
+    # 2) letter+digits glued or split by a dash: "B103", "b-103", "б103".
+    #    The letter must be a token of its own (the final «а» of «убрала 103»
+    #    is not an apartment letter), so look at the untranslated text.
+    for letter, num in re.findall(r"(?<![A-ZА-ЯЁ0-9])([A-ZА-Я])\s*-?\s*(\d{3})(?![0-9])", text.upper()):
+        cand = f"{letter.translate(_CYR2LAT)}-{num}"
         if cand in names:
             return cand
     if allow_bare:
-        for num in re.findall(r"(?<![A-Z0-9])(\d{3})(?![0-9])", up):
+        for num in re.findall(r"(?<![A-ZА-ЯЁ0-9])(\d{3})(?![0-9])", up):
             hits = [a for a in names if str(a).endswith(num)]
             if len(hits) == 1:
                 return hits[0]
@@ -1128,12 +1137,42 @@ async def daily_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to send daily summary to %s: %s", uid, exc)
 
 
+async def _set_commands(app) -> None:
+    """Publish the command menu: a short list for everyone, the full one in
+    the owners' private chats. Runs once at startup; failures are harmless."""
+    from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+    common = [
+        BotCommand("start", "Открыть дашборд"),
+        BotCommand("today", "Сводка на сегодня"),
+        BotCommand("supplies", "Список закупок (/нужно)"),
+        BotCommand("attendance", "Кто отметился сегодня"),
+        BotCommand("myid", "Мой Telegram ID"),
+    ]
+    owner = common + [
+        BotCommand("staff", "Список сотрудников"),
+        BotCommand("reset", "Закрыть зависшую уборку (/сброс)"),
+        BotCommand("prices", "Цены Booking.com (/цены)"),
+        BotCommand("topic", "Привязать тему группы"),
+        BotCommand("chatid", "ID чата / темы"),
+        BotCommand("sync", "Синхронизация с RealtyCalendar"),
+    ]
+    try:
+        await app.bot.set_my_commands(common, scope=BotCommandScopeDefault())
+        for uid in config.OWNER_TELEGRAM_IDS:
+            try:
+                await app.bot.set_my_commands(owner, scope=BotCommandScopeChat(chat_id=uid))
+            except Exception as exc:  # noqa: BLE001 — owner never opened the bot yet
+                logger.info("owner command menu for %s skipped: %s", uid, exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("set_my_commands failed")
+
+
 def main() -> None:
     if not config.BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is not set. Add it to .env (see .env.example).")
 
     database.init_db()
-    app = Application.builder().token(config.BOT_TOKEN).build()
+    app = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("sync", sync_cmd))
@@ -1152,7 +1191,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(нужно|закупки|список)\b"), supplies_cmd))
     # shopping list requests: "нужно 103 полотенца 2, шампунь" (any chat)
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE & filters.Regex(supplies.TRIGGER_RE),
+        filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE & filters.Regex(supplies.TRIGGER_ANY_RE),
         on_supplies))
     # live location: filters.LOCATION already matches both the initial share and
     # the live-location edits, so a single handler covers all points.

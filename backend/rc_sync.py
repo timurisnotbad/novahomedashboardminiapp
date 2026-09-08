@@ -155,7 +155,7 @@ def sync_to_db() -> int:
             bookings = generate_demo_bookings(today)
         else:
             refresh_apartments()  # pick up units newly added in RC
-            bookings = fetch_bookings(today - timedelta(days=1), today + timedelta(days=30))
+            bookings = fetch_bookings(today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD))
             # An expired session sometimes yields "200 OK, 0 items" rather than
             # an error. 18 units never have zero bookings for a month — treat
             # that as a failed sync instead of wiping the calendar.
