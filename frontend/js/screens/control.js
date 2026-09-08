@@ -26,11 +26,19 @@
   function monthNav(month) {
     const [y, m] = (month || ym(state.off)).split("-");
     const label = `${MONTHS_RU[parseInt(m, 10) - 1]} ${y}`;
+    const busy = state.loading ? "disabled" : "";
     return `<div class="pay-mnav">
-      <button class="pay-mnav__btn" data-ctl-month="-1">‹</button>
+      <button class="pay-mnav__btn" data-ctl-month="-1" ${busy}>‹</button>
       <span class="pay-mnav__label">${esc(label)}</span>
-      <button class="pay-mnav__btn" data-ctl-month="1" ${state.off >= 0 ? "disabled" : ""}>›</button>
+      <button class="pay-mnav__btn" data-ctl-month="1" ${state.off >= 0 || state.loading ? "disabled" : ""}>›</button>
     </div>`;
+  }
+
+  // a failed request must not leave the skeleton forever
+  function failed(withNav) {
+    if (state.loading || !state.error) return null;
+    return (withNav ? monthNav() : "") + NH.ui.empty(state.error) +
+      `<div class="empty"><button class="btn" data-ctl-view="${state.view}">Повторить</button></div>`;
   }
 
   function dur(m) {
@@ -57,6 +65,8 @@
   // ---- Явка ---------------------------------------------------------------
   function attView() {
     const d = state.att;
+    const f = failed(true);
+    if (f) return f;
     if (state.loading || !d) return monthNav() + NH.ui.skeletonList(4);
     let html = monthNav(d.month);
     if (!d.rows.length) return html + NH.ui.empty("За этот месяц отметок нет");
@@ -87,6 +97,8 @@
   // ---- Уборки -------------------------------------------------------------
   function cleanView() {
     const d = state.clean;
+    const f = failed(true);
+    if (f) return f;
     if (state.loading || !d) return monthNav() + NH.ui.skeletonList(4);
     let html = monthNav(d.month);
     if (!d.total) {
@@ -132,6 +144,8 @@
   // ---- Закупки ------------------------------------------------------------
   function buyView() {
     const d = state.buy;
+    const f = failed(false);
+    if (f) return f;
     if (state.loading || !d) return NH.ui.skeletonList(4);
     let html = `<div class="form-card">
       <div class="form-card__title">🛒 Добавить в список</div>

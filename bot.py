@@ -106,7 +106,7 @@ async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     """Report this chat's id — add the bot to your team group and run /chatid to
     get the id for NOTIFY_CHAT_IDS."""
     chat = update.effective_chat
-    thread = update.effective_message.message_thread_id if update.effective_message else None
+    thread = _thread_of(update.effective_message) if update.effective_message else None
     extra = f"\nID темы: {thread}" if thread else ""
     await update.message.reply_text(
         f"ID этого чата: {chat.id}{extra}\n"
@@ -143,7 +143,7 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Тема General привязывается так же (отправьте команду в General)."
         )
         return
-    thread = msg.message_thread_id  # None in General
+    thread = _thread_of(msg)  # None in General (also when sent as a reply there)
     name = ""
     try:
         rt = msg.reply_to_message
@@ -435,22 +435,39 @@ def _apartment_names() -> list[str]:
 def _match_apartment(text: str, allow_bare: bool = False):
     """Find an apartment code in free text: 'убрала б-051' -> 'B-051'.
 
-    With allow_bare (only when we already asked the person for a number),
-    a standalone 3-digit number resolves too: '103' -> 'B-103'."""
+    Matches whole tokens only ('полотенца 2 для 103' must not become A-210).
+    With allow_bare a standalone 3-digit number resolves too: '103' -> 'B-103'."""
     if not text:
         return None
     names = _apartment_names()
-    t = re.sub(r"[^A-Z0-9]", "", text.upper().translate(_CYR2LAT))
+    up = text.upper().translate(_CYR2LAT)
+    # 1) the full name as a whole token sequence: "BLV 2A-156", "B-103", "б 103"
+    t = " " + re.sub(r"[^A-Z0-9]+", " ", up).strip() + " "
     for name in names:
-        n = re.sub(r"[^A-Z0-9]", "", str(name).upper())
-        if n and n in t:
+        n = re.sub(r"[^A-Z0-9]+", " ", str(name).upper()).strip()
+        if n and f" {n} " in t:
             return name
+    # 2) letter+digits glued or split by a dash: "B103", "b-103", "б103"
+    for letter, num in re.findall(r"(?<![A-Z0-9])([A-Z])\s*-?\s*(\d{3})(?![0-9])", up):
+        cand = f"{letter}-{num}"
+        if cand in names:
+            return cand
     if allow_bare:
-        for num in re.findall(r"\d{3}", text):
+        for num in re.findall(r"(?<![A-Z0-9])(\d{3})(?![0-9])", up):
             hits = [a for a in names if str(a).endswith(num)]
             if len(hits) == 1:
                 return hits[0]
     return None
+
+
+def _thread_of(msg):
+    """Forum topic id of a message. Telegram also fills message_thread_id for
+    plain replies in General / non-forum groups (the reply chain root), so only
+    real topic messages count."""
+    try:
+        return msg.message_thread_id if msg.is_topic_message else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _report_phase(text: str) -> str:
@@ -528,11 +545,15 @@ def _minutes_between(earlier_iso: str | None, now: datetime.datetime):
 
 
 def _force_close(session: dict, now: datetime.datetime) -> None:
-    """Close a session nobody finished (owner's /сброс, or too old)."""
-    dur = _minutes_between(session.get("started_at"), now) or 0
-    database.finish_session(session["id"], now.isoformat(timespec="seconds"), dur, True)
+    """Close a session nobody finished (owner's /сброс, or too old). The
+    apartment is NOT marked cleaned — nobody confirmed it — so the 18:00
+    control and the dashboard keep asking for the report; the elapsed time is
+    not stored as a duration (it would be meaningless)."""
+    database.finish_session(session["id"], now.isoformat(timespec="seconds"), None, True)
     try:
-        database.set_cleaning_status(session["apartment"], session.get("work_date") or now.date().isoformat(), "done")
+        day = session.get("work_date") or now.date().isoformat()
+        if database.get_cleaning_status(session["apartment"], day) == "in_progress":
+            database.set_cleaning_status(session["apartment"], day, "pending")
     except Exception:  # noqa: BLE001
         logger.exception("set_cleaning_status on force close failed")
 
@@ -645,7 +666,7 @@ async def _process_report(context, msg, user, apt: str, phase: str, media: list)
     if res.get("caption"):
         for i, (kind, file_id) in enumerate(media):
             cap = res["caption"] if i == 0 else None
-            await _forward_report(context, kind, file_id, cap, msg.chat_id, msg.message_thread_id)
+            await _forward_report(context, kind, file_id, cap, msg.chat_id, _thread_of(msg))
     try:
         await msg.reply_text(res["reply"])
     except Exception:  # noqa: BLE001
@@ -665,7 +686,7 @@ async def _in_cleaning_topic(msg) -> bool:
         return True
     if not any(t["chat_id"] == msg.chat_id for t in bound):
         return True  # no topics configured for this chat
-    return (thread or None) == (msg.message_thread_id or None)
+    return (thread or None) == _thread_of(msg)
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -684,18 +705,24 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # album mate of an already-announced report: forward silently
     if mgid and mgid in _album_apt and not msg.caption:
-        await _forward_report(context, kind, file_id, None, msg.chat_id, msg.message_thread_id)
+        await _forward_report(context, kind, file_id, None, msg.chat_id, _thread_of(msg))
         return
+    if not await _in_cleaning_topic(msg):
+        return  # a photo somewhere else in the group — not a report, whatever the caption says
 
     caption = msg.caption or ""
     apt = _match_apartment(caption, allow_bare=True)
     phase = _report_phase(caption)
     if not apt:
-        if not await _in_cleaning_topic(msg):
-            return  # a photo somewhere else in the group — not a report
-        pend = _pending_apt.pop(uid, None)
+        pend = _pending_apt.get(uid)
         if pend and now_ts - pend[2] < _REPORT_TTL:
             apt, phase = pend[0], pend[1]
+            # «до 103» stays valid for further кружки (hall, kitchen…) until the
+            # TTL; a «после» number is consumed by its first media
+            if phase != "start":
+                _pending_apt.pop(uid, None)
+        elif pend:
+            _pending_apt.pop(uid, None)
     if apt:
         if mgid:
             if len(_album_apt) > 200:
@@ -810,7 +837,8 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await asyncio.to_thread(_force_close, cur, now)
     await msg.reply_text(
         f"✅ Уборка {apt} ({cur.get('staff_name')}, с {_hm(cur.get('started_at'))}) закрыта "
-        f"принудительно — в статистике помечена как незавершённая."
+        f"принудительно — в статистике помечена как незавершённая, квартира остаётся "
+        f"«без отчёта» до кружка «после»."
     )
 
 
@@ -1123,16 +1151,21 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/сброс\b"), reset_cmd))
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(нужно|закупки|список)\b"), supplies_cmd))
     # shopping list requests: "нужно 103 полотенца 2, шампунь" (any chat)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(supplies.TRIGGER_RE),
-                                   on_supplies))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE & filters.Regex(supplies.TRIGGER_RE),
+        on_supplies))
     # live location: filters.LOCATION already matches both the initial share and
     # the live-location edits, so a single handler covers all points.
     # payments channel reader — must be registered before the media handlers
     app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, on_channel_payment))
     app.add_handler(MessageHandler(filters.LOCATION, on_location))
-    # cleaning reports: media with caption, or кружок/фото + номер отдельным сообщением
-    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE, on_media))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_report))
+    # cleaning reports: media with caption, or кружок/фото + номер отдельным сообщением.
+    # UpdateType.MESSAGE: an edited caption/text must not create a second report
+    # (live locations arrive as edits and keep their own handler above).
+    app.add_handler(MessageHandler(
+        (filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE) & filters.UpdateType.MESSAGE, on_media))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
+                                   on_text_report))
 
     # Daily summary at 08:00 + Booking.com price report at 09:00 (server local time).
     if app.job_queue:

@@ -19,8 +19,13 @@ from . import database
 TRIGGER_RE = re.compile(
     r"(?iu)^\s*(?:нужно|нужны|закупить|докупить|закупка|kerak|sotib\s+olish\s+kerak)\b[\s:—-]*"
 )
-_QTY_TAIL = re.compile(r"(?iu)^(.*?)[\s×x*]+(\d{1,3})\s*(?:шт\.?|штук|dona|pcs)?\s*$")
-_QTY_HEAD = re.compile(r"(?iu)^(\d{1,3})\s*(?:шт\.?|штук|dona|pcs)?\s+(.+)$")
+# quantities are 1–2 digits: a 3-digit number is an apartment, never a count
+_QTY_TAIL = re.compile(r"(?iu)^(.*?)[\s×x*]+(\d{1,2})\s*(?:шт\.?|штук|dona|ta|pcs)?\s*$")
+_QTY_HEAD = re.compile(r"(?iu)^(\d{1,2})\s*(?:шт\.?|штук|dona|ta|pcs)?\s+(.+)$")
+# the apartment mention, wherever it sits: "103", "б-051", "в 103", "для B-103:"
+_APT_TOKEN = re.compile(
+    r"(?iu)(?:\b(?:в|для|на|кв\.?|квартира|uchun|ga)\s+)?(?<![\w-])[A-Za-zА-Яа-я]?\s?-?\s?\d{3}(?![\w-])\s*[:—-]?"
+)
 
 
 def is_request(text: str) -> bool:
@@ -33,12 +38,13 @@ def parse_items(text: str, match_apartment) -> tuple[str | None, list[tuple[str,
     body = TRIGGER_RE.sub("", text or "", count=1).strip()
     apt = match_apartment(body) if body else None
     if apt:
-        # drop the token that named the apartment ("103", "б-051", "B-051:")
-        body = re.sub(r"^\s*\S*\d{3}\S*\s*[:—-]?\s*", "", body, count=1)
+        # drop the token that named the apartment, wherever it is:
+        # "103 полотенца", "полотенца в 103", "для B-103: шампунь"
+        body = _APT_TOKEN.sub(" ", body, count=1)
     items: list[tuple[str, int]] = []
     for raw in re.split(r"[,;\n]|\s+и\s+|\s+va\s+", body):
-        it = raw.strip(" .;:-—")
-        if not it:
+        it = re.sub(r"\s+", " ", raw).strip(" .;:-—")
+        if not it or re.fullmatch(r"(?iu)(в|для|на|uchun|ga)", it):
             continue
         qty = 1
         m = _QTY_TAIL.match(it)

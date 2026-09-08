@@ -52,7 +52,7 @@ def check_arrival(staff_id, staff_name, lat, lng, now=None) -> dict:
             "distance": 0,
             "reply": f"⏳ Приход отмечается с {eh:02d}:{em:02d} — пришлите live-локацию позже.",
         }
-    if hm > config.ATTEND_DEADLINE_T:
+    if hm >= config.ATTEND_DEADLINE_T:  # the roll call runs at exactly this minute
         dh, dm = config.ATTEND_DEADLINE_T
         return {
             "status": "too_late",

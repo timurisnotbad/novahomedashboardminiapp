@@ -85,10 +85,13 @@ def _cleaning_for(apt: str, cleaning_date: str, bookings: list[dict]) -> dict:
     except Exception:  # noqa: BLE001
         s = None
     if s:
+        forced = bool(s.get("forced"))
         entry["cleaner"] = s.get("staff_name") or ""
         entry["started_at"] = (s.get("started_at") or "")[11:16] or None
-        entry["finished_at"] = (s.get("finished_at") or "")[11:16] or None
-        entry["duration_min"] = s.get("duration_min")
+        entry["finished_at"] = None if forced else ((s.get("finished_at") or "")[11:16] or None)
+        entry["duration_min"] = None if forced else s.get("duration_min")
+        entry["forced"] = forced           # closed without a «после» report
+        entry["no_before"] = bool(s.get("no_before"))
     return entry
 
 

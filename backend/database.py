@@ -439,10 +439,16 @@ def record_arrival(staff_id, staff_name, work_date, arrived_at, lat, lng, on_tim
     """Record the first arrival of the day for a staff member. Returns False if
     an arrival was already recorded today (so we notify only once)."""
     with get_conn() as conn:
+        # A no-show row written by the roll call must not block a check-in that
+        # lands in the same minute: upgrade it instead of ignoring the arrival.
         cur = conn.execute(
-            "INSERT OR IGNORE INTO attendance "
+            "INSERT INTO attendance "
             "(staff_id, staff_name, work_date, arrived_at, lat, lng, on_time, late_minutes, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(staff_id, work_date) DO UPDATE SET "
+            "staff_name=excluded.staff_name, arrived_at=excluded.arrived_at, lat=excluded.lat, "
+            "lng=excluded.lng, on_time=excluded.on_time, late_minutes=excluded.late_minutes, "
+            "status=excluded.status WHERE attendance.arrived_at IS NULL",
             (staff_id, staff_name, work_date, arrived_at, lat, lng,
              1 if on_time else 0, int(late_minutes), "ok" if on_time else "late"),
         )
@@ -547,10 +553,13 @@ def add_closed_session(apartment, staff_id, staff_name, work_date, finished_at) 
 
 
 def last_finished_session(staff_id: int, work_date: str) -> dict | None:
+    """The cleaner's last real «после» today — the reference point for the
+    travel time to the next apartment. Force-closed rows are excluded (their
+    finished_at is the moment of the auto-close, not when the person left)."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM cleaning_sessions WHERE staff_id = ? AND work_date = ? "
-            "AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+            "AND finished_at IS NOT NULL AND forced = 0 ORDER BY finished_at DESC LIMIT 1",
             (staff_id, work_date),
         ).fetchone()
         return dict(row) if row else None

@@ -24,7 +24,9 @@
 
     // who is cleaning / cleaned (from the до/после reports in the bot)
     let who = "";
-    if (c.cleaner && inProgress && c.started_at) {
+    if (c.cleaner && c.forced) {
+      who = `<div class="clean-line clean-who">⚠️ ${esc(c.cleaner)} начала${c.started_at ? " в " + esc(c.started_at) : ""}, отчёта «после» нет</div>`;
+    } else if (c.cleaner && inProgress && c.started_at) {
       who = `<div class="clean-line clean-who">🟡 убирает ${esc(c.cleaner)} с ${esc(c.started_at)}</div>`;
     } else if (c.cleaner && done) {
       const t = c.started_at && c.finished_at

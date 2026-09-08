@@ -32,6 +32,10 @@
   } catch (e) { /* ignore */ }
 
   function ownerKey() {
+    // A key stored by an earlier (owner) session must not outrank a signed
+    // identity: with initData present, use a stored key only when this very
+    // launch carried it in the URL (the bot puts it there for the right person).
+    if (initData() && !sessionKey) return "";
     try {
       return localStorage.getItem("nh_okey") || sessionKey || "";
     } catch (e) {
@@ -43,13 +47,15 @@
 
   async function req(path, options) {
     options = options || {};
+    const timeoutMs = options.timeoutMs || TIMEOUT_MS;
+    delete options.timeoutMs;
     options.headers = Object.assign({}, options.headers, {
       "X-Telegram-Init-Data": initData(),
       "X-Owner-Key": ownerKey(),
     });
     // a hung tunnel must not leave the screen on a skeleton forever
     const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = ctl ? setTimeout(() => ctl.abort(), TIMEOUT_MS) : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
     if (ctl) options.signal = ctl.signal;
     let res;
     try {
@@ -113,8 +119,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       }),
+    // the Booking.com scrape takes 30–90 s: its own, longer timeout
     getPrices: (checkin, checkout, refresh) =>
-      req(`/prices?checkin=${checkin || ""}&checkout=${checkout || ""}${refresh ? "&refresh=1" : ""}`),
+      req(`/prices?checkin=${checkin || ""}&checkout=${checkout || ""}${refresh ? "&refresh=1" : ""}`,
+          { timeoutMs: 180000 }),
     getAttendanceStats: (month) => req(`/control/attendance?month=${month || ""}`),
     getCleaningStats: (month) => req(`/control/cleaning?month=${month || ""}`),
     getSupplies: () => req("/control/supplies"),
@@ -151,7 +159,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, date }),
       }),
-    sync: () => req("/sync", { method: "POST" }),
+    sync: () => req("/sync", { method: "POST", timeoutMs: 90000 }),  // RC pull can be slow
     addPayment: (payload) =>
       req("/payments", {
         method: "POST",

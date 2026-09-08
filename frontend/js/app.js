@@ -221,30 +221,35 @@
     const btn = document.getElementById("sync-btn");
     btn.classList.add("spinning");
     syncing = true;
+    let res = null;
+    let failed = null;
     try {
       // the RC pull is slow and the tunnel is shared: at most once per 30 s,
       // otherwise just re-read what the server already has
-      const pullRC = Date.now() - lastSyncAt > 30000;
-      let res = null;
-      if (pullRC) {
+      if (Date.now() - lastSyncAt > 30000) {
+        lastSyncAt = Date.now(); // even if it times out, don't hammer RC again right away
         res = await api.sync();
-        lastSyncAt = Date.now();
       }
+    } catch (e) {
+      failed = e;
+    }
+    try {
+      // re-read the screens in any case: the server may have finished the
+      // sync after our request gave up
       Object.keys(cache).forEach((k) => delete cache[k]);
       const cs = NH.screens.control.state;
       cs.att = null; cs.clean = null; cs.buy = null;
       if (current === "control") loadControl(true);
       else if (current === "payments") loadRecon();
       await loadScreen(current, true);
-      if (res) ui.toast(res.success ? `Обновлено: ${res.bookings_synced} броней` : "Ошибка синхронизации");
-      else ui.toast("Обновлено");
-      ui.haptic("success");
-    } catch (e) {
-      ui.toast(e && e.status === 403 ? "Нет доступа" : "Ошибка синхронизации");
     } finally {
       syncing = false;
       btn.classList.remove("spinning");
     }
+    if (failed) ui.toast(failed.status === 403 ? "Нет доступа" : "Синхронизация не завершилась — показаны последние данные");
+    else if (res) ui.toast(res.success ? `Обновлено: ${res.bookings_synced} броней` : "Ошибка синхронизации");
+    else ui.toast("Обновлено");
+    ui.haptic(failed ? "light" : "success");
   }
 
   // ---- Tasks ----------------------------------------------------------------
@@ -301,15 +306,17 @@
     const v = cs.view;
     if (!force && cs[v]) { renderControl(); return; }
     cs.loading = true;
+    cs.error = null;
+    const seq = (cs.seq = (cs.seq || 0) + 1); // ignore answers of superseded requests
     renderControl();
     const month = NH.screens.control.ym(cs.off);
     const call = v === "clean" ? api.getCleaningStats(month)
       : v === "buy" ? api.getSupplies()
       : api.getAttendanceStats(month);
     call
-      .then((d) => { cs[v] = d; })
-      .catch((e) => ui.toast(errorText(e)))
-      .finally(() => { cs.loading = false; renderControl(); });
+      .then((d) => { if (seq === cs.seq) cs[v] = d; })
+      .catch((e) => { if (seq === cs.seq) cs.error = errorText(e); })
+      .finally(() => { if (seq === cs.seq) { cs.loading = false; renderControl(); } });
   }
 
   function renderPrices() {
@@ -405,8 +412,10 @@
       // контроль: sub-view / month / shopping list
       const cv = e.target.closest("[data-ctl-view]");
       if (cv) {
-        NH.screens.control.state.view = cv.dataset.ctlView;
-        loadControl();
+        const cs = NH.screens.control.state;
+        const retry = cs.view === cv.dataset.ctlView; // «Повторить» after an error
+        cs.view = cv.dataset.ctlView;
+        loadControl(retry);
         return;
       }
       const cmn = e.target.closest("[data-ctl-month]");
@@ -690,6 +699,10 @@
       role = me && me.role === "owner" ? "owner" : "staff";
       canPayments = !!(me && me.can_payments);
       noAccess = !!(me && me.has_access === false);
+      if (me && me.role !== "owner" && !canPayments) {
+        // a leftover owner/pay key on a shared device must not survive a staff login
+        try { localStorage.removeItem("nh_okey"); } catch (err) {}
+      }
     } catch (e) {
       role = "staff"; // if /me fails, stay locked down (never leak Касса)
       canPayments = false;
