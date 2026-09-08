@@ -16,6 +16,27 @@
     });
     header += `</div>`;
 
+    // per-day occupancy under the dates: "45%" for each column
+    const perDay = data.per_day || [];
+    let pctRow = "";
+    if (perDay.length === cols) {
+      pctRow = `<div class="occ-row occ-row--pct" style="--cols:${cols}"><div class="occ-cell occ-name">%</div>`;
+      perDay.forEach((p) => {
+        const cls = p.pct >= 70 ? "hi" : p.pct >= 40 ? "mid" : "lo";
+        pctRow += `<div class="occ-cell"><span class="occ-pct ${cls}">${p.pct}</span></div>`;
+      });
+      pctRow += `</div>`;
+    }
+
+    const t = data.today;
+    const todayTile = t
+      ? `<div class="occ-tile">
+           <div class="occ-tile__l">Сегодня</div>
+           <div class="occ-tile__v">${t.pct}%</div>
+           <div class="occ-tile__s">${t.occupied} из ${t.total} квартир</div>
+         </div>`
+      : "";
+
     let rows = "";
     data.apartments.forEach((apt) => {
       const days = apt.days;
@@ -41,11 +62,15 @@
     });
 
     return `
-      <div class="occ-head">
-        <div class="occ-head__t">Занятость на неделю</div>
-        <div class="occ-head__pct">${data.occupancy_pct}%</div>
+      <div class="occ-tiles">
+        ${todayTile}
+        <div class="occ-tile occ-tile--week">
+          <div class="occ-tile__l">Неделя</div>
+          <div class="occ-tile__v">${data.occupancy_pct}%</div>
+          <div class="occ-tile__s">среднее за ${cols} дн.</div>
+        </div>
       </div>
-      <div class="occ-scroll"><div class="occ-grid">${header}${rows}</div></div>
+      <div class="occ-scroll"><div class="occ-grid">${header}${pctRow}${rows}</div></div>
       <div class="occ-legend">
         <span><i class="occ-swatch occ-swatch--on"></i> Занято</span>
         <span><i class="occ-swatch occ-swatch--off"></i> Свободно</span>

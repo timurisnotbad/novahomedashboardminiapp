@@ -298,16 +298,27 @@ def build_occupancy(target: date, span: int = 7) -> dict:
             })
         apartments.append({"name": apt_name, "days": days})
 
-    total_cells = span * len(names)
+    total = len(names)
+    total_cells = span * total
     occupied_cells = sum(
         1 for a in apartments for d in a["days"] if d["status"] == "occupied"
     )
     pct = round(occupied_cells / total_cells * 100) if total_cells else 0
+    # per-day figures: how many units are taken on each date (day-by-day view)
+    per_day = []
+    for i, ds in enumerate(date_strs):
+        occ = sum(1 for a in apartments if a["days"][i]["status"] == "occupied")
+        per_day.append({"date": ds, "occupied": occ, "total": total,
+                        "pct": round(occ / total * 100) if total else 0})
+    today_iso = _iso(date.today())
+    today_row = next((p for p in per_day if p["date"] == today_iso), per_day[0] if per_day else None)
     return {
         "dates": date_strs,
         "weekdays": [RU_WEEKDAYS[d.weekday()] for d in dates],
         "day_numbers": [d.day for d in dates],
         "occupancy_pct": pct,
+        "per_day": per_day,
+        "today": today_row,
         "apartments": apartments,
     }
 

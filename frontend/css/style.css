@@ -188,6 +188,18 @@ svg.ic, .ic { width:1em; height:1em; }
 .occ-head { display:flex; align-items:baseline; justify-content:space-between; padding:0 22px; margin:10px 0 12px; }
 .occ-head__t { font-size:15px; font-weight:600; }
 .occ-head__pct { font-size:26px; font-weight:700; color:var(--tint-text); letter-spacing:-.02em; }
+.occ-tiles { display:grid; grid-template-columns:1fr 1fr; gap:11px; padding:6px 16px 12px; }
+.occ-tile { background:var(--card); border-radius:16px; padding:13px 14px 14px; }
+.occ-tile__l { font-size:13px; color:var(--label-2); font-weight:500; }
+.occ-tile__v { font-size:30px; font-weight:800; letter-spacing:-.02em; color:var(--tint-text); margin-top:6px; line-height:1; font-variant-numeric:tabular-nums; }
+.occ-tile--week .occ-tile__v { color:var(--label); }
+.occ-tile__s { font-size:12px; color:var(--label-2); margin-top:5px; }
+.occ-row--pct .occ-cell { height:22px; }
+.occ-row--pct .occ-name { color:var(--label-3); font-weight:500; }
+.occ-pct { font-size:11px; font-weight:700; padding:2px 5px; border-radius:6px; font-variant-numeric:tabular-nums; }
+.occ-pct.lo { background:var(--fill); color:var(--label-2); }
+.occ-pct.mid { background:rgba(240,180,41,.18); color:#8A6D1D; }
+.occ-pct.hi { background:rgba(52,168,83,.16); color:#1E7E38; }
 .occ-scroll { overflow-x:auto; padding:0 16px 4px; }
 .occ-scroll::-webkit-scrollbar { display:none; }
 .occ-grid { min-width:max-content; background:var(--card); border-radius:13px; padding:8px; }

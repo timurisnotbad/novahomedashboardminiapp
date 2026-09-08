@@ -4,7 +4,7 @@
   // window.NH_API_BASE = "http://localhost:8000" for split deployments.
   const BASE = (window.NH_API_BASE || "") + "/api";
   // must match backend/config.py APP_VERSION — used to detect a stale server process
-  const APP_VERSION = "24";
+  const APP_VERSION = "25";
 
   function initData() {
     try {
