@@ -38,7 +38,7 @@ def _webapp_url(uid=None) -> str:
     knows who the owners are, hands the key only to them, and the frontend
     stores it locally."""
     url = config.WEBAPP_URL
-    url += ("&" if "?" in url else "?") + "v=20"  # cache-buster per release
+    url += ("&" if "?" in url else "?") + "v=" + config.APP_VERSION  # cache-buster per release
     if config.OWNER_KEY and uid and uid in config.OWNER_TELEGRAM_IDS:
         return url + "&okey=" + config.OWNER_KEY
     if config.PAY_KEY and uid:
@@ -72,7 +72,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     apt_count = len(_apartment_names()) or config.TOTAL_APARTMENTS
     text = f"🏠 *Nova Home Dashboard*\n\nОперационная сводка по {apt_count} апартаментам."
     if uid and uid in config.OWNER_TELEGRAM_IDS and not config.OWNER_KEY:
-        text += "\n\n⚠️ OWNER\\_KEY не задан в .env — вкладки владельца не откроются на Mac."
+        text += ("\n\n⚠️ OWNER\\_KEY не задан в .env. Добавьте строку "
+                 "`OWNER\\_KEY=любой-длинный-секрет` и перезапустите — иначе на Telegram "
+                 "для Mac без подписи откроется режим сотрудника.")
     if markup:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
         # Also expose a persistent keyboard button (opens WebApp from chat).

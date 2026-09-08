@@ -410,6 +410,10 @@ body.staff-mode.pay-viewer .nav-item[data-screen="finance"] { display:flex !impo
   font-size:13.5px; font-weight:600; font-family:inherit; padding:10px 8px; cursor:pointer;
   box-shadow:inset 0 0 0 1px var(--sep); }
 
+/* ---- Предупреждение о старом сервере ------------------------------------ */
+.nh-banner { margin:6px 16px 10px; background:rgba(229,72,77,.12); color:#C62F35; border-radius:13px;
+  padding:11px 14px; font-size:13.5px; font-weight:600; line-height:1.4; }
+
 /* ---- Контроль: явка / уборки / закупки ---------------------------------- */
 .ctl-card { background:var(--card); border-radius:13px; padding:12px 14px; margin-bottom:8px; }
 .ctl-card__t { font-size:15px; font-weight:700; display:flex; align-items:center; gap:6px; }

@@ -3,6 +3,8 @@
   // Same-origin by default (frontend is served by FastAPI). Override with
   // window.NH_API_BASE = "http://localhost:8000" for split deployments.
   const BASE = (window.NH_API_BASE || "") + "/api";
+  // must match backend/config.py APP_VERSION — used to detect a stale server process
+  const APP_VERSION = "24";
 
   function initData() {
     try {
@@ -76,7 +78,9 @@
   }
 
   window.NH = window.NH || {};
+  window.NH.APP_VERSION = APP_VERSION;
   window.NH.api = {
+    getHealth: () => req("/health", { timeoutMs: 8000 }),
     getToday: () => req("/dashboard/today"),
     getTomorrow: () => req("/dashboard/tomorrow"),
     getCleaning: (days = 2) => req(`/cleaning?days=${days}`),

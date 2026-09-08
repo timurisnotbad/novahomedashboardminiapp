@@ -74,7 +74,8 @@ async def no_cache_frontend(request, call_next):
 
 @app.get(f"{config.API_PREFIX}/health")
 def health():
-    return {"status": "ok", "demo_mode": config.DEMO_MODE, "last_sync": database.last_sync()}
+    return {"status": "ok", "version": config.APP_VERSION, "demo_mode": config.DEMO_MODE,
+            "last_sync": database.last_sync()}
 
 
 @app.get(f"{config.API_PREFIX}/me")

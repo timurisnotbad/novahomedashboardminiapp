@@ -62,11 +62,44 @@
   let current = "today";
   const cache = {};
 
+  let serverStale = false; // the running backend is older than these files
+
   function errorText(e) {
     const st = e && e.status;
     if (st === 403) return "Нет доступа. Откройте дашборд через кнопку «📊 Дашборд» в боте @novahomedashboardbot.";
+    if (serverStale || st === 404) {
+      return "Сервер работает на старой версии. На компьютере закройте окна «Nova Backend» и «Nova Bot» " +
+        "и запустите restart_all.bat.";
+    }
     if (e && e.message === "timeout") return "Сервер не отвечает (20 с). Потяните вниз, чтобы повторить.";
+    if (st >= 500) return "Ошибка на сервере. Посмотрите окно «Nova Backend» на компьютере.";
     return "Не удалось загрузить данные. Проверьте соединение.";
+  }
+
+  // Compare the server's release number with ours. The frontend is static files
+  // served from disk, so after an update it is always new — but if the old
+  // server process survived restart_all.bat, every new API call 404s.
+  async function checkServerVersion() {
+    try {
+      const h = await api.getHealth();
+      const v = h && h.version ? String(h.version) : "old";
+      if (v !== String(NH.APP_VERSION)) {
+        serverStale = true;
+        showBanner(`⚠️ Сервер не обновлён (версия ${v}, файлы ${NH.APP_VERSION}). ` +
+          "Закройте окна «Nova Backend» и «Nova Bot» на компьютере и запустите restart_all.bat.");
+      }
+    } catch (e) { /* offline — the screens report it themselves */ }
+  }
+
+  function showBanner(text) {
+    let el = document.getElementById("nh-banner");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "nh-banner";
+      el.className = "nh-banner";
+      document.getElementById("app").prepend(el);
+    }
+    el.textContent = text;
   }
 
   function setActiveNav(name) {
@@ -708,6 +741,7 @@
       canPayments = false;
     }
     applyRole();
+    checkServerVersion(); // in parallel with the first screen
     if (noAccess) {
       // opened from a bare link (not through the bot): nothing will load
       document.getElementById("screen-today").innerHTML = ui.empty(

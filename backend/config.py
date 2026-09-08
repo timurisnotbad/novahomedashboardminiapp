@@ -270,3 +270,8 @@ except ValueError:
     AUTO_FINE_NOSHOW = 0.0
 DB_PATH = os.environ.get("DB_PATH", str(BASE_DIR / "nova_dashboard.db"))
 API_PREFIX = "/api"
+
+# Release number. The frontend carries the same number (frontend/js/api.js) and
+# warns when the running server is older — i.e. restart_all.bat did not replace
+# the old process and the new files on disk are served by old code.
+APP_VERSION = "24"
