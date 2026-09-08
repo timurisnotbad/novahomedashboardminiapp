@@ -1,0 +1,157 @@
+NOVA HOME — BOT BILAN ISHLASHNING YANGI QOIDALARI
+Bot: @novahomedashboardbot
+2025-yil 15-sentyabrdan kuchga kiradi
+
+════════════════════════════════════════════════════════════
+
+NIMA O'ZGARDI — QISQACHA
+
+1. Endi har bir kvartira uchun ikkita video: tozalashdan OLDIN va
+   tozalashdan KEYIN.
+2. Kelganlikni belgilash vaqti uzaytirildi: lokatsiyani soat 14:00
+   gacha yuborish mumkin (avval 12:30 edi).
+3. Xaridlar ro'yxati paydo bo'ldi: botga nima kerakligini yozasiz —
+   bot eslab qoladi.
+4. Tozalashni kim boshlagan bo'lsa, o'sha yopadi.
+
+════════════════════════════════════════════════════════════
+
+1. ISHGA KELISH
+
+Obyektga kelganingizda botga live-lokatsiya yuboring:
+
+   Skrepka (📎) → Geopozitsiya → «Translyatsiya» → 8 soat
+
+Qoidalar:
+   • Yuborish mumkin: 09:00 dan 14:00 gacha.
+   • Smena boshlanishi — 11:00. 11:20 gacha — «o'z vaqtida».
+   • 11:20 dan keyin — kechikish yoziladi.
+   • 14:00 gacha lokatsiya bo'lmasa — kelmagan hisoblanadi va
+     50 000 so'm jarima.
+
+Oddiy geopozitsiya to'g'ri kelmaydi. Aynan «Translyatsiya» kerak.
+Bot javob beradi: «✅ Приход отмечен, спасибо!»
+
+════════════════════════════════════════════════════════════
+
+2. TOZALASHDAN OLDIN HISOBOT — YANGI
+
+Kvartiraga kirib, uning holatini ko'rganingizda:
+
+   1-qadam. Krujok (video-xabar) yoki foto oling.
+   2-qadam. Matn yuboring: oldin 103
+            (o'z kvartirangiz raqami)
+
+Bot javob beradi: «▶️ B-103 — уборка начата в 12:40»
+
+Turli xil yozish mumkin, bot tushunadi:
+   oldin 103
+   до 103
+   oldin b-103
+
+Agar bir nechta krujok olish kerak bo'lsa (koridor, oshxona,
+hammom) — ketma-ket yuboravering, raqamni qayta yozish shart emas.
+
+BU NIMA UCHUN KERAK:
+«Oldin» videosi sizni himoya qiladi. Agar mehmon biz nimadir
+sindirdik yoki tozalamadik desa — bizda kvartira sizga qanday
+holatda topshirilgani haqida dalil bo'ladi.
+
+════════════════════════════════════════════════════════════
+
+3. TOZALASHDAN KEYIN HISOBOT
+
+Tozalashni tugatganingizda:
+
+   1-qadam. Tayyor kvartiraning krujogi yoki fotosini oling.
+   2-qadam. Matn yuboring: 103
+            (faqat raqam, «oldin» so'zisiz)
+
+Bot javob beradi: «✅ B-103 — уборка завершена, 1 ч 15 мин»
+
+MUHIM:
+   • Tozalashni faqat uni boshlagan farrosh yopa oladi.
+   • Ikkovlon tozalasangiz — «oldin» va «keyin» ni bittangiz yuboradi.
+   • «Oldin» ni yuborishni unutsangiz — «keyin» hisoboti baribir
+     qabul qilinadi, lekin tozalash vaqti hisoblanmaydi.
+     Unutmaslikka harakat qiling.
+   • Bir kvartirani yopmaguningizcha boshqasini boshlab
+     bo'lmaydi. Avval «keyin» ni yuboring, keyin ketavering.
+
+════════════════════════════════════════════════════════════
+
+4. XARIDLAR RO'YXATI — YANGI
+
+Sochiq, shampun, sovun tugadimi? Botga yozing:
+
+   103 ga 2 ta sochiq va shampun kerak
+
+yoki ruscha shaklda:
+
+   нужно 103 полотенца 2, шампунь
+
+Bot javob beradi: «📝 Записал в закупки: sochiq ×2, shampun (B-103)»
+
+Qoidalar:
+   • Xabar «kerak» so'zi bilan tugasin yoki «нужно» bilan boshlansin.
+   • Kvartira raqamini boshida ham, oxirida ham yozish mumkin.
+   • Agar mahsulot umuman kerak bo'lsa, kvartira uchun emas —
+     raqamsiz yozing: «qo'lqop va gubka kerak»
+   • Miqdorni mahsulot yoniga qo'ying: «2 ta sochiq».
+
+Butun ro'yxatni ko'rish: /нужно buyrug'ini yuboring
+
+Barcha arizalar bitta ro'yxatga yig'iladi. Rahbar uni har kuni
+soat 18:00 da oladi va xarid qiladi.
+
+════════════════════════════════════════════════════════════
+
+5. BOT O'ZI NIMA QILADI
+
+   10:00  Lokatsiya yuborishni eslatadi (agar hali yubormagan bo'lsangiz)
+   14:00  Ro'yxat chiqaradi: kim keldi, kim kechikdi, kim kelmadi
+   18:00  Chiqaradi: qaysi kvartiralar tozalangan, qaysilari yo'q
+   22:00  Ertangi tozalash rejasini yuboradi
+
+Agar jadval kechasi o'zgarsa — bot yangilangan rejani yuboradi.
+
+════════════════════════════════════════════════════════════
+
+6. TEZ-TEZ SO'RALADIGAN SAVOLLAR
+
+— Krujok yubordim, raqam yozishni unutdim. Nima qilay?
+  Bot so'raydi: «Напишите номер квартиры». 15 daqiqa ichida
+  javob bering. Ko'proq vaqt o'tgan bo'lsa — krujokni qaytadan
+  yuboring.
+
+— Raqam yozdim, bot jim.
+  «Уборки» mavzusida yoki botga shaxsiy yozayotganingizni
+  tekshiring. Guruhning boshqa mavzularida bot hisobotlarni
+  qabul qilmaydi.
+
+— «Keyin» yubordim, bot «доп. видео» deb yozdi.
+  Demak, bu kvartira allaqachon yopilgan. Agar bu yangi tozalash
+  bo'lsa — «oldin 103» dan boshlang.
+
+— Boshqa farrosh mening kvartiram raqamini yubordi.
+  Bot qabul qilmaydi: kvartirani siz tozalayotganingizni yozadi.
+  Bu chalkashlikdan himoya.
+
+— Obyektdan ketdim, «keyin» ni yubormadim.
+  8 soatdan keyin bot tozalashni o'zi yopadi va tugallanmagan deb
+  belgilaydi. Kvartira «hisobotsiz» ro'yxatida qoladi.
+
+════════════════════════════════════════════════════════════
+
+7. ESLATMA — QO'L OSTIDA SAQLANG
+
+   Ishga keldim         →  live-lokatsiya (14:00 gacha)
+   Kvartiraga kirdim    →  krujok + «oldin 103»
+   Tozalashni tugatdim  →  krujok + «103»
+   Nimadir kerak        →  «103 ga 2 ta sochiq kerak»
+   Xaridlarni ko'rish   →  /нужно
+
+════════════════════════════════════════════════════════════
+
+Savollar bilan — rahbarga.
+Nova Home, Nest One, Toshkent
