@@ -58,7 +58,8 @@
           i++;
         }
       }
-      rows += `<div class="occ-row" style="--cols:${cols}"><div class="occ-cell occ-name">${esc(apt.name)}</div>${cells}</div>`;
+      const longName = String(apt.name || "").length > 6 ? " occ-name--long" : "";
+      rows += `<div class="occ-row" style="--cols:${cols}"><div class="occ-cell occ-name${longName}">${esc(apt.name)}</div>${cells}</div>`;
     });
 
     return `

@@ -154,6 +154,9 @@ def build_day(target: date) -> dict:
             created_dt = datetime.fromisoformat(created)
         except (ValueError, TypeError):
             continue
+        if created_dt.tzinfo is not None:
+            # RC may send an offset ("+05:00"); compare in local naive time
+            created_dt = created_dt.astimezone().replace(tzinfo=None)
         if created_dt >= cutoff:
             v = _booking_view(b)
             new_bookings.append({

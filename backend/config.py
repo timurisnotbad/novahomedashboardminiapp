@@ -6,25 +6,46 @@ DEMO_MODE and serves generated data so the whole app is runnable out of the box.
 """
 import json
 import os
+import re
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
 # ---------------------------------------------------------------------------
 # Load .env (optional, no hard dependency on python-dotenv)
 # ---------------------------------------------------------------------------
+def _clean_value(raw: str) -> str:
+    """'15   # comment' -> '15'; '"abc"' -> 'abc'. A .env copied from
+    .env.example keeps the inline comments — they must not become values."""
+    v = raw.strip()
+    if len(v) >= 2 and v[0] in "\"'" and v.endswith(v[0]):
+        return v[1:-1]
+    v = re.split(r"\s+#", v, maxsplit=1)[0].strip()
+    return "" if v.startswith("#") else v
+
+
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    # utf-8-sig: Notepad on Windows writes a BOM, which would glue itself to
+    # the first key ("﻿RC_TOKEN") and silently disable the token
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip().lstrip("﻿")
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+        os.environ.setdefault(key.strip(), _clean_value(value))
 
 
 _load_dotenv(BASE_DIR / ".env")
+
+
+def _int_env(name: str, default: int) -> int:
+    """Numeric setting that never crashes startup on a typo ('300 м')."""
+    raw = os.environ.get(name, "").strip()
+    m = re.match(r"-?\d+", raw)
+    return int(m.group()) if m else default
 
 # ---------------------------------------------------------------------------
 # Realty Calendar
@@ -172,18 +193,15 @@ SHEET_API_URL = os.environ.get("SHEET_API_URL", "").strip()
 SHEET_API_TOKEN = os.environ.get("SHEET_API_TOKEN", "").strip()
 FINANCE_ENABLED = bool(SHEET_API_URL and SHEET_API_TOKEN)
 # how long to cache balances in memory before re-querying the sheet (seconds)
-FINANCE_CACHE_TTL = int(os.environ.get("FINANCE_CACHE_TTL", "60"))
+FINANCE_CACHE_TTL = _int_env("FINANCE_CACHE_TTL", 60)
 
 # ---------------------------------------------------------------------------
 # Misc
 # ---------------------------------------------------------------------------
-SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "15"))
+SYNC_INTERVAL_MINUTES = max(1, _int_env("SYNC_INTERVAL_MINUTES", 15))
 # how far ahead bookings are mirrored from RC (prepayments in the payments
 # channel often arrive 1–2 months before check-in and must find their booking)
-try:
-    SYNC_DAYS_AHEAD = max(30, int(os.environ.get("SYNC_DAYS_AHEAD", "60") or 60))
-except ValueError:
-    SYNC_DAYS_AHEAD = 60
+SYNC_DAYS_AHEAD = max(30, _int_env("SYNC_DAYS_AHEAD", 60))
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +217,9 @@ def _float_env(name: str, default: float) -> float:
 
 WORK_LAT = _float_env("WORK_LAT", 41.31255)      # Tashkent City
 WORK_LNG = _float_env("WORK_LNG", 69.27920)
-WORK_RADIUS_M = int(os.environ.get("WORK_RADIUS_M", "700") or 700)
+WORK_RADIUS_M = _int_env("WORK_RADIUS_M", 700)
 SHIFT_START = os.environ.get("SHIFT_START", "09:00").strip() or "09:00"
-SHIFT_GRACE_MIN = int(os.environ.get("SHIFT_GRACE_MIN", "0") or 0)
+SHIFT_GRACE_MIN = _int_env("SHIFT_GRACE_MIN", 0)
 
 
 def _parse_hhmm(raw: str, default: tuple[int, int]) -> tuple[int, int]:
@@ -274,4 +292,4 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "25"
+APP_VERSION = "26"

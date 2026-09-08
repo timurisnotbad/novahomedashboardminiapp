@@ -126,7 +126,9 @@ svg.ic, .ic { width:1em; height:1em; }
 .li__chev svg { width:15px; height:15px; }
 .v-green { color:var(--green-d); } .v-red { color:var(--red-d); }
 
-.aptbadge { font-size:14px; font-weight:700; color:var(--tint-text); min-width:50px; letter-spacing:-.01em; flex:none; }
+.aptbadge { font-size:14px; font-weight:700; color:var(--tint-text); min-width:50px; letter-spacing:-.01em; flex:none;
+  white-space:nowrap; }
+.aptbadge--long { font-size:11.5px; letter-spacing:-.02em; }  /* «BLV 2A-156» — one line, no wrap */
 .status-pill { font-size:12px; font-weight:600; padding:3px 9px; border-radius:20px; white-space:nowrap; flex:none; }
 .sp-red { background:rgba(224,83,63,.14); color:var(--red-d); }
 .sp-green { background:rgba(79,164,99,.16); color:var(--green-d); }
@@ -203,7 +205,8 @@ svg.ic, .ic { width:1em; height:1em; }
 .occ-scroll { overflow-x:auto; padding:0 16px 4px; }
 .occ-scroll::-webkit-scrollbar { display:none; }
 .occ-grid { min-width:max-content; background:var(--card); border-radius:13px; padding:8px; }
-.occ-row { display:grid; grid-template-columns:46px repeat(var(--cols), 32px); align-items:center; min-height:26px; }
+.occ-row { display:grid; grid-template-columns:64px repeat(var(--cols), 32px); align-items:center; min-height:26px; }
+.occ-name--long { font-size:10.5px; letter-spacing:-.03em; white-space:nowrap; }
 .occ-row--header .occ-cell { font-size:11px; color:var(--label-2); text-align:center; padding-bottom:4px; }
 .occ-dow { font-weight:700; color:var(--label); font-size:12px; }
 .occ-cell { height:26px; display:flex; align-items:center; justify-content:center; }
@@ -401,9 +404,6 @@ svg.ic, .ic { width:1em; height:1em; }
 
 /* ---- Оплаты (сверка) ----------------------------------------------------- */
 .recon-raw { display:block; white-space:normal; word-break:break-word; opacity:.85; }
-
-/* pay-viewer: открыть вкладку Касса (только блок Оплаты) наблюдателям оплат */
-body.staff-mode.pay-viewer .nav-item[data-screen="finance"] { display:flex !important; }
 
 /* ---- Формы зарплаты (переработанные) ------------------------------------ */
 .form-card { background:var(--card); border-radius:16px; padding:14px 15px; margin-bottom:12px; }

@@ -44,8 +44,11 @@ def refresh_apartments() -> None:
         return
     if isinstance(data, list):
         items = data
-    else:
+    elif isinstance(data, dict):
         items = data.get("apartments") or data.get("items") or data.get("data") or []
+    else:
+        logger.warning("apartment auto-discovery: unexpected payload %s — keeping known list", type(data).__name__)
+        return
     found: dict[int, str] = {}
     for it in items:
         if not isinstance(it, dict):

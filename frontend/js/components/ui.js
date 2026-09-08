@@ -39,6 +39,12 @@
   function rangeDate(a, b) {
     return shortDate(a) + " – " + shortDate(b);
   }
+  // YYYY-MM-DD in the device's LOCAL time. toISOString() is UTC and gives
+  // yesterday's date until 05:00 Tashkent time.
+  function localIso(d) {
+    d = d || new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
 
   let toastTimer = null;
   function toast(msg) {
@@ -67,6 +73,10 @@
   function empty(msg) {
     return `<div class="empty">${esc(msg)}</div>`;
   }
+  // long apartment names ("BLV 2A-156") get a smaller one-line badge
+  function badgeCls(name) {
+    return String(name == null ? "" : name).length > 6 ? " aptbadge--long" : "";
+  }
 
-  NH.ui = { el, esc, usd, icon, sourceLabel, shortDate, rangeDate, toast, haptic, skeletonList, empty };
+  NH.ui = { el, esc, usd, icon, sourceLabel, shortDate, rangeDate, localIso, toast, haptic, skeletonList, empty, badgeCls };
 })();

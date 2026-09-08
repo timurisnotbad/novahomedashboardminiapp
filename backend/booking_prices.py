@@ -10,6 +10,7 @@ is not installed. On the server, install once:
     pip install playwright
     playwright install chromium
 """
+import html
 import logging
 import re
 import threading
@@ -304,18 +305,19 @@ def format_report_html(data: dict) -> str:
                 tail = f"  (+{delta}$)"
             elif delta is not None and r.get("cmp") == "low":
                 tail = f"  (−{abs(delta)}$)"
-            lines.append(f"  {mark} {r['name']}  →  {r['price']}{tail}".rstrip())
+            lines.append(f"  {mark} {html.escape(str(r['name']))}  →  {html.escape(str(r['price']))}{tail}".rstrip())
     else:
         lines.append("  Цены не найдены")
 
     for comp in data["competitors"]:
         lines.append("")
-        lines.append(f"🏢 <b>{comp['name']}</b>")
+        lines.append(f"🏢 <b>{html.escape(str(comp['name']))}</b>")
         if comp.get("error"):
             lines.append("  нет данных (ошибка загрузки)")
         elif comp["rooms"]:
             for r in comp["rooms"]:
-                lines.append(f"  {r['name']}  →  {r['price']}")
+                # room names come from Booking's page: "<" or "&" would break Telegram's HTML parser
+                lines.append(f"  {html.escape(str(r['name']))}  →  {html.escape(str(r['price']))}")
         else:
             lines.append("  нет доступных номеров")
     return "\n".join(lines)

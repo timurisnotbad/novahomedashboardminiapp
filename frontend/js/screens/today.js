@@ -12,7 +12,7 @@
   function checkoutRow(c) {
     return `
       <div class="li">
-        <span class="aptbadge">${esc(c.apartment)}</span>
+        <span class="aptbadge${NH.ui.badgeCls(c.apartment)}">${esc(c.apartment)}</span>
         <div class="li__main"><div class="li__t">${esc(c.client_name || "—")}</div></div>
         <div class="li__s">${esc(c.departure_time || "")}</div>
       </div>`;

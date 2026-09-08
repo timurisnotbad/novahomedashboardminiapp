@@ -23,15 +23,25 @@
     return NH.ui.skeletonList(5);
   }
 
-  function render() {
-    if (state.loading || !state.data) return skeleton();
-    const d = state.data;
-    const [y, m] = d.month.split("-");
-    let html = `<div class="pay-mnav">
-      <button class="pay-mnav__btn" data-recon-month="-1">‹</button>
+  function monthNav(month) {
+    const [y, m] = (month || ym(state.off)).split("-");
+    const busy = state.loading ? "disabled" : "";
+    return `<div class="pay-mnav">
+      <button class="pay-mnav__btn" data-recon-month="-1" ${busy}>‹</button>
       <span class="pay-mnav__label">${MONTHS_RU[parseInt(m, 10) - 1]} ${y}</span>
-      <button class="pay-mnav__btn" data-recon-month="1" ${state.off >= 0 ? "disabled" : ""}>›</button>
+      <button class="pay-mnav__btn" data-recon-month="1" ${state.off >= 0 || state.loading ? "disabled" : ""}>›</button>
     </div>`;
+  }
+
+  function render() {
+    if (!state.loading && state.error) {
+      // a failed request shows the reason and a retry, never an endless skeleton
+      return monthNav() + NH.ui.empty(state.error) +
+        `<div class="empty"><button class="btn" data-recon-retry>Повторить</button></div>`;
+    }
+    if (state.loading || !state.data) return monthNav() + skeleton();
+    const d = state.data;
+    let html = monthNav(d.month);
 
     const dm = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : "—");
     const payload = (p) => encodeURIComponent(JSON.stringify(p));
@@ -41,7 +51,7 @@
     if (nop.length) {
       html += nop.map((b) => `
         <div class="li">
-          <span class="aptbadge">${esc(b.apartment || "?")}</span>
+          <span class="aptbadge${NH.ui.badgeCls(b.apartment || "?")}">${esc(b.apartment || "?")}</span>
           <span class="li__main"><div class="task__t">${esc(b.guest)}</div>
           <div class="task__meta"><span class="due">заезд ${dm(b.checkin)} · ${esc(b.source || "")}${b.debt_usd ? ` · долг $${b.debt_usd}` : ""}</span></div></span>
         </div>`).join("");
@@ -58,7 +68,7 @@
         const amt = p.amount ? `${fmtAmount(p.amount)} ${esc(p.currency || "")}` : "⚠️ сумма не указана";
         const method = p.method ? esc(p.method) : "⚠️ метод не указан";
         return `<div class="li">
-          <span class="aptbadge">${esc(b.apartment || p.apartment || "?")}</span>
+          <span class="aptbadge${NH.ui.badgeCls(b.apartment || p.apartment || "?")}">${esc(b.apartment || p.apartment || "?")}</span>
           <span class="li__main"><div class="task__t">${amt} · ${method}</div>
           <div class="task__meta"><span class="due">${esc(b.guest || "")} · заезд ${dm(b.checkin || p.checkin)}</span></div></span>
           <button class="task-del" data-precon-edit data-p="${payload(p)}" aria-label="Дополнить">✏️</button>

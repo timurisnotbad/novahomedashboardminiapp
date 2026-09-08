@@ -124,7 +124,16 @@
       <div class="list">${rows}</div></div>`;
   }
 
+  // a failed request shows the reason and a retry, never an endless skeleton
+  function failedView(st, view) {
+    if (st.loading || !st.error) return null;
+    return NH.ui.empty(st.error) +
+      `<div class="empty"><button class="btn" data-fin-view="${view}">Повторить</button></div>`;
+  }
+
   function payView() {
+    const f = failedView(pay, "pay");
+    if (f) return f;
     if (pay.loading || !pay.data) return NH.ui.skeletonList(4);
     const d = pay.data;
     const [y, m] = d.month.split("-");
@@ -221,6 +230,8 @@
   }
 
   function penView() {
+    const f = failedView(pstate, "pen");
+    if (f) return f;
     if (pstate.loading || !pstate.data) return NH.ui.skeletonList(4);
     const recs = pstate.data.records || [];
     let html = penForm(pstate.data.staff);
@@ -261,6 +272,15 @@
 
     const apts = (data.apartments || []).slice();
     const max = apts.reduce((m, a) => Math.max(m, a.usd || 0), 0) || 1;
+    // units the app knows (RealtyCalendar) that the sheet did not report
+    const missing = (data.missing || []);
+    const missingHtml = missing.length
+      ? `<div class="group"><div class="group__h">⚠️ Нет в ответе таблицы <span class="count">${missing.length}</span></div>
+          <div class="list"><div class="li"><span class="li__main">
+            <div class="task__t">${missing.map(esc).join(", ")}</div>
+            <div class="task__meta"><span class="due">Эти квартиры есть в RealtyCalendar, но лист «${esc(data.sheet || "Счета")}» (или скрипт таблицы) их не отдаёт. Добавьте строки в лист — приложение показывает то, что возвращает таблица.</span></div>
+          </span></div></div></div>`
+      : "";
 
     const items = apts
       .map((a) => {
@@ -269,7 +289,7 @@
         return `
           <div class="cash-item">
             <div class="li li--tap" ${has ? "data-cash-toggle" : ""}>
-              <span class="aptbadge">${esc(a.code)}</span>
+              <span class="aptbadge${NH.ui.badgeCls(a.code)}">${esc(a.code)}</span>
               <span class="cash-row__bar"><i style="width:${pct}%"></i></span>
               <span class="li__v">${usd(a.usd)}</span>
               ${has ? `<span class="li__chev">${icon("chev")}</span>` : ""}
@@ -287,7 +307,7 @@
       </div>
       <div class="group"><div class="group__h">${icon("wallet")} Баланс по квартирам</div>
         <div class="list">${items}</div>
-      </div>`;
+      </div>${missingHtml}`;
   }
 
   NH.screens = NH.screens || {};

@@ -1,5 +1,5 @@
 """Payroll (табель): per-staff terms, month summary, payments. Owner-only."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -84,8 +84,15 @@ class PaymentIn(BaseModel):
 
 @router.post("/pay")
 def add_payment(body: PaymentIn):
+    staff, note = body.staff.strip(), body.note.strip()
+    if not staff or not body.amount or body.amount <= 0:
+        return {"success": False, "error": "bad_amount"}
+    # a double tap over a slow tunnel sends the same payment twice within seconds
+    since = (datetime.now() - timedelta(seconds=15)).isoformat(timespec="minutes")
+    if not body.at and database.salary_payment_recent(staff, body.amount, note, since):
+        return {"success": True, "duplicate": True}
     at = body.at or datetime.now().isoformat(timespec="minutes")
-    pid = database.add_salary_payment(body.staff.strip(), body.amount, body.note.strip(), at)
+    pid = database.add_salary_payment(staff, body.amount, note, at)
     return {"success": True, "id": pid}
 
 

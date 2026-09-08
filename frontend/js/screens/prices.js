@@ -6,7 +6,7 @@
   function isoPlus(days) {
     const d = new Date();
     d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
+    return NH.ui.localIso(d);
   }
 
   // internal state persists while navigating between tabs
@@ -51,7 +51,7 @@
 
   function priceRow(name, price, badge, cmp, delta) {
     const left = badge
-      ? `<span class="aptbadge">${esc(name)}</span>`
+      ? `<span class="aptbadge${NH.ui.badgeCls(name)}">${esc(name)}</span>`
       : `<span class="li__main"><div class="li__t">${esc(name)}</div></span>`;
     let cmpHtml = "";
     if (cmp === "low") cmpHtml = `<span class="price-cmp low">−${Math.abs(delta)}$</span>`;
@@ -124,9 +124,9 @@
     if (ci) state.checkin = ci;
     if (co) state.checkout = co;
     if (state.checkout <= state.checkin) {
-      const d = new Date(state.checkin);
+      const d = new Date(state.checkin + "T00:00:00");
       d.setDate(d.getDate() + 1);
-      state.checkout = d.toISOString().slice(0, 10);
+      state.checkout = NH.ui.localIso(d);
     }
   }
 

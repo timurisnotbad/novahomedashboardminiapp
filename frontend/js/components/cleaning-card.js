@@ -38,7 +38,7 @@
     return `
       <div class="clean-card list" data-apt="${esc(c.apartment)}" data-date="${esc(c.cleaning_date)}">
         <div class="li">
-          <span class="aptbadge">${esc(c.apartment)}</span>
+          <span class="aptbadge${NH.ui.badgeCls(c.apartment)}">${esc(c.apartment)}</span>
           <div class="li__main"></div>
           ${statusPill}
         </div>

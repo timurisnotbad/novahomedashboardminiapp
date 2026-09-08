@@ -10,7 +10,7 @@
   function render(data) {
     const { cleaningCard } = NH.cleaningCard;
     const cleanings = data.cleanings || [];
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = NH.ui.localIso();
 
     const todays = cleanings.filter((c) => c.cleaning_date === todayStr);
     const rest = cleanings.filter((c) => c.cleaning_date !== todayStr);

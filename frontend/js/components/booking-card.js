@@ -13,7 +13,7 @@
     const time = b.arrival_time ? esc(b.arrival_time) : "—";
     return `
       <div class="li li--tap tappable" data-guest='${encodeURIComponent(JSON.stringify(b))}'>
-        <span class="aptbadge">${esc(b.apartment)}</span>
+        <span class="aptbadge${NH.ui.badgeCls(b.apartment)}">${esc(b.apartment)}</span>
         <div class="li__main">
           <div class="li__t">${esc(b.client_name || "—")}</div>
           <div class="li__s"><span class="owner-only">${sourceLabel(b.source)} · </span>заезд ${time}</div>
@@ -32,7 +32,7 @@
   function debtorRow(d) {
     return `
       <div class="li">
-        <span class="aptbadge">${esc(d.apartment)}</span>
+        <span class="aptbadge${NH.ui.badgeCls(d.apartment)}">${esc(d.apartment)}</span>
         <div class="li__main">
           <div class="li__t">${esc(d.client_name || "—")}</div>
           <div class="li__s">заехал ${shortDate(d.checkin_date)} · до ${shortDate(d.checkout_date)}</div>
@@ -48,7 +48,7 @@
       : `<span class="status-pill sp-red owner-only">долг</span>`;
     return `
       <div class="li">
-        <span class="aptbadge">${esc(g.apartment)}</span>
+        <span class="aptbadge${NH.ui.badgeCls(g.apartment)}">${esc(g.apartment)}</span>
         <div class="li__main">
           <div class="li__t">${esc(g.client_name || "—")}</div>
           <div class="li__s">до ${shortDate(g.checkout_date)}</div>
@@ -60,7 +60,7 @@
   function newBookingRow(b) {
     return `
       <div class="li">
-        <span class="aptbadge">${esc(b.apartment)}</span>
+        <span class="aptbadge${NH.ui.badgeCls(b.apartment)}">${esc(b.apartment)}</span>
         <div class="li__main">
           <div class="li__t">${esc(b.client_name || "—")}</div>
           <div class="li__s">${shortDate(b.checkin)} – ${shortDate(b.checkout)}</div>

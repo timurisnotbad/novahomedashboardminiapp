@@ -66,8 +66,20 @@ def _webapp_markup(uid=None) -> InlineKeyboardMarkup | None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg:
+        return
     _register(update.effective_user)
     uid = update.effective_user.id if update.effective_user else None
+    if chat and chat.type != "private":
+        # Telegram allows Web App buttons in private chats only — sending them
+        # here fails with Bad Request and the person gets nothing
+        me = context.bot.username or "novahomedashboardbot"
+        await msg.reply_text(
+            f"Дашборд открывается из личного чата: напишите /start боту @{me}."
+        )
+        return
     markup = _webapp_markup(uid)
     apt_count = len(_apartment_names()) or config.TOTAL_APARTMENTS
     text = f"🏠 *Nova Home Dashboard*\n\nОперационная сводка по {apt_count} апартаментам."
@@ -76,15 +88,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                  "`OWNER\\_KEY=любой-длинный-секрет` и перезапустите — иначе на Telegram "
                  "для Mac без подписи откроется режим сотрудника.")
     if markup:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+        await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
         # Also expose a persistent keyboard button (opens WebApp from chat).
         kb = ReplyKeyboardMarkup(
             [[KeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=_webapp_url(uid)))]],
             resize_keyboard=True,
         )
-        await update.message.reply_text("Меню:", reply_markup=kb)
+        await update.effective_message.reply_text("Меню:", reply_markup=kb)
     else:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             text + "\n\n⚠️ WEBAPP_URL не задан — доступна только текстовая сводка (/today).",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -92,11 +104,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     summary = await asyncio.to_thread(services.build_text_summary, datetime.date.today())
-    await update.message.reply_text(summary)
+    await update.effective_message.reply_text(summary)
 
 
 async def sync_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = await update.message.reply_text("🔄 Синхронизация…")
+    msg = await update.effective_message.reply_text("🔄 Синхронизация…")
     try:
         count = await asyncio.to_thread(rc_sync.sync_to_db)
         await msg.edit_text(f"✅ Синхронизировано: {count} броней")
@@ -110,7 +122,7 @@ async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat = update.effective_chat
     thread = _thread_of(update.effective_message) if update.effective_message else None
     extra = f"\nID темы: {thread}" if thread else ""
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"ID этого чата: {chat.id}{extra}\n"
         f"Впишите его в NOTIFY_CHAT_IDS в .env, чтобы сюда приходили уведомления."
     )
@@ -288,10 +300,10 @@ async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     """Booking.com price report (owner only). /цены [даты]"""
     user = update.effective_user
     if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
-        await update.message.reply_text("Команда доступна только владельцу.")
+        await update.effective_message.reply_text("Команда доступна только владельцу.")
         return
-    ci, co = _parse_price_dates(update.message.text or "")
-    note = await update.message.reply_text("⏳ Собираю цены с Booking.com… (30–90 сек)")
+    ci, co = _parse_price_dates(update.effective_message.text or "")
+    note = await update.effective_message.reply_text("⏳ Собираю цены с Booking.com… (30–90 сек)")
     try:
         data = await asyncio.to_thread(booking_prices.scrape_prices, ci, co, False)
         text = booking_prices.format_report_html(data)
@@ -359,7 +371,7 @@ async def staff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     roster = _staff_roster()
     if not roster:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Список пуст. Сотрудник попадает в него автоматически, как только "
             "напишет боту /start или пришлёт локацию."
         )
@@ -377,12 +389,12 @@ async def staff_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
         return
-    parts = (update.message.text or "").split()
+    parts = (update.effective_message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        await update.message.reply_text("Использование: /staff_del <id> (id смотри в /staff)")
+        await update.effective_message.reply_text("Использование: /staff_del <id> (id смотри в /staff)")
         return
     database.set_staff_active(int(parts[1]), False)
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "✅ Убран из списка. Если человек снова напишет боту — вернётся автоматически."
     )
 
@@ -403,8 +415,10 @@ _REPORT_TTL = 15 * 60  # seconds to pair media with a number
 # uid -> [(kind, file_id, ts), ...] — several кружки may precede one number
 _pending_media: dict[int, list[tuple[str, str, float]]] = {}
 _pending_apt: dict[int, tuple[str, str, float]] = {}     # uid -> (apartment, phase, ts)
+_last_media: dict[int, tuple[str, str, float]] = {}      # uid -> last media used in a report
 _album_apt: dict[str, str] = {}                          # media_group_id -> apartment
 _album_prompted: set[str] = set()                        # albums already asked for a number
+_LAST_MEDIA_TTL = 5 * 60  # a «103» right after a кружок closes the session with that кружок
 
 _CYR2LAT = str.maketrans({"А": "A", "В": "B", "Б": "B", "С": "C", "Е": "E"})
 
@@ -499,6 +513,9 @@ def _media_of(msg):
         return "video", msg.video.file_id
     if msg.photo:
         return "photo", msg.photo[-1].file_id
+    doc = msg.document
+    if doc and (doc.mime_type or "").split("/")[0] in ("image", "video"):
+        return "document", doc.file_id  # photo/video sent "as a file" (no compression)
     return None, None
 
 
@@ -523,6 +540,8 @@ async def _forward_media(context, chat_id, kind, file_id, caption=None, thread=N
             await context.bot.send_message(text=caption, **kw)
     elif kind == "video":
         await context.bot.send_video(video=file_id, caption=caption, **kw)
+    elif kind == "document":
+        await context.bot.send_document(document=file_id, caption=caption, **kw)
     else:
         await context.bot.send_photo(photo=file_id, caption=caption, **kw)
 
@@ -647,6 +666,20 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
         }
     last = database.session_for(apt, today)
     if last and last.get("finished_at"):
+        if last.get("forced") and last.get("staff_id") == uid:
+            # the owner's /сброс or the auto-close hit while the cleaner was still
+            # working — this «после» is the real report: close that same session
+            dur = _minutes_between(last.get("started_at"), now)
+            if dur is not None and dur > max_min:
+                dur = None  # too long to be a meaningful duration
+            database.finish_session(last["id"], ts, dur, forced=False)
+            database.set_cleaning_status(apt, last.get("work_date") or today, "done")
+            took = f" · {_fmt_dur(dur)}" if dur is not None else ""
+            return {
+                "caption": f"✅ ПОСЛЕ · {apt} · {who} · {_hm(last.get('started_at'))}–{hm}{took}",
+                "reply": f"✅ {apt} — уборка завершена{took}. Спасибо!",
+                "status": "done",
+            }
         return {
             "caption": f"📎 {apt} · доп. видео · {who} · {hm}",
             "reply": f"Принял доп. видео к уборке {apt} (закрыта в {_hm(last.get('finished_at'))}). "
@@ -665,6 +698,10 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
 async def _process_report(context, msg, user, apt: str, phase: str, media: list) -> None:
     """`media` — one or more (kind, file_id) the person sent for this report."""
     now = datetime.datetime.now()
+    if media:
+        if len(_last_media) > 200:
+            _last_media.clear()
+        _last_media[user.id] = (media[-1][0], media[-1][1], now.timestamp())
     try:
         res = await asyncio.to_thread(_session_step, apt, phase, user.id, _display_name(user), now)
     except Exception:  # noqa: BLE001
@@ -808,6 +845,21 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _pending_media.pop(uid, None)
         await _process_report(context, msg, user, apt, phase, [(k, f) for k, f, _t in pend])
     elif private:
+        # «до 103» → кружок → (short cleaning) → кружок → «103»: the second
+        # кружок was attached to the open session as "доп. видео ДО", so the
+        # «103» that follows it IS the finish — close with that кружок instead
+        # of asking for yet another one.
+        lm = _last_media.get(uid)
+        if phase == "finish" and lm and now_ts - lm[2] < _LAST_MEDIA_TTL:
+            try:
+                cur = await asyncio.to_thread(database.open_session, apt)
+            except Exception:  # noqa: BLE001
+                cur = None
+            if cur and cur.get("staff_id") == uid:
+                _pending_apt.pop(uid, None)
+                _last_media.pop(uid, None)
+                await _process_report(context, msg, user, apt, "finish", [(lm[0], lm[1])])
+                return
         # number first, media to follow (private chat only)
         if len(_pending_apt) > 200:
             _pending_apt.clear()
@@ -985,7 +1037,7 @@ async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user:
         return
     uname = f" (@{user.username})" if user.username else ""
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"🆔 Ваш Telegram ID: {user.id}{uname}\n"
         f"Отправьте его руководителю для добавления в список сотрудников."
     )
@@ -1022,6 +1074,11 @@ async def attendance_deadline(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not staff:
         return
     today = datetime.date.today().isoformat()
+    try:
+        if await asyncio.to_thread(database.job_done, "attendance_deadline", today):
+            return  # already ran today (startup catch-up + scheduled run)
+    except Exception:  # noqa: BLE001
+        pass
     rows = {r["staff_id"]: r for r in database.attendance_for(today)}
     dh, dm = config.ATTEND_DEADLINE_T
     lines = [f"📋 Явка на {datetime.date.today().strftime('%d.%m')}:"]
@@ -1051,18 +1108,27 @@ async def attendance_deadline(context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append("Все на месте 💪")
     notify.send("\n".join(lines), topic="attendance")
     _loc_status.clear()  # tomorrow starts fresh
+    try:
+        await asyncio.to_thread(database.mark_job, "attendance_deadline", today)
+    except Exception:  # noqa: BLE001
+        logger.exception("mark_job failed")
 
 
 async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
     """CLEANING_CHECK (18:00): which of today's checkouts have no cleaning
     report yet — so nothing is forgotten by the evening."""
     today = datetime.date.today()
+    today_s = today.isoformat()
+    try:
+        if await asyncio.to_thread(database.job_done, "cleaning_watch", today_s):
+            return
+    except Exception:  # noqa: BLE001
+        pass
     try:
         cleanings = (await asyncio.to_thread(services.build_cleaning, today, 1))["cleanings"]
     except Exception:  # noqa: BLE001
         logger.exception("cleaning_watch failed")
         return
-    today_s = today.isoformat()
     todays = [c for c in cleanings if c.get("cleaning_date") == today_s]
     try:
         open_ = await asyncio.to_thread(database.open_sessions)
@@ -1099,6 +1165,10 @@ async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
             f"({longest.get('staff_name')})"
         )
     notify.send("\n".join(lines), topic="cleaning")
+    try:
+        await asyncio.to_thread(database.mark_job, "cleaning_watch", today_s)
+    except Exception:  # noqa: BLE001
+        logger.exception("mark_job failed")
     # shopping list → owner only
     try:
         open_items = await asyncio.to_thread(database.open_supplies)
@@ -1117,7 +1187,7 @@ async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def attendance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     rows = await asyncio.to_thread(database.attendance_for, datetime.date.today().isoformat())
     if not rows:
-        await update.message.reply_text("Сегодня ещё никто не отметился на работе.")
+        await update.effective_message.reply_text("Сегодня ещё никто не отметился на работе.")
         return
     lines = ["📋 Приходы сегодня:"]
     for r in rows:
@@ -1167,6 +1237,50 @@ async def _set_commands(app) -> None:
                 logger.info("owner command menu for %s skipped: %s", uid, exc)
     except Exception:  # noqa: BLE001
         logger.exception("set_my_commands failed")
+    await _catch_up_jobs(app)
+
+
+_CATCH_UP_WINDOW_H = 3  # run a missed daily job only within this many hours of its time
+
+
+async def _catch_up_jobs(app) -> None:
+    """The bot was down when a daily job was due (restart, crash): run it now if
+    the moment is still relevant, otherwise tell the owner it was skipped.
+    PTB's JobQueue never runs missed occurrences on its own."""
+    now = datetime.datetime.now()
+    today = now.date().isoformat()
+    ctx = type("Ctx", (), {"bot": app.bot})()  # the jobs only use context.bot
+    for name, (h, m), job in (
+        ("attendance_deadline", config.ATTEND_DEADLINE_T, attendance_deadline),
+        ("cleaning_watch", config.CLEANING_CHECK_T, cleaning_watch),
+    ):
+        due = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if now < due:
+            continue  # not yet today — the scheduler will run it
+        try:
+            if await asyncio.to_thread(database.job_done, name, today):
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        late_h = (now - due).total_seconds() / 3600
+        if late_h <= _CATCH_UP_WINDOW_H:
+            logger.info("catch-up: running missed job %s (%.1f h late)", name, late_h)
+            try:
+                await job(ctx)
+            except Exception:  # noqa: BLE001
+                logger.exception("catch-up %s failed", name)
+        else:
+            text = (f"⚠️ Бот был выключен в {h:02d}:{m:02d} — задача «{name}» за сегодня "
+                    f"не выполнялась (прошло {late_h:.0f} ч, запускать поздно).")
+            for uid in config.OWNER_TELEGRAM_IDS:
+                try:
+                    await app.bot.send_message(chat_id=uid, text=text, disable_notification=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                await asyncio.to_thread(database.mark_job, name, today)  # don't nag on every restart
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def main() -> None:
@@ -1187,10 +1301,12 @@ def main() -> None:
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("supplies", supplies_cmd))
-    # Telegram only detects latin /commands, so accept typed Cyrillic ones too.
-    app.add_handler(MessageHandler(filters.Regex(r"(?i)^/?цены\b"), prices_cmd))
-    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/сброс\b"), reset_cmd))
-    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(нужно|закупки|список)\b"), supplies_cmd))
+    # Telegram only detects latin /commands, so accept typed Cyrillic ones too
+    # (slash required — a plain «цены» in the group is just conversation).
+    _msg = filters.UpdateType.MESSAGE
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/цены\b") & _msg, prices_cmd))
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/сброс\b") & _msg, reset_cmd))
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(нужно|закупки|список)\b") & _msg, supplies_cmd))
     # shopping list requests: "нужно 103 полотенца 2, шампунь" (any chat)
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE & filters.Regex(supplies.TRIGGER_ANY_RE),
@@ -1204,7 +1320,8 @@ def main() -> None:
     # UpdateType.MESSAGE: an edited caption/text must not create a second report
     # (live locations arrive as edits and keep their own handler above).
     app.add_handler(MessageHandler(
-        (filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE) & filters.UpdateType.MESSAGE, on_media))
+        (filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE
+         | filters.Document.IMAGE | filters.Document.VIDEO) & filters.UpdateType.MESSAGE, on_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
                                    on_text_report))
 

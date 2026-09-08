@@ -122,7 +122,7 @@
     }).join("");
     html += `<div class="group"><div class="group__h">${icon("users")} По горничным</div>${staff}</div>`;
     const apts = d.apartments.map((a) => `<div class="li">
-        <span class="aptbadge">${esc(a.apartment)}</span>
+        <span class="aptbadge${NH.ui.badgeCls(a.apartment)}">${esc(a.apartment)}</span>
         <span class="li__main"><div class="task__meta"><span class="due">${a.count} уб.${a.min != null ? ` · ${dur(a.min)} – ${dur(a.max)}` : ""}</span></div></span>
         <span class="li__v">${a.avg != null ? dur(a.avg) : "—"}</span></div>`).join("");
     html += `<div class="group"><div class="group__h">${icon("home")} По квартирам <span class="count">среднее время</span></div><div class="list">${apts}</div></div>`;
@@ -134,7 +134,7 @@
       else time = `${esc(r.start)}–${esc(r.end)} · ${dur(r.duration_min)}`;
       const trav = r.travel_min != null
         ? `<span class="due ${r.travel_min > 60 ? "orange" : ""}">🚶 ${dur(r.travel_min)}</span>` : "";
-      return `<div class="li"><span class="aptbadge">${esc(r.apartment)}</span>
+      return `<div class="li"><span class="aptbadge${NH.ui.badgeCls(r.apartment)}">${esc(r.apartment)}</span>
         <span class="li__main"><div class="task__t">${esc(r.staff)}</div>
         <div class="task__meta"><span class="due ${cls}">${time}</span>${trav}</div></span></div>`;
     });

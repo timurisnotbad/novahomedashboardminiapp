@@ -127,7 +127,19 @@
     }
     container.innerHTML = mod.render(cache[name]);
     applyRole();
-    setHeader(name, cache[name]);
+    if (current === name) setHeader(name, cache[name]); // a slow earlier screen must not retitle the current one
+  }
+
+  // One in-flight request per button: a second tap while the first one is
+  // still travelling through the tunnel must not create a second record.
+  function once(btn, fn) {
+    if (!btn || btn.dataset.busy === "1") return;
+    btn.dataset.busy = "1";
+    btn.disabled = true;
+    Promise.resolve().then(fn).catch(() => {}).finally(() => {
+      btn.dataset.busy = "";
+      btn.disabled = false;
+    });
   }
 
   function navigate(name, force) {
@@ -298,11 +310,23 @@
   function loadPayroll() {
     const pv = NH.screens.finance.pay;
     pv.loading = true;
+    pv.error = null;
     renderFinance();
     api.getPayroll(NH.screens.finance.payMonthYM(pv.off))
       .then((d) => { pv.data = d; })
-      .catch(() => {})
+      .catch((e) => { pv.error = errorText(e); })
       .finally(() => { pv.loading = false; renderFinance(); });
+  }
+
+  function loadPenalties() {
+    const ps = NH.screens.finance.pstate;
+    ps.loading = true;
+    ps.error = null;
+    renderFinance();
+    api.getPenalties()
+      .then((d) => { ps.data = d; })
+      .catch((e) => { ps.error = errorText(e); })
+      .finally(() => { ps.loading = false; renderFinance(); });
   }
 
   function renderReconScreen() {
@@ -314,10 +338,11 @@
   function loadRecon() {
     const rv = NH.screens.payrecon.state;
     rv.loading = true;
+    rv.error = null;
     renderReconScreen();
     api.getPayRecon(NH.screens.payrecon.ym(rv.off))
       .then((d) => { rv.data = d; })
-      .catch(() => {})
+      .catch((e) => { rv.error = errorText(e); })
       .finally(() => { rv.loading = false; renderReconScreen(); });
   }
 
@@ -368,7 +393,9 @@
     }
   }
 
+  let addingTask = false; // Enter + tap on «+» within the same second = one task
   async function addTaskFromForm() {
+    if (addingTask) return;
     const titleEl = document.getElementById("task-title");
     const aptEl = document.getElementById("task-apt");
     const dueEl = document.getElementById("task-deadline");
@@ -380,14 +407,19 @@
       return;
     }
     ui.haptic("success");
-    await mutateTask(() =>
-      api.addTask({
-        title,
-        apartment: aptEl ? aptEl.value || null : null,
-        deadline: dueEl ? dueEl.dataset.value || null : null,
-        deadline_time: timeEl ? timeEl.dataset.value || null : null,
-      })
-    );
+    addingTask = true;
+    try {
+      await mutateTask(() =>
+        api.addTask({
+          title,
+          apartment: aptEl ? aptEl.value || null : null,
+          deadline: dueEl ? dueEl.dataset.value || null : null,
+          deadline_time: timeEl ? timeEl.dataset.value || null : null,
+        })
+      );
+    } finally {
+      addingTask = false;
+    }
     ui.toast("Задача добавлена");
   }
 
@@ -429,17 +461,15 @@
       if (finSeg) {
         const ps = NH.screens.finance.pstate;
         ps.view = finSeg.dataset.finView;
-        if (ps.view === "pen" && !ps.data && !ps.loading) {
-          ps.loading = true;
-          api.getPenalties()
-            .then((d) => { ps.data = d; })
-            .catch(() => {})
-            .finally(() => { ps.loading = false; renderFinance(); });
-        }
+        if (ps.view === "pen" && !ps.data && !ps.loading) loadPenalties();
         if (ps.view === "pay" && !NH.screens.finance.pay.data && !NH.screens.finance.pay.loading) {
           loadPayroll();
         }
         renderFinance();
+        return;
+      }
+      if (e.target.closest("[data-recon-retry]")) {
+        loadRecon();
         return;
       }
       // контроль: sub-view / month / shopping list
@@ -459,15 +489,16 @@
         loadControl(true);
         return;
       }
-      if (e.target.closest("[data-sup-add]")) {
+      const supAdd = e.target.closest("[data-sup-add]");
+      if (supAdd) {
         const item = ((document.getElementById("sup-item") || {}).value || "").trim();
         const qty = parseInt((document.getElementById("sup-qty") || {}).value || "1", 10) || 1;
         const apt = ((document.getElementById("sup-apt") || {}).value || "").trim();
         if (!item) { ui.toast("Напишите, что купить"); return; }
         ui.haptic("light");
-        api.addSupply({ item, qty, apartment: apt || null })
+        once(supAdd, () => api.addSupply({ item, qty, apartment: apt || null })
           .then(() => loadControl(true))
-          .catch(() => ui.toast("Не удалось сохранить"));
+          .catch(() => ui.toast("Не удалось сохранить")));
         return;
       }
       const st = e.target.closest("[data-sup-toggle]");
@@ -538,30 +569,35 @@
         renderFinance();
         return;
       }
-      if (e.target.closest("[data-pay-terms]")) {
+      const payTerms = e.target.closest("[data-pay-terms]");
+      if (payTerms) {
         const staff = (document.getElementById("pt-staff") || {}).value || "";
         const salary = parseFloat((document.getElementById("pt-salary") || {}).value || "0") || 0;
         const note = (document.getElementById("pt-note") || {}).value || "";
         if (!staff.trim()) { ui.toast("Укажите сотрудника"); return; }
         ui.haptic("light");
-        api.setPayTerms({ staff: staff.trim(), salary, pay_note: note.trim() })
+        once(payTerms, () => api.setPayTerms({ staff: staff.trim(), salary, pay_note: note.trim() })
           .then(loadPayroll)
-          .catch(() => ui.toast("Не удалось сохранить"));
+          .catch(() => ui.toast("Не удалось сохранить")));
         return;
       }
-      if (e.target.closest("[data-pay-add]")) {
+      const payAdd = e.target.closest("[data-pay-add]");
+      if (payAdd) {
         const staff = (document.getElementById("pp-staff") || {}).value || "";
         const amount = parseFloat((document.getElementById("pp-amount") || {}).value || "");
         const note = (document.getElementById("pp-note") || {}).value || "";
         if (!staff.trim() || !(amount > 0)) { ui.toast("Укажите сотрудника и сумму"); return; }
         ui.haptic("light");
         const editing = NH.screens.finance.pay.editing;
-        const call = editing
+        once(payAdd, () => (editing
           ? api.patchPayPayment(editing.id, { staff: staff.trim(), amount, note: note.trim() })
-          : api.addPayPayment({ staff: staff.trim(), amount, note: note.trim() });
-        call
-          .then(() => { NH.screens.finance.pay.editing = null; loadPayroll(); })
-          .catch(() => ui.toast("Не удалось сохранить"));
+          : api.addPayPayment({ staff: staff.trim(), amount, note: note.trim() }))
+          .then((r) => {
+            NH.screens.finance.pay.editing = null;
+            if (r && r.duplicate) ui.toast("Эта выплата уже записана");
+            loadPayroll();
+          })
+          .catch(() => ui.toast("Не удалось сохранить")));
         return;
       }
       const payDel = e.target.closest("[data-pay-del]");
@@ -569,7 +605,8 @@
         api.delPayPayment(payDel.dataset.id).then(loadPayroll).catch(() => {});
         return;
       }
-      if (e.target.closest("[data-pen-add]")) {
+      const penAdd = e.target.closest("[data-pen-add]");
+      if (penAdd) {
         const staff = (document.getElementById("pen-staff") || {}).value || "";
         const kind = (document.getElementById("pen-kind") || {}).value || "fine";
         const amount = parseFloat((document.getElementById("pen-amount") || {}).value || "");
@@ -579,10 +616,13 @@
           return;
         }
         ui.haptic("light");
-        api.addPenalty({ kind, staff: staff.trim(), amount, reason: reason.trim() })
-          .then(() => api.getPenalties())
+        once(penAdd, () => api.addPenalty({ kind, staff: staff.trim(), amount, reason: reason.trim() })
+          .then((r) => {
+            if (r && r.duplicate) ui.toast("Эта запись уже есть");
+            return api.getPenalties();
+          })
           .then((d) => { NH.screens.finance.pstate.data = d; renderFinance(); })
-          .catch(() => ui.toast("Не удалось сохранить"));
+          .catch(() => ui.toast("Не удалось сохранить")));
         return;
       }
       const penDel = e.target.closest("[data-pen-del]");
@@ -646,14 +686,14 @@
         const amount = parseFloat((document.getElementById("pr-amount") || {}).value || "");
         const method = (document.getElementById("pr-method") || {}).value || "";
         ui.haptic("light");
-        api.patchPayRecon({
+        once(prSave, () => api.patchPayRecon({
           chat_id: parseInt(prSave.dataset.chat, 10),
           msg_id: parseInt(prSave.dataset.msg, 10),
           amount: amount > 0 ? amount : null,
           method: method.trim() || null,
         })
           .then(() => { closeSheet(); loadRecon(); ui.toast("Дополнено"); })
-          .catch(() => ui.toast("Не удалось сохранить"));
+          .catch(() => ui.toast("Не удалось сохранить")));
         return;
       }
       // guest card tap → sheet

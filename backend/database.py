@@ -194,6 +194,15 @@ CREATE TABLE IF NOT EXISTS cleaning_sessions (
     forced INTEGER DEFAULT 0       -- closed by the owner / at night, not by the cleaner
 );
 
+-- daily jobs that already ran (roll call, cleaning control): lets the bot
+-- catch up after a restart without running a job twice
+CREATE TABLE IF NOT EXISTS job_runs (
+    job TEXT,
+    day DATE,
+    ran_at TIMESTAMP,
+    PRIMARY KEY (job, day)
+);
+
 -- shopping list: what the cleaners ask to buy ("нужно 103 полотенца 2, шампунь")
 CREATE TABLE IF NOT EXISTS supplies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,15 +237,24 @@ def init_db() -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(SCHEMA)
-        # migrate older databases that predate the deadline_time column
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
-        if "deadline_time" not in cols:
-            conn.execute("ALTER TABLE tasks ADD COLUMN deadline_time TEXT")
+        # Migrations. The server and the bot start at the same moment and both
+        # run this; the loser of the race gets "duplicate column name" — harmless.
+        def _add_column(table: str, column: str, decl: str) -> bool:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if column in cols:
+                return False
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                return True
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" in str(exc).lower():
+                    return False
+                raise
+
+        _add_column("tasks", "deadline_time", "TEXT")
         # attendance log: explicit status (ok / late / absent) — no-shows are
         # recorded too, so the monthly statistics are complete
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(attendance)").fetchall()]
-        if "status" not in cols:
-            conn.execute("ALTER TABLE attendance ADD COLUMN status TEXT")
+        if _add_column("attendance", "status", "TEXT"):
             conn.execute(
                 "UPDATE attendance SET status = CASE WHEN on_time THEN 'ok' ELSE 'late' END "
                 "WHERE status IS NULL AND arrived_at IS NOT NULL"
@@ -853,6 +871,41 @@ def attendance_for(work_date, arrived_only: bool = True) -> list[dict]:
     with get_conn() as conn:
         cur = conn.execute(q + " ORDER BY arrived_at", (work_date,))
         return [dict(r) for r in cur.fetchall()]
+
+
+def job_done(job: str, day: str) -> bool:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM job_runs WHERE job = ? AND day = ?", (job, day)
+        ).fetchone() is not None
+
+
+def mark_job(job: str, day: str) -> bool:
+    """Record a daily job as done. Returns False if it was already recorded."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO job_runs (job, day, ran_at) VALUES (?, ?, ?)",
+            (job, day, datetime.now().isoformat(timespec="seconds")),
+        )
+        return cur.rowcount > 0
+
+
+def salary_payment_recent(staff: str, amount: float, note: str, since: str) -> bool:
+    """A second tap on «Записать выплату» must not create a second payment."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM salary_payments WHERE staff = ? AND amount = ? AND note = ? AND at >= ? LIMIT 1",
+            (staff, amount, note, since),
+        ).fetchone() is not None
+
+
+def penalty_recent(kind: str, staff: str, amount: float, reason: str, since: str) -> bool:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM penalties WHERE kind = ? AND staff = ? AND amount = ? AND reason = ? "
+            "AND at >= ? LIMIT 1",
+            (kind, staff, amount, reason, since),
+        ).fetchone() is not None
 
 
 def count_bookings() -> int:

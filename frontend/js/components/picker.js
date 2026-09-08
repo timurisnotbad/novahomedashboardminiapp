@@ -26,7 +26,7 @@
     view.setDate(1);
     const o = overlay('<div class="pk"></div>');
     const pk = o.querySelector(".pk");
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = NH.ui.localIso();
 
     function render() {
       const y = view.getFullYear(), m = view.getMonth();
