@@ -14,6 +14,22 @@ sys.path.insert(0, str(BASE))
 
 OK, BAD, WARN = "  [OK]   ", "  [НЕТ]  ", "  [!]    "
 
+PROBLEMS: list[str] = []          # что именно чинить — печатается в конце
+REPORT: list[str] = []            # весь отчёт, чтобы сохранить в файл
+
+
+def problem(text: str) -> None:
+    PROBLEMS.append(text)
+
+
+_real_print = print
+
+
+def print(*args, **kwargs):  # noqa: A001 — весь вывод дублируется в файл
+    text = " ".join(str(a) for a in args)
+    REPORT.append(text)
+    _real_print(*args, **kwargs)
+
 
 def line(title=""):
     print("\n" + title)
@@ -25,6 +41,8 @@ def check_python():
     v = sys.version_info
     print(f"{OK if v >= (3, 10) else BAD}Версия {v.major}.{v.minor}.{v.micro}"
           + ("" if v >= (3, 10) else "  — нужна 3.10 или новее"))
+    if v < (3, 10):
+        problem("Обновите Python до 3.11 (python.org), галочка «Add python.exe to PATH»")
     print(f"         {sys.executable}")
 
 
@@ -46,7 +64,8 @@ def check_packages():
             if not optional:
                 missing.append(mod)
     if missing:
-        print("\n  Исправить:  pip install -r backend\\requirements.txt")
+        print("\n  Исправить:  запустите install.bat")
+        problem("Не установлены библиотеки: " + ", ".join(missing) + " — запустите install.bat")
     return missing
 
 
@@ -59,9 +78,11 @@ def check_jobqueue():
             print(f"{OK}Планировщик бота работает")
         else:
             print(f"{BAD}Планировщик НЕ создан — задачи по времени выполняться не будут")
-            print("         Исправить:  pip install \"python-telegram-bot[job-queue]\" pytz")
+            print("         Исправить:  запустите install.bat")
+            problem("Нет планировщика: перекличка 14:00 и контроль 18:00 не работают — install.bat")
     except BaseException as exc:  # noqa: BLE001
         print(f"{BAD}Не удалось проверить: {type(exc).__name__}: {exc}")
+        problem(f"Библиотека бота сломана ({type(exc).__name__}) — запустите install.bat")
 
 
 def check_env():
@@ -69,6 +90,7 @@ def check_env():
     p = BASE / ".env"
     if not p.exists():
         print(f"{BAD}Файла .env нет. Скопируйте .env.example в .env и заполните.")
+        problem("Нет файла .env — скопируйте .env.example в .env и заполните")
         return
     print(f"{OK}Найден: {p}")
     try:
@@ -88,11 +110,21 @@ def check_env():
         ("PAY_CHANNEL_IDS", bool(config.PAY_CHANNEL_IDS), False),
         ("SHEET_API_URL", bool(config.SHEET_API_URL), False),
     ]
+    hints = {
+        "BOT_TOKEN": "BOT_TOKEN пуст — бот не запустится. Впишите токен от @BotFather",
+        "WEBAPP_URL": "WEBAPP_URL пуст — кнопка «Дашборд» не откроется",
+        "OWNER_IDS": "OWNER_IDS пуст — вы не опознаётесь как владелец",
+        "OWNER_KEY": "OWNER_KEY пуст — на Mac и в веб-версии откроется режим сотрудника. "
+                     "Впишите в .env строку OWNER_KEY=любой-длинный-секрет",
+    }
     for name, val, required in rows:
         mark = OK if val else (BAD if required else WARN)
         print(f"{mark}{name:<16} {shown(val)}")
+        if required and not val and name in hints:
+            problem(hints[name])
     if config.DEMO_MODE:
         print(f"{WARN}DEMO_MODE включён — показываются придуманные брони, не настоящие")
+        problem("DEMO_MODE включён или RC_TOKEN пуст — данные ненастоящие")
     print(f"         Версия приложения в файлах: {config.APP_VERSION}")
     print(f"         Перекличка в {config.ATTEND_DEADLINE_T[0]:02d}:{config.ATTEND_DEADLINE_T[1]:02d}, "
           f"контроль уборок в {config.CLEANING_CHECK_T[0]:02d}:{config.CLEANING_CHECK_T[1]:02d}")
@@ -128,6 +160,7 @@ def check_server():
         pass
     if not busy:
         print(f"{BAD}Сервер не отвечает на localhost:8000 — окно «Nova Backend» не запущено")
+        problem("Сервер не запущен — запустите restart_all.bat")
         return
     print(f"{OK}Порт 8000 занят — сервер запущен")
     try:
@@ -139,6 +172,9 @@ def check_server():
         same = str(data.get("version")) == str(config.APP_VERSION)
         print(f"{OK if same else BAD}Версия сервера: {data.get('version')} "
               f"(файлы: {config.APP_VERSION})" + ("" if same else "  ← СТАРЫЙ ПРОЦЕСС, перезапустите"))
+        if not same:
+            problem(f"Сервер работает на версии {data.get('version')}, а файлы версии "
+                    f"{config.APP_VERSION} — закройте окна и запустите restart_all.bat")
         print(f"         Последняя синхронизация: {data.get('last_sync')}")
     except Exception as exc:  # noqa: BLE001
         print(f"{WARN}/api/health не ответил: {type(exc).__name__}: {exc}")
@@ -156,7 +192,8 @@ def check_logs():
     line("7. ПОСЛЕДНИЕ ОШИБКИ ИЗ ЛОГОВ")
     logs = BASE / "logs"
     if not logs.exists():
-        print(f"{WARN}Папки logs ещё нет (появится после запуска новой версии)")
+        print(f"{WARN}Папки logs ещё нет — значит, бот и сервер новой версии ещё не запускались")
+        problem("Бот ещё не запускался после обновления — запустите start_bot.bat")
         return
     found = False
     for f in sorted(logs.glob("*.log")):
@@ -184,9 +221,31 @@ def main():
     check_db()
     check_server()
     check_logs()
+
+    line("ИТОГ")
+    if PROBLEMS:
+        print(f"  Найдено проблем: {len(PROBLEMS)}\n")
+        for i, t in enumerate(PROBLEMS, 1):
+            print(f"  {i}. {t}")
+    else:
+        print("  Проблем не найдено. Если что-то не работает — пришлите логи из папки logs.")
     print("\n" + "=" * 68)
-    print("  Готово. Сделайте скриншот этого окна целиком и пришлите его.")
+    saved = save_report()
+    if saved:
+        print(f"  Отчёт целиком сохранён в файл:\n    {saved}")
+        print("  Пришлите этот файл — прокручивать окно не нужно.")
     print("=" * 68)
+
+
+def save_report():
+    try:
+        logs = BASE / "logs"
+        logs.mkdir(exist_ok=True)
+        path = logs / "diagnose.txt"
+        path.write_text("\n".join(REPORT), encoding="utf-8")
+        return path
+    except BaseException:  # noqa: BLE001
+        return None
 
 
 if __name__ == "__main__":
