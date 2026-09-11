@@ -2,6 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 requests>=2.31
 apscheduler>=3.10
-pytz>=2024.1                       # без него у бота НЕ работает расписание (JobQueue)
+# [job-queue] тянет планировщик нужной версии сам (на PTB 20.x — вместе с pytz,
+# на PTB 21+/22+ pytz уже не нужен и на Python 3.14 не собирается)
 python-telegram-bot[job-queue]>=20.7
-playwright>=1.40   # Booking.com price monitor (run once: playwright install chromium)
+playwright>=1.40   # вкладка «Цены» (после установки: playwright install chromium)

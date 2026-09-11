@@ -49,16 +49,17 @@ def check_python():
 def check_packages():
     line("2. БИБЛИОТЕКИ")
     need = [("fastapi", "сервер"), ("uvicorn", "сервер"), ("requests", "запросы"),
-            ("apscheduler", "расписание сервера"), ("pytz", "расписание бота"),
-            ("telegram", "бот"), ("playwright", "вкладка «Цены» (необязательно)")]
+            ("apscheduler", "расписание сервера"), ("telegram", "бот"),
+            ("pytz", "нужен только старой версии бота (необязательно)"),
+            ("playwright", "вкладка «Цены» (необязательно)")]
     missing = []
     for mod, what in need:
         try:
             m = __import__(mod)
-            ver = getattr(m, "__version__", "")
+            ver = str(getattr(m, "__version__", "") or "")
             print(f"{OK}{mod:<14} {ver:<10} — {what}")
         except BaseException:  # noqa: BLE001 — a broken C-extension can raise outside Exception
-            optional = mod == "playwright"
+            optional = mod in ("playwright", "pytz")
             print(f"{WARN if optional else BAD}{mod:<14} {'':<10} — {what}"
                   + ("  (не установлен)" if optional else "  ← НЕ УСТАНОВЛЕН"))
             if not optional:

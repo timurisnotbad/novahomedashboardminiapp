@@ -33,6 +33,16 @@ try:
 except BaseException as _import_exc:  # noqa: BLE001 — a missing library must not close the window
     import traceback
 
+    try:  # write the reason down before anything else: the window may be closed fast
+        _dir = Path(__file__).resolve().parent / "logs"
+        _dir.mkdir(exist_ok=True)
+        with (_dir / "bot-error.log").open("a", encoding="utf-8") as _fh:
+            import datetime as _dt
+            _fh.write(f"\n===== {_dt.datetime.now().isoformat(timespec='seconds')} "
+                      f"ошибка при загрузке библиотек =====\n")
+            traceback.print_exception(type(_import_exc), _import_exc, _import_exc.__traceback__, file=_fh)
+    except BaseException:  # noqa: BLE001
+        pass
     print("\n❌ Бот не смог запуститься: не хватает библиотек или они сломаны.\n")
     print(f"   {type(_import_exc).__name__}: {_import_exc}\n")
     print("   Исправить: запустите install.bat в папке проекта")
@@ -1376,6 +1386,10 @@ def main() -> None:
         app.job_queue.run_repeating(sessions_autoclose, interval=30 * 60, first=120)
 
     logger.info("Bot started (demo_mode=%s)", config.DEMO_MODE)
+    print("\n" + "=" * 62)
+    print(f"  ✅ БОТ ЗАПУЩЕН (версия {config.APP_VERSION}). Это окно должно оставаться открытым.")
+    print(f"  Лог: {LOG_PATH}")
+    print("=" * 62 + "\n", flush=True)
     # ALL_TYPES guards against a token whose allowed_updates was ever narrowed by
     # a previous webhook, which would silently drop edited_message (live) updates.
     app.run_polling(allowed_updates=Update.ALL_TYPES)
