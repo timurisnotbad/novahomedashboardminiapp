@@ -9,21 +9,44 @@ import asyncio
 import datetime
 import logging
 import re
+import sys
+from pathlib import Path
 
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-    Update,
-    WebAppInfo,
-)
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+# Run from any working directory (double-click, shortcut, scheduled task):
+# without this, "from backend import …" fails when cwd is not the project root.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from backend import attendance, booking_prices, config, database, notify, pay_parse, rc_sync, services, supplies
+try:
+    from telegram import (
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        KeyboardButton,
+        ReplyKeyboardMarkup,
+        Update,
+        WebAppInfo,
+    )
+    from telegram.constants import ParseMode
+    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+    from backend import (attendance, booking_prices, config, database, logsetup, notify, pay_parse,
+                         rc_sync, services, supplies)
+except BaseException as _import_exc:  # noqa: BLE001 — a missing library must not close the window
+    import traceback
+
+    print("\n❌ Бот не смог запуститься: не хватает библиотек или они сломаны.\n")
+    print(f"   {type(_import_exc).__name__}: {_import_exc}\n")
+    print("   Исправить: запустите install.bat в папке проекта")
+    print("   (он же: python -m pip install -r backend\\requirements.txt)\n")
+    traceback.print_exc()
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("\nНажмите Enter, чтобы закрыть окно… ")
+    except BaseException:  # noqa: BLE001
+        pass
+    raise SystemExit(1)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+LOG_PATH = logsetup.setup("bot")  # everything also goes to logs/bot.log
 logger = logging.getLogger("nova.bot")
 
 # PTB's JobQueue treats naive times as UTC — schedule in the server's local
@@ -1285,7 +1308,10 @@ async def _catch_up_jobs(app) -> None:
 
 def main() -> None:
     if not config.BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN is not set. Add it to .env (see .env.example).")
+        raise SystemExit(
+            "BOT_TOKEN не задан. Откройте файл .env в папке проекта и впишите токен "
+            "от @BotFather: BOT_TOKEN=123456:AA...  (образец — .env.example)"
+        )
 
     database.init_db()
     app = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands).build()
@@ -1326,6 +1352,16 @@ def main() -> None:
                                    on_text_report))
 
     # Daily summary at 08:00 + Booking.com price report at 09:00 (server local time).
+    if not app.job_queue:
+        # PTB builds a JobQueue only when APScheduler AND pytz are importable.
+        # Without it every scheduled job is silently skipped — the roll call,
+        # the 18:00 cleaning control, the auto-close. Make that impossible to miss.
+        msg = ("РАСПИСАНИЕ ВЫКЛЮЧЕНО: не установлен модуль планировщика, поэтому "
+               "перекличка 14:00, контроль уборок 18:00 и автозакрытие работать НЕ БУДУТ. "
+               "Выполните в папке проекта: pip install \"python-telegram-bot[job-queue]\" pytz "
+               "и перезапустите restart_all.bat")
+        logger.error("%s", msg)
+        print("\n" + "!" * 70 + f"\n⚠️  {msg}\n" + "!" * 70 + "\n", flush=True)
     if app.job_queue:
         app.job_queue.run_daily(daily_summary, time=datetime.time(hour=8, minute=0, tzinfo=LOCAL_TZ))
         app.job_queue.run_daily(daily_prices, time=datetime.time(hour=9, minute=0, tzinfo=LOCAL_TZ))
@@ -1345,5 +1381,44 @@ def main() -> None:
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
+def _pause(reason: str = "") -> None:
+    """A console window must never disappear with the error inside it."""
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            input(f"\n{reason}Нажмите Enter, чтобы закрыть окно… ")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _friendly(exc: BaseException) -> str:
+    name = type(exc).__name__
+    text = str(exc)
+    if name == "Conflict":
+        return ("Бот уже запущен в другом окне (Telegram разрешает только одно подключение). "
+                "Закройте лишнее окно «Nova Bot» или запустите restart_all.bat.")
+    if name == "InvalidToken":
+        return "Неверный BOT_TOKEN в .env — скопируйте токен из @BotFather заново."
+    if name in ("NetworkError", "TimedOut"):
+        return "Нет связи с Telegram. Проверьте интернет и запустите ещё раз."
+    if name == "ModuleNotFoundError":
+        return (f"Не установлен модуль: {text}. Выполните в папке проекта:\n"
+                f"    pip install -r backend\\requirements.txt")
+    return f"{name}: {text}"
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except SystemExit as exc:  # noqa: PERF203 — configuration problem, show it and wait
+        if exc.code not in (0, None):
+            print(f"\n❌ {exc.code}\n", flush=True)
+            _pause()
+    except BaseException as exc:  # noqa: BLE001 — never let the window close silently
+        path = logsetup.log_crash("bot", exc)
+        logger.exception("bot crashed")
+        print(f"\n❌ Бот остановился с ошибкой.\n\n{_friendly(exc)}\n\n"
+              f"Подробности сохранены в файл:\n    {path}\n"
+              f"Пришлите этот файл — по нему видно причину.\n", flush=True)
+        _pause()

@@ -8,11 +8,12 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, database, rc_sync, reminders, scheduler
+from . import auth, config, database, logsetup, rc_sync, reminders, scheduler
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logsetup.setup("server")  # everything also goes to logs/server.log
 logger = logging.getLogger("nova")
 
 FRONTEND_DIR = config.BASE_DIR / "frontend"
