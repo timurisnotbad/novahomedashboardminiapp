@@ -174,9 +174,16 @@ def check_booking_changes() -> None:
     if target and schedule_dirty:
         try:
             text = services.build_tomorrow_schedule_text(target)
-            notify.send(
-                "🔄 График изменился после вечернего отчёта — актуальная версия:\n\n" + text,
+            # Same key as the 22:00 plan: the plan message is edited in place
+            # (or replaced), and an unchanged schedule sends nothing — no more
+            # "🔄 График изменился" every sync cycle.
+            stamp = datetime.now().strftime("%H:%M")
+            notify.send_replacing(
+                f"plan:{target.isoformat()}",
+                f"🔄 График изменился после вечернего отчёта — актуальная версия "
+                f"(обновлено {stamp}):\n\n" + text,
                 topic="cleaning",
+                dedupe=text,
             )
         except Exception:  # noqa: BLE001
             logger.exception("After-hours schedule refresh failed")

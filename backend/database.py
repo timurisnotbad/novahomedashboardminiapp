@@ -203,6 +203,17 @@ CREATE TABLE IF NOT EXISTS job_runs (
     PRIMARY KEY (job, day)
 );
 
+-- bot messages that get edited/replaced instead of re-sent (the evening plan
+-- and its after-hours refreshes): one row per (kind, chat)
+CREATE TABLE IF NOT EXISTS bot_messages (
+    key TEXT,
+    chat_id INTEGER,
+    message_id INTEGER,
+    text_hash TEXT,
+    sent_at TIMESTAMP,
+    PRIMARY KEY (key, chat_id)
+);
+
 -- shopping list: what the cleaners ask to buy ("нужно 103 полотенца 2, шампунь")
 CREATE TABLE IF NOT EXISTS supplies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -674,10 +685,49 @@ def get_topic(chat_id: int, role: str):
     return None
 
 
+def topic_binding(chat_id: int, role: str):
+    """The binding row for exactly this role (no fallback to 'general'), or
+    None when the chat has no such binding."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM chat_topics WHERE chat_id = ? AND role = ?", (chat_id, role)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def chat_topics(chat_id: int) -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute("SELECT * FROM chat_topics WHERE chat_id = ? ORDER BY role", (chat_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
 def all_topics() -> list[dict]:
     with get_conn() as conn:
         cur = conn.execute("SELECT * FROM chat_topics ORDER BY chat_id, role")
         return [dict(r) for r in cur.fetchall()]
+
+
+def get_bot_message(key: str, chat_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM bot_messages WHERE key = ? AND chat_id = ?", (key, chat_id)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def set_bot_message(key: str, chat_id: int, message_id: int, text_hash: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO bot_messages (key, chat_id, message_id, text_hash, sent_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(key, chat_id) DO UPDATE SET "
+            "message_id=excluded.message_id, text_hash=excluded.text_hash, sent_at=excluded.sent_at",
+            (key, chat_id, message_id, text_hash, datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def prune_bot_messages(before_iso: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM bot_messages WHERE sent_at < ?", (before_iso,))
 
 
 def distinct_apartments() -> list[str]:

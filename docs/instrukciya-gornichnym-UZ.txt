@@ -44,10 +44,10 @@ Kvartiraga kirib, uning holatini ko'rganingizda:
 
 Bot javob beradi: «▶️ B-103 — уборка начата в 12:40»
 
-Turli xil yozish mumkin, bot tushunadi:
-   oldin 103
-   до 103
-   oldin b-103
+Turli xil yozish mumkin, bot tushunadi (rus klaviaturasi shart emas):
+   oldin 103      do 103       до 103
+   oldin b-103    do-103       do135
+   boshladim 103  start 103    kirdim 103
 
 Agar bir nechta krujok olish kerak bo'lsa (koridor, oshxona,
 hammom) — ketma-ket yuboravering, raqamni qayta yozish shart emas.
@@ -65,7 +65,12 @@ Tozalashni tugatganingizda:
 
    1-qadam. Tayyor kvartiraning krujogi yoki fotosini oling.
    2-qadam. Matn yuboring: 103
-            (faqat raqam, «oldin» so'zisiz)
+            (faqat raqam, «oldin» so'zisiz; «keyin 103», «posle 103»,
+            «posle-103», «tugatdim 103», «done 103» ham bo'ladi)
+
+   Hisobotlarni ish guruhidagi «Уборки» mavzusiga (yoki botga
+   shaxsiy chatda) yuboring. «Общение» mavzusidagi krujokni bot
+   hisobot deb hisoblamaydi.
 
 Bot javob beradi: «✅ B-103 — уборка завершена, 1 ч 15 мин»
 

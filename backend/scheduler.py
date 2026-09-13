@@ -13,8 +13,11 @@ _scheduler: BackgroundScheduler | None = None
 
 def _evening_summary():
     try:
-        text = services.build_tomorrow_schedule_text(date.today() + timedelta(days=1))
-        notify.send(text, topic="cleaning")
+        target = date.today() + timedelta(days=1)
+        text = services.build_tomorrow_schedule_text(target)
+        # one plan message per day: after-hours booking changes edit this very
+        # message instead of posting another copy (see reminders.py)
+        notify.send_replacing(f"plan:{target.isoformat()}", text, topic="cleaning", dedupe=text)
         logger.info("Evening summary sent")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Evening summary failed: %s", exc)

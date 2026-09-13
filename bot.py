@@ -154,7 +154,8 @@ async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     get the id for NOTIFY_CHAT_IDS."""
     chat = update.effective_chat
     thread = _thread_of(update.effective_message) if update.effective_message else None
-    extra = f"\nID темы: {thread}" if thread else ""
+    tname = _topic_name_of(update.effective_message) if thread else ""
+    extra = (f"\nID темы: {thread}" + (f" («{tname}»)" if tname else "")) if thread else ""
     await update.effective_message.reply_text(
         f"ID этого чата: {chat.id}{extra}\n"
         f"Впишите его в NOTIFY_CHAT_IDS в .env, чтобы сюда приходили уведомления."
@@ -182,23 +183,31 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = (msg.text or "").split()
     role = _TOPIC_ROLES.get(parts[1].lower()) if len(parts) > 1 else None
     if not role:
+        labels = {"cleaning": "уборки", "attendance": "явка", "general": "общий"}
+        lines = []
+        try:
+            for r in await asyncio.to_thread(database.chat_topics, chat.id):
+                where = (f"«{r['name']}»" if r.get("name")
+                         else ("General" if not r.get("thread_id") else f"тема #{r['thread_id']}"))
+                lines.append(f"  • {labels.get(r['role'], r['role'])} → {where}")
+        except Exception:  # noqa: BLE001
+            logger.exception("chat_topics failed")
+        current = ("Сейчас привязано:\n" + "\n".join(lines)) if lines else (
+            "Сейчас ничего не привязано — отчёты в темах бот пропускает, "
+            "всё остальное уходит в General.")
         await msg.reply_text(
+            current + "\n\n"
             "Использование — внутри нужной темы:\n"
-            "/topic уборки — отчёты горничных и контроль 18:00\n"
+            "/topic уборки — отчёты горничных, контроль 18:00, вечерний план\n"
             "/topic явка — приходы и перекличка\n"
             "/topic общий — всё остальное\n\n"
             "Тема General привязывается так же (отправьте команду в General)."
         )
         return
     thread = _thread_of(msg)  # None in General (also when sent as a reply there)
-    name = ""
-    try:
-        rt = msg.reply_to_message
-        if rt and rt.forum_topic_created:
-            name = rt.forum_topic_created.name
-    except Exception:  # noqa: BLE001
-        pass
-    database.set_topic(chat.id, role, thread, name)
+    name = _topic_name_of(msg)
+    await asyncio.to_thread(database.set_topic, chat.id, role, thread, name)
+    _forget_topics(chat.id)
     where = f"«{name}»" if name else ("General" if not thread else f"тема #{thread}")
     await msg.reply_text(f"✅ Привязано: {parts[1].lower()} → {where}")
 
@@ -381,15 +390,22 @@ def _register(user) -> None:
 
 def _staff_roster() -> dict[int, str]:
     """uid -> display name (@username preferred). DB registry + STAFF_IDS from
-    .env merged; owners excluded."""
+    .env merged; owners and PAY_VIEWERS (accountants — they talk to the bot
+    but don't clean) excluded, so they are not "absent" at the roll call."""
+    skip = set(config.OWNER_TELEGRAM_IDS)
+    try:
+        from backend import auth as _auth
+        skip |= _auth.pay_viewer_ids()
+    except Exception:  # noqa: BLE001
+        logger.exception("pay viewer ids failed")
     roster: dict[int, str] = {}
     for uid, nm in config.STAFF.items():
-        if uid not in config.OWNER_TELEGRAM_IDS:
+        if uid not in skip:
             roster[uid] = nm
     try:
         for r in database.all_staff():
             uid = r["staff_id"]
-            if uid in config.OWNER_TELEGRAM_IDS:
+            if uid in skip:
                 continue
             roster[uid] = f"@{r['username']}" if r.get("username") else (r.get("name") or str(uid))
     except Exception:  # noqa: BLE001
@@ -455,11 +471,32 @@ _LAST_MEDIA_TTL = 5 * 60  # a «103» right after a кружок closes the sess
 
 _CYR2LAT = str.maketrans({"А": "A", "В": "B", "Б": "B", "С": "C", "Е": "E"})
 
-# words that mark a report as "before cleaning" — "до 103", "oldin 103";
-# "до 15:00" (a time) is not one of them
-_START_RE = re.compile(
-    r"(?iu)(?:^|[^\w])(до(?!\s*\d{1,2}[:.]\d{2})|oldin|avval|before|start|старт|начало|начала|начинаю)(?=$|[^\w])"
+# Words that mark a report as "before cleaning" — in Russian, Uzbek (latin)
+# and English, since not every cleaner has a Cyrillic keyboard: "до 103",
+# "do 103", "do-135", "do135", "oldin 103", "start 103". "до 15:00" (a time)
+# is not one of them. Longer words come first so "done" is not read as "do".
+_START_WORDS = (
+    r"boshladim|boshlayapman|начинаю|начало|начала|начал|before|oldin|avval|kirdim|start|старт|до|do"
 )
+# "after cleaning" words — the default anyway, but they may be glued to the
+# number ("posle135", "keyin-103") and must be split off before matching it
+_FINISH_WORDS = (
+    r"закончила|закончил|tugatdim|tugadim|tugadi|tayyor|tamom|finish|готово|после|posle|keyin"
+    r"|убрала|убрал|after|конец|done|end"
+)
+_START_RE = re.compile(
+    rf"(?iu)(?<![a-zа-яё])(?:{_START_WORDS})(?![a-zа-яё])(?!\s*\d{{1,2}}[:.]\d{{2}})"
+)
+# "do135" / "posle-135" / "до_б051" → "do 135" / "posle 135" / "до б051"
+_GLUED_PHASE_RE = re.compile(
+    rf"(?iu)(?<![a-zа-яё])({_START_WORDS}|{_FINISH_WORDS})[\s\-–—_:.]*"
+    rf"(?=\d|[a-zа-яё]\s*-?\s*\d)"
+)
+
+
+def _split_phase_words(text: str) -> str:
+    """Put a space between a phase word and the number glued to it."""
+    return _GLUED_PHASE_RE.sub(lambda m: m.group(1) + " ", text or "")
 
 _apt_cache: list = [0.0, []]  # [expires_ts, names]
 
@@ -488,6 +525,7 @@ def _match_apartment(text: str, allow_bare: bool = False):
     With allow_bare a standalone 3-digit number resolves too: '103' -> 'B-103'."""
     if not text:
         return None
+    text = _split_phase_words(text)
     names = _apartment_names()
     up = text.upper()
     # 1) the full name as a whole token sequence: "BLV 2A-156", "B-103", "б 103".
@@ -754,20 +792,144 @@ async def _process_report(context, msg, user, apt: str, phase: str, media: list)
         pass
 
 
-async def _in_cleaning_topic(msg) -> bool:
-    """In a forum group with a bound «Уборки» topic, media counts as a report
-    only inside that topic (a photo in General is just a photo). Private chats
-    and groups without topic bindings accept reports anywhere."""
+# ---- forum topics -----------------------------------------------------------
+# In a group with topics the bot reads cleaning reports ONLY in the topic bound
+# as «Уборки» — a кружок in «Общение» is just a кружок. The binding is made
+# with /topic уборки, or learned automatically from the topic's name the first
+# time someone writes there (Telegram attaches the topic's creation message,
+# and with it the name, to every message in the topic).
+_topic_cache: dict[int, tuple[float, dict]] = {}   # chat_id -> (expires, {role: thread_id})
+_TOPIC_CACHE_TTL = 60.0
+_topic_seen: set[tuple[int, int]] = set()          # (chat_id, thread_id) already inspected
+_unbound_warned: dict[int, str] = {}               # chat_id -> day the owner was told
+
+_TOPIC_NAME_ROLES = (
+    ("cleaning", ("уборк", "убор", "clean", "tozal", "отчёт", "отчет", "hisobot")),
+    ("attendance", ("явк", "приход", "attend", "davomat", "локац", "location", "kelish")),
+)
+
+
+def _role_for_topic_name(name: str) -> str | None:
+    low = (name or "").lower()
+    for role, needles in _TOPIC_NAME_ROLES:
+        if any(n in low for n in needles):
+            return role
+    return None
+
+
+def _forget_topics(chat_id: int) -> None:
+    _topic_cache.pop(chat_id, None)
+
+
+async def _bindings(chat_id: int) -> dict:
+    """{role: thread_id} for the chat, cached for a minute (every group
+    message goes through this — the DB must not be hit each time)."""
+    import time as _time
+    hit = _topic_cache.get(chat_id)
+    if hit and hit[0] > _time.time():
+        return hit[1]
+    try:
+        rows = await asyncio.to_thread(database.chat_topics, chat_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("chat_topics failed")
+        return hit[1] if hit else {}
+    data = {r["role"]: r.get("thread_id") for r in rows}
+    if len(_topic_cache) > 100:
+        _topic_cache.clear()
+    _topic_cache[chat_id] = (_time.time() + _TOPIC_CACHE_TTL, data)
+    return data
+
+
+def _topic_name_of(msg) -> str:
+    """Name of the forum topic a message was posted in ('' when unknown)."""
+    try:
+        rt = msg.reply_to_message
+        if rt is not None and rt.forum_topic_created is not None:
+            return rt.forum_topic_created.name or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+async def _observe_topic(msg, context) -> None:
+    """Auto-bind a topic by its name when the chat has no binding for that
+    role yet — so «Уборки» works without the owner typing /topic."""
+    thread = _thread_of(msg)
+    if not thread or msg.chat.type == "private":
+        return
+    key = (msg.chat_id, thread)
+    if key in _topic_seen:
+        return
+    if len(_topic_seen) > 500:
+        _topic_seen.clear()
+    _topic_seen.add(key)
+    name = _topic_name_of(msg)
+    role = _role_for_topic_name(name)
+    if not role:
+        return
+    bound = await _bindings(msg.chat_id)
+    if role in bound:
+        return  # the owner's /topic wins
+    try:
+        await asyncio.to_thread(database.set_topic, msg.chat_id, role, thread, name)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto set_topic failed")
+        return
+    _forget_topics(msg.chat_id)
+    logger.info("topic auto-bound: chat=%s role=%s thread=%s name=%r", msg.chat_id, role, thread, name)
+    what = ("отчёты горничных, контроль 18:00 и вечерний план" if role == "cleaning"
+            else "приходы и перекличка")
+    text = (f"🔗 В группе «{msg.chat.title or msg.chat_id}» тема «{name}» привязана автоматически: "
+            f"туда пойдут {what}.\nИзменить: отправьте /topic внутри нужной темы.")
+    for uid in config.OWNER_TELEGRAM_IDS:
+        try:
+            await context.bot.send_message(chat_id=uid, text=text, disable_notification=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _is_forum(msg) -> bool:
+    """A group with topics enabled (Telegram marks the chat; a message that
+    sits inside a topic is proof as well)."""
+    try:
+        return bool(getattr(msg.chat, "is_forum", False) or msg.is_topic_message)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _in_cleaning_topic(msg, context=None) -> bool:
+    """Where a cleaning report counts:
+    * private chat — always;
+    * group without topics — anywhere;
+    * group with topics — only in the topic bound as «Уборки». With no binding
+      yet, nothing is accepted (the owner is told once a day how to bind)."""
     if msg.chat.type == "private":
         return True
-    try:
-        thread = await asyncio.to_thread(database.get_topic, msg.chat_id, "cleaning")
-        bound = await asyncio.to_thread(database.all_topics)
-    except Exception:  # noqa: BLE001
-        return True
-    if not any(t["chat_id"] == msg.chat_id for t in bound):
-        return True  # no topics configured for this chat
-    return (thread or None) == _thread_of(msg)
+    bound = await _bindings(msg.chat_id)
+    if "cleaning" in bound:
+        return (bound["cleaning"] or None) == _thread_of(msg)
+    if not _is_forum(msg):
+        return True  # an ordinary group: no topics to choose from
+    if context is not None:
+        await _warn_unbound(msg, context)
+    return False
+
+
+async def _warn_unbound(msg, context) -> None:
+    today = datetime.date.today().isoformat()
+    if _unbound_warned.get(msg.chat_id) == today:
+        return
+    _unbound_warned[msg.chat_id] = today
+    text = (f"⚠️ В группе «{msg.chat.title or msg.chat_id}» пришёл отчёт (кружок/фото), но тема "
+            f"«Уборки» не привязана — такие сообщения бот пропускает.\n\n"
+            f"Как привязать: зайдите в тему «Уборки» и отправьте там /topic уборки. "
+            f"Или просто попросите горничную прислать отчёт в теме с названием «Уборки» — "
+            f"бот привяжет её сам.")
+    for uid in config.OWNER_TELEGRAM_IDS:
+        try:
+            await context.bot.send_message(chat_id=uid, text=text, disable_notification=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -788,7 +950,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if mgid and mgid in _album_apt and not msg.caption:
         await _forward_report(context, kind, file_id, None, msg.chat_id, _thread_of(msg))
         return
-    if not await _in_cleaning_topic(msg):
+    await _observe_topic(msg, context)
+    if not await _in_cleaning_topic(msg, context):
         return  # a photo somewhere else in the group — not a report, whatever the caption says
 
     caption = msg.caption or ""
@@ -827,8 +990,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await msg.reply_text(
             "Принял! Теперь напишите номер квартиры:\n"
-            "• «до Б-051» — если это видео ДО уборки\n"
-            "• «Б-051» — если уборка закончена"
+            "• «до Б-051» / «do 051» / «oldin 051» — если это видео ДО уборки\n"
+            "• «Б-051» / «051» — если уборка закончена"
         )
     except Exception:  # noqa: BLE001
         pass
@@ -847,6 +1010,10 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     uid = user.id
     now_ts = datetime.datetime.now().timestamp()
     private = msg.chat.type == "private"
+    if not private:
+        await _observe_topic(msg, context)
+        if not await _in_cleaning_topic(msg):
+            return  # numbers count only in the «Уборки» topic, like the media
     pend_all = _pending_media.get(uid) or []
     pend = [m for m in pend_all if now_ts - m[2] < _REPORT_TTL]
     waiting = bool(pend)
@@ -868,7 +1035,10 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not apt:
         if waiting and private:
             try:
-                await msg.reply_text("Не понял номер квартиры. Напишите, например: Б-051 или «до Б-051»")
+                await msg.reply_text(
+                    "Не понял номер квартиры. Напишите, например: Б-051 или «до Б-051» "
+                    "(латиницей: b-051, do 051, oldin 051)"
+                )
             except Exception:  # noqa: BLE001
                 pass
         return
