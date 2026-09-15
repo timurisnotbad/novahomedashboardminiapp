@@ -7,8 +7,8 @@
   const MONTHS_RU = ["январь","февраль","март","апрель","май","июнь",
     "июль","август","сентябрь","октябрь","ноябрь","декабрь"];
 
-  // view: "att" | "clean" | "buy"; off = month offset (att / clean)
-  const state = { view: "att", off: 0, att: null, clean: null, buy: null, loading: false };
+  // view: "att" | "clean" | "buy" | "tasks"; off = month offset (att / clean)
+  const state = { view: "att", off: 0, att: null, clean: null, buy: null, tasks: null, loading: false };
 
   function ym(off) {
     const d = new Date();
@@ -20,7 +20,7 @@
   function segments() {
     const b = (v, label) =>
       `<button class="fin-seg__btn ${state.view === v ? "is-on" : ""}" data-ctl-view="${v}">${label}</button>`;
-    return `<div class="fin-seg">${b("att", "Явка")}${b("clean", "Уборки")}${b("buy", "Закупки")}</div>`;
+    return `<div class="fin-seg">${b("att", "Явка")}${b("clean", "Уборки")}${b("buy", "Закупки")}${b("tasks", "Задачи")}</div>`;
   }
 
   function monthNav(month) {
@@ -149,7 +149,7 @@
     if (state.loading || !d) return NH.ui.skeletonList(4);
     let html = `<div class="form-card">
       <div class="form-card__title">🛒 Добавить в список</div>
-      <div class="form-card__sub">Горничные добавляют через бота: «нужно 103 полотенца 2, шампунь»</div>
+      <div class="form-card__sub">Горничные добавляют через бота: «нужно 103 полотенца 2, шампунь». Строки «купить…» и «нет…» из темы «Поломки» попадают сюда сами</div>
       <div class="form-row2">
         <input id="sup-item" class="form-input" type="text" maxlength="80" placeholder="Что купить" />
         <input id="sup-qty" class="form-input" type="number" inputmode="numeric" min="1" placeholder="Кол-во" />
@@ -186,6 +186,16 @@
     return html;
   }
 
+  // ---- Задачи (the tasks screen, embedded) --------------------------------
+  function tasksView() {
+    const f = failed(false);
+    if (f) return f;
+    if (state.loading || !state.tasks) return NH.screens.tasks.skeleton();
+    const c = state.tasks.counts || {};
+    const sub = `<div class="pay-meta" style="margin:-6px 0 10px 4px">${c.open || 0} открытых · ${c.due_soon || 0} на сегодня · «починить…» из темы «Поломки» попадает сюда само</div>`;
+    return sub + NH.screens.tasks.render(state.tasks);
+  }
+
   function skeleton() {
     return NH.ui.skeletonList(5);
   }
@@ -194,6 +204,7 @@
     let body;
     if (state.view === "clean") body = cleanView();
     else if (state.view === "buy") body = buyView();
+    else if (state.view === "tasks") body = tasksView();
     else body = attView();
     return segments() + body;
   }

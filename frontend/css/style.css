@@ -41,6 +41,7 @@ body {
 }
 .hidden { display:none !important; }
 body.staff-mode .owner-only { display:none !important; }
+body:not(.staff-mode) .staff-only { display:none !important; }
 
 /* icons */
 svg.ic, .ic { width:1em; height:1em; }

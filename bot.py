@@ -26,10 +26,11 @@ try:
         WebAppInfo,
     )
     from telegram.constants import ParseMode
-    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+    from telegram.ext import (Application, ApplicationHandlerStop, CommandHandler, ContextTypes,
+                              MessageHandler, filters)
 
-    from backend import (attendance, booking_prices, config, database, logsetup, notify, pay_parse,
-                         rc_sync, services, supplies)
+    from backend import (attendance, booking_prices, config, database, issues, logsetup, notify,
+                         pay_parse, rc_sync, services, supplies)
 except BaseException as _import_exc:  # noqa: BLE001 — a missing library must not close the window
     import traceback
 
@@ -165,6 +166,7 @@ async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 _TOPIC_ROLES = {
     "уборки": "cleaning", "уборка": "cleaning", "cleaning": "cleaning",
     "явка": "attendance", "приход": "attendance", "attendance": "attendance",
+    "поломки": "issues", "ремонт": "issues", "issues": "issues",
     "общий": "general", "общее": "general", "general": "general",
 }
 
@@ -183,7 +185,7 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = (msg.text or "").split()
     role = _TOPIC_ROLES.get(parts[1].lower()) if len(parts) > 1 else None
     if not role:
-        labels = {"cleaning": "уборки", "attendance": "явка", "general": "общий"}
+        labels = {"cleaning": "уборки", "attendance": "явка", "issues": "поломки", "general": "общий"}
         lines = []
         try:
             for r in await asyncio.to_thread(database.chat_topics, chat.id):
@@ -200,6 +202,7 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Использование — внутри нужной темы:\n"
             "/topic уборки — отчёты горничных, контроль 18:00, вечерний план\n"
             "/topic явка — приходы и перекличка\n"
+            "/topic поломки — бот читает эту тему и заносит закупки и задачи в «Контроль»\n"
             "/topic общий — всё остальное\n\n"
             "Тема General привязывается так же (отправьте команду в General)."
         )
@@ -806,6 +809,7 @@ _unbound_warned: dict[int, str] = {}               # chat_id -> day the owner wa
 _TOPIC_NAME_ROLES = (
     ("cleaning", ("уборк", "убор", "clean", "tozal", "отчёт", "отчет", "hisobot")),
     ("attendance", ("явк", "приход", "attend", "davomat", "локац", "location", "kelish")),
+    ("issues", ("полом", "ремонт", "неисправ", "issue", "broken", "repair", "buzil", "muammo", "ta'mir", "tamir")),
 )
 
 
@@ -877,8 +881,10 @@ async def _observe_topic(msg, context) -> None:
         return
     _forget_topics(msg.chat_id)
     logger.info("topic auto-bound: chat=%s role=%s thread=%s name=%r", msg.chat_id, role, thread, name)
-    what = ("отчёты горничных, контроль 18:00 и вечерний план" if role == "cleaning"
-            else "приходы и перекличка")
+    what = {"cleaning": "отчёты горничных, контроль 18:00 и вечерний план",
+            "attendance": "приходы и перекличка",
+            "issues": "всё, что там пишут, бот будет заносить в Контроль → Закупки и Задачи",
+            }.get(role, role)
     text = (f"🔗 В группе «{msg.chat.title or msg.chat_id}» тема «{name}» привязана автоматически: "
             f"туда пойдут {what}.\nИзменить: отправьте /topic внутри нужной темы.")
     for uid in config.OWNER_TELEGRAM_IDS:
@@ -1172,6 +1178,67 @@ async def on_supplies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.reply_text(f"📝 Записал в закупки: {shown}{where}")
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------------------------------------------------------------------------
+# «Поломки» topic: every line becomes a purchase or a repair task
+# ---------------------------------------------------------------------------
+async def on_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs in its own handler group before everything else. Inside the topic
+    bound as «Поломки» it records the lines and stops the other handlers (so
+    «нужно …» there is not written twice); elsewhere it does nothing."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not msg.text or msg.chat.type == "private":
+        return
+    await _observe_topic(msg, context)
+    bound = await _bindings(msg.chat_id)
+    if "issues" not in bound or (bound["issues"] or None) != _thread_of(msg):
+        return
+    items = issues.parse_lines(msg.text, lambda t: _match_apartment(t, allow_bare=True))
+    if not items:
+        raise ApplicationHandlerStop  # chatter in «Поломки» is nobody else's business either
+    _register(user)
+    who = _display_name(user)
+    now = datetime.datetime.now().isoformat(timespec="minutes")
+    added_buy: list[str] = []
+    added_fix: list[str] = []
+    for it in items:
+        key = issues.src_key(msg.chat_id, msg.message_id, it["kind"], it["apartment"], it["text"])
+        try:
+            if it["kind"] == "buy":
+                if await asyncio.to_thread(database.src_recorded, "supplies", key):
+                    continue  # an edited message: this line was recorded already
+                await asyncio.to_thread(database.add_supply, it["apartment"], it["text"], it["qty"],
+                                        who, now, key)
+                added_buy.append(f"{it['text']}{' ×' + str(it['qty']) if it['qty'] > 1 else ''}"
+                                 + (f" ({it['apartment']})" if it["apartment"] else ""))
+            else:
+                if await asyncio.to_thread(database.src_recorded, "tasks", key):
+                    continue
+                await asyncio.to_thread(database.add_task, it["apartment"], it["text"], None, None,
+                                        f"{who} · чат «Поломки»", key)
+                added_fix.append(it["text"] + (f" ({it['apartment']})" if it["apartment"] else ""))
+        except Exception:  # noqa: BLE001
+            logger.exception("issue line failed: %r", it)
+    if added_buy or added_fix:
+        logger.info("issues: %d purchases, %d tasks from %s", len(added_buy), len(added_fix), who)
+        # a quiet acknowledgement: a reaction, not another message in the chat
+        try:
+            await context.bot.set_message_reaction(chat_id=msg.chat_id, message_id=msg.message_id,
+                                                   reaction="✍")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reaction failed (%s) — replying instead", exc)
+            parts = []
+            if added_buy:
+                parts.append("в закупки: " + ", ".join(added_buy))
+            if added_fix:
+                parts.append("в задачи: " + ", ".join(added_fix))
+            try:
+                await msg.reply_text("📝 Записал " + "; ".join(parts), disable_notification=True)
+            except Exception:  # noqa: BLE001
+                pass
+    raise ApplicationHandlerStop
 
 
 async def supplies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1510,6 +1577,11 @@ def main() -> None:
     # Telegram only detects latin /commands, so accept typed Cyrillic ones too
     # (slash required — a plain «цены» in the group is just conversation).
     _msg = filters.UpdateType.MESSAGE
+    # «Поломки» topic reader — its own group, so it sees every group text
+    # (new and edited) before the group-0 handlers and can stop them
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS
+        & (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE), on_issue_text), group=-1)
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/цены\b") & _msg, prices_cmd))
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/сброс\b") & _msg, reset_cmd))
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(нужно|закупки|список)\b") & _msg, supplies_cmd))

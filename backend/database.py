@@ -263,6 +263,11 @@ def init_db() -> None:
                 raise
 
         _add_column("tasks", "deadline_time", "TEXT")
+        # items the bot pulled out of the «Поломки» topic: who wrote it, and
+        # the chat-line id so an edited message is not recorded twice
+        _add_column("tasks", "created_by", "TEXT")
+        _add_column("tasks", "src_key", "TEXT")
+        _add_column("supplies", "src_key", "TEXT")
         # attendance log: explicit status (ok / late / absent) — no-shows are
         # recorded too, so the monthly statistics are complete
         if _add_column("attendance", "status", "TEXT"):
@@ -421,14 +426,26 @@ def set_cleaning_status(apartment_name: str, cleaning_date: str, status: str) ->
 # ---------------------------------------------------------------------------
 # Tasks (per-apartment and general to-do list)
 # ---------------------------------------------------------------------------
-def add_task(apartment_name, title: str, deadline=None, deadline_time=None) -> int:
+def add_task(apartment_name, title: str, deadline=None, deadline_time=None,
+             created_by=None, src_key=None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO tasks (apartment_name, title, deadline, deadline_time) "
-            "VALUES (?, ?, ?, ?)",
-            (apartment_name or None, title, deadline or None, deadline_time or None),
+            "INSERT INTO tasks (apartment_name, title, deadline, deadline_time, created_by, src_key) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (apartment_name or None, title, deadline or None, deadline_time or None,
+             created_by or None, src_key or None),
         )
         return cur.lastrowid
+
+
+def src_recorded(table: str, src_key: str) -> bool:
+    """Was this chat line already turned into a task / supply?"""
+    if table not in ("tasks", "supplies"):
+        raise ValueError(table)
+    with get_conn() as conn:
+        return conn.execute(
+            f"SELECT 1 FROM {table} WHERE src_key = ? LIMIT 1", (src_key,)
+        ).fetchone() is not None
 
 
 def get_task(task_id: int) -> dict | None:
@@ -625,11 +642,14 @@ def cleaning_sessions_month(ym: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Supplies (shopping list)
 # ---------------------------------------------------------------------------
-def add_supply(apartment, item: str, qty: int, staff_name: str, created_at: str) -> int:
+def add_supply(apartment, item: str, qty: int, staff_name: str, created_at: str,
+               src_key=None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO supplies (apartment, item, qty, staff_name, created_at) VALUES (?, ?, ?, ?, ?)",
-            (apartment or None, item, max(1, int(qty or 1)), staff_name or "", created_at),
+            "INSERT INTO supplies (apartment, item, qty, staff_name, created_at, src_key) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (apartment or None, item, max(1, int(qty or 1)), staff_name or "", created_at,
+             src_key or None),
         )
         return cur.lastrowid
 

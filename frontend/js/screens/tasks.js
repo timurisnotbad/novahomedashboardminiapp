@@ -25,7 +25,8 @@
       else if (t.due_today) due = `<span class="due orange">сегодня</span>`;
       else due = `<span class="due">${esc(t.deadline_human)}</span>`;
     }
-    const meta = apt || due ? `<div class="task__meta">${apt}${due}</div>` : "";
+    const by = t.created_by ? `<span class="due">${esc(t.created_by)}</span>` : "";
+    const meta = apt || due || by ? `<div class="task__meta">${apt}${due}${by}</div>` : "";
     return `
       <div class="li">
         <button class="circle ${cls}" data-task-toggle data-id="${t.id}" data-status="${next}" aria-label="Готово">${done ? icon("check") : ""}</button>

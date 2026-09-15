@@ -356,6 +356,7 @@ def _task_view(t: dict, today: date) -> dict:
         "overdue": overdue,
         "due_today": due_today,
         "done_at": t.get("done_at"),
+        "created_by": t.get("created_by"),
     }
 
 

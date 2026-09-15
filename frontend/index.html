@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Nova Home</title>
-  <link rel="stylesheet" href="css/style.css?v=30" />
+  <link rel="stylesheet" href="css/style.css?v=31" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body class="staff-mode"><!-- start locked down; app.js unlocks owner after /api/me -->
@@ -66,7 +66,8 @@
     <button class="nav-item owner-only" data-screen="finance"><svg><use href="#i-wallet"/></svg><span>Касса</span></button>
     <button class="nav-item owner-only" data-screen="prices"><svg><use href="#i-tag"/></svg><span>Цены</span></button>
     <button class="nav-item pay-only" data-screen="payments"><svg><use href="#i-wallet2"/></svg><span>Оплаты</span></button>
-    <button class="nav-item" data-screen="tasks"><svg><use href="#i-tasks"/></svg><span>Задачи</span></button>
+    <!-- owners find Задачи inside Контроль; staff keep the tab -->
+    <button class="nav-item staff-only" data-screen="tasks"><svg><use href="#i-tasks"/></svg><span>Задачи</span></button>
     <button class="nav-item owner-only" data-screen="control"><svg><use href="#i-eye"/></svg><span>Контроль</span></button>
   </nav>
 
@@ -78,22 +79,22 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="js/api.js?v=30"></script>
-  <script src="js/components/ui.js?v=30"></script>
-  <script src="js/components/booking-card.js?v=30"></script>
-  <script src="js/components/cleaning-card.js?v=30"></script>
-  <script src="js/components/metrics.js?v=30"></script>
-  <script src="js/components/picker.js?v=30"></script>
-  <script src="js/screens/today.js?v=30"></script>
-  <script src="js/screens/tomorrow.js?v=30"></script>
-  <script src="js/screens/cleaning.js?v=30"></script>
-  <script src="js/screens/guests.js?v=30"></script>
-  <script src="js/screens/occupancy.js?v=30"></script>
-  <script src="js/screens/finance.js?v=30"></script>
-  <script src="js/screens/prices.js?v=30"></script>
-  <script src="js/screens/payrecon.js?v=30"></script>
-  <script src="js/screens/tasks.js?v=30"></script>
-  <script src="js/screens/control.js?v=30"></script>
-  <script src="js/app.js?v=30"></script>
+  <script src="js/api.js?v=31"></script>
+  <script src="js/components/ui.js?v=31"></script>
+  <script src="js/components/booking-card.js?v=31"></script>
+  <script src="js/components/cleaning-card.js?v=31"></script>
+  <script src="js/components/metrics.js?v=31"></script>
+  <script src="js/components/picker.js?v=31"></script>
+  <script src="js/screens/today.js?v=31"></script>
+  <script src="js/screens/tomorrow.js?v=31"></script>
+  <script src="js/screens/cleaning.js?v=31"></script>
+  <script src="js/screens/guests.js?v=31"></script>
+  <script src="js/screens/occupancy.js?v=31"></script>
+  <script src="js/screens/finance.js?v=31"></script>
+  <script src="js/screens/prices.js?v=31"></script>
+  <script src="js/screens/payrecon.js?v=31"></script>
+  <script src="js/screens/tasks.js?v=31"></script>
+  <script src="js/screens/control.js?v=31"></script>
+  <script src="js/app.js?v=31"></script>
 </body>
 </html>

@@ -292,4 +292,4 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "30"
+APP_VERSION = "31"

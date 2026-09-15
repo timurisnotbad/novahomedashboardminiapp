@@ -370,6 +370,7 @@
     const month = NH.screens.control.ym(cs.off);
     const call = v === "clean" ? api.getCleaningStats(month)
       : v === "buy" ? api.getSupplies()
+      : v === "tasks" ? api.getTasks()
       : api.getAttendanceStats(month);
     call
       .then((d) => { if (seq === cs.seq) cs[v] = d; })
@@ -387,7 +388,9 @@
     try {
       await fn();
       delete cache.tasks;
-      await loadScreen("tasks", true);
+      // owners edit tasks inside Контроль → Задачи; staff on the Задачи tab
+      if (current === "control") loadControl(true);
+      else await loadScreen("tasks", true);
     } catch (e) {
       ui.toast("Ошибка. Попробуйте ещё раз.");
     }
