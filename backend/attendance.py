@@ -87,7 +87,9 @@ def check_arrival(staff_id, staff_name, lat, lng, now=None) -> dict:
     return {
         "status": "recorded",
         "distance": dist,
-        "reply": "✅ Приход отмечен, спасибо!",
+        "late": 0 if on_time else late,
+        "reply": ("✅ Приход отмечен, спасибо!" if on_time
+                  else f"⚠️ Приход отмечен с опозданием {late} мин (смена с {config.SHIFT_START})."),
         "notify": (
             f"🟢 {staff_name} пришёл(ла) на работу в {now.strftime('%H:%M')} — {status}"
         ),

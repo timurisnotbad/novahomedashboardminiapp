@@ -217,6 +217,28 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 _loc_status: dict[int, str] = {}  # uid -> last attendance status (to report transitions once)
 
+# Feedback rule: when everything is fine the bot answers with a reaction on
+# the person's message (no new message in the chat, no notification); when
+# something is wrong or needs an explanation it answers with text. Two
+# reactions only, so nobody has to learn a dictionary:
+REACT_OK = "👍"      # «принято»: report / arrival recorded
+REACT_NOTED = "✍"   # «записал в список»: supplies, «Поломки»
+
+
+async def _ack(context, msg, emoji: str, fallback: str) -> None:
+    """React on the message; if reactions are unavailable here (disabled in
+    the group, old client), say it with the text instead."""
+    try:
+        await context.bot.set_message_reaction(chat_id=msg.chat_id, message_id=msg.message_id,
+                                               reaction=emoji)
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.info("reaction unavailable (%s) — replying with text", exc)
+    try:
+        await msg.reply_text(fallback, disable_notification=True)
+    except Exception:  # noqa: BLE001
+        pass
+
 
 async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Mark staff arrival from a live location inside the work zone."""
@@ -274,10 +296,13 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if status == "recorded":
         if res.get("notify"):
             notify.send(res["notify"], topic="attendance")
-        try:
-            await msg.reply_text(res["reply"])
-        except Exception:  # noqa: BLE001
-            pass
+        if res.get("late"):
+            try:  # not a clean "ok": say how late, so the person knows it counted
+                await msg.reply_text(res["reply"])
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            await _ack(context, msg, REACT_OK, res["reply"])
     elif not is_edit or (status == "too_late" and prev not in (None, "too_late")):
         # "outside" / "already": answer once (on the initial share) so the person
         # gets feedback, but don't repeat on every live-location tick. The one
@@ -681,6 +706,7 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
                     "caption": f"📎 {apt} · доп. видео ДО · {who} · {hm}",
                     "reply": f"Уборка {apt} уже начата в {_hm(cur.get('started_at'))} — "
                              f"жду отчёт «после»: кружок + «{apt}».",
+                    "ok": True,
                 }
             return {
                 "caption": f"⚠️ {apt} · видео от {who} · квартиру убирает "
@@ -718,6 +744,7 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
             "reply": f"▶️ {apt} — уборка начата в {hm}. Когда закончите — "
                      f"кружок + «{apt}».",
             "status": "in_progress",
+            "ok": True,
         }
 
     # ---- finish ----
@@ -737,6 +764,7 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
             "caption": f"✅ ПОСЛЕ · {apt} · {who} · {_hm(cur.get('started_at'))}–{hm} · {_fmt_dur(dur)}",
             "reply": f"✅ {apt} — уборка завершена, {_fmt_dur(dur)}. Спасибо!",
             "status": "done",
+            "ok": True,
         }
     last = database.session_for(apt, today)
     if last and last.get("finished_at"):
@@ -753,6 +781,7 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
                 "caption": f"✅ ПОСЛЕ · {apt} · {who} · {_hm(last.get('started_at'))}–{hm}{took}",
                 "reply": f"✅ {apt} — уборка завершена{took}. Спасибо!",
                 "status": "done",
+                "ok": True,
             }
         return {
             "caption": f"📎 {apt} · доп. видео · {who} · {hm}",
@@ -789,7 +818,10 @@ async def _process_report(context, msg, user, apt: str, phase: str, media: list)
         for i, (kind, file_id) in enumerate(media):
             cap = res["caption"] if i == 0 else None
             await _forward_report(context, kind, file_id, cap, msg.chat_id, _thread_of(msg))
-    try:
+    if res.get("ok"):
+        await _ack(context, msg, REACT_OK, res["reply"])  # all good: a 👍, no message
+        return
+    try:  # a rule reminder or a conflict: explain in words
         await msg.reply_text(res["reply"])
     except Exception:  # noqa: BLE001
         pass
@@ -1174,10 +1206,7 @@ async def on_supplies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.exception("add_supply failed")
     shown = ", ".join(f"{it} ×{q}" if q > 1 else it for it, q in items)
     where = f" ({apt})" if apt else ""
-    try:
-        await msg.reply_text(f"📝 Записал в закупки: {shown}{where}")
-    except Exception:  # noqa: BLE001
-        pass
+    await _ack(context, msg, REACT_NOTED, f"📝 Записал в закупки: {shown}{where}")
 
 
 # ---------------------------------------------------------------------------
@@ -1223,21 +1252,12 @@ async def on_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.exception("issue line failed: %r", it)
     if added_buy or added_fix:
         logger.info("issues: %d purchases, %d tasks from %s", len(added_buy), len(added_fix), who)
-        # a quiet acknowledgement: a reaction, not another message in the chat
-        try:
-            await context.bot.set_message_reaction(chat_id=msg.chat_id, message_id=msg.message_id,
-                                                   reaction="✍")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("reaction failed (%s) — replying instead", exc)
-            parts = []
-            if added_buy:
-                parts.append("в закупки: " + ", ".join(added_buy))
-            if added_fix:
-                parts.append("в задачи: " + ", ".join(added_fix))
-            try:
-                await msg.reply_text("📝 Записал " + "; ".join(parts), disable_notification=True)
-            except Exception:  # noqa: BLE001
-                pass
+        parts = []
+        if added_buy:
+            parts.append("в закупки: " + ", ".join(added_buy))
+        if added_fix:
+            parts.append("в задачи: " + ", ".join(added_fix))
+        await _ack(context, msg, REACT_NOTED, "📝 Записал " + "; ".join(parts))
     raise ApplicationHandlerStop
 
 

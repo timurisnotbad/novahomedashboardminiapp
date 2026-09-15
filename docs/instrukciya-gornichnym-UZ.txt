@@ -12,7 +12,10 @@ NIMA O'ZGARDI — QISQACHA
    gacha yuborish mumkin (avval 12:30 edi).
 3. Xaridlar ro'yxati paydo bo'ldi: botga nima kerakligini yozasiz —
    bot eslab qoladi.
-4. Tozalashni kim boshlagan bo'lsa, o'sha yopadi.
+4. Hammasi joyida bo'lsa, bot xabar YOZMAYDI, balki xabaringizga
+   reaksiya qo'yadi: 👍 — qabul qilindi, ✍ — ro'yxatga yozildi.
+   Bot MATN yozsa — demak nimadir noto'g'ri, uni o'qing.
+5. Tozalashni kim boshlagan bo'lsa, o'sha yopadi.
 
 ════════════════════════════════════════════════════════════
 
@@ -30,7 +33,8 @@ Qoidalar:
      50 000 so'm jarima.
 
 Oddiy geopozitsiya to'g'ri kelmaydi. Aynan «Translyatsiya» kerak.
-Bot javob beradi: «✅ Приход отмечен, спасибо!»
+Bot lokatsiyangizga 👍 qo'yadi — kelganingiz belgilandi.
+Kechiksangiz, bot matn bilan yozadi: «отмечен с опозданием 25 мин».
 
 ════════════════════════════════════════════════════════════
 
@@ -42,7 +46,7 @@ Kvartiraga kirib, uning holatini ko'rganingizda:
    2-qadam. Matn yuboring: oldin 103
             (o'z kvartirangiz raqami)
 
-Bot javob beradi: «▶️ B-103 — уборка начата в 12:40»
+Bot 👍 qo'yadi — tozalash boshlandi, vaqt hisoblanmoqda.
 
 Turli xil yozish mumkin, bot tushunadi (rus klaviaturasi shart emas):
    oldin 103      do 103       до 103
@@ -72,7 +76,7 @@ Tozalashni tugatganingizda:
    shaxsiy chatda) yuboring. «Общение» mavzusidagi krujokni bot
    hisobot deb hisoblamaydi.
 
-Bot javob beradi: «✅ B-103 — уборка завершена, 1 ч 15 мин»
+Bot 👍 qo'yadi — tozalash yopildi, vaqt hisoblandi.
 
 MUHIM:
    • Tozalashni faqat uni boshlagan farrosh yopa oladi.
@@ -95,7 +99,7 @@ yoki ruscha shaklda:
 
    нужно 103 полотенца 2, шампунь
 
-Bot javob beradi: «📝 Записал в закупки: sochiq ×2, shampun (B-103)»
+Bot ✍ qo'yadi — xarid ro'yxatiga yozib qo'ydi.
 
 Qoidalar:
    • Xabar «kerak» so'zi bilan tugasin yoki «нужно» bilan boshlansin.
