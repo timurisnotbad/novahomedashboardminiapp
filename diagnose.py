@@ -210,6 +210,150 @@ def check_logs():
     print(f"\n         Полные логи: {logs}")
 
 
+def _ps(cmd: str, timeout: int = 25) -> str:
+    """Run a PowerShell one-liner (Windows only); '' on any failure."""
+    if os.name != "nt":
+        return ""
+    import subprocess
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True,
+                           text=True, timeout=timeout, encoding="utf-8", errors="replace")
+        return (r.stdout or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _parse_ts(line: str):
+    from datetime import datetime
+    try:
+        return datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _gaps(path: Path, min_gap_min: int, max_lines: int = 4000):
+    """(start, end, minutes) periods with no log lines at all — the process
+    was not running (or the PC was off / asleep)."""
+    from datetime import datetime
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
+    except Exception:  # noqa: BLE001
+        return [], None
+    prev = None
+    gaps = []
+    last = None
+    for ln in lines:
+        ts = _parse_ts(ln)
+        if ts is None:
+            continue
+        if prev is not None:
+            mins = (ts - prev).total_seconds() / 60
+            if mins >= min_gap_min:
+                gaps.append((prev, ts, int(mins)))
+        prev = ts
+        last = ts
+    return gaps[-8:], last
+
+
+_EVENT_NAMES = {
+    "1074": "перезагрузка/выключение по команде (Windows Update или пользователь)",
+    "6005": "Windows запустилась",
+    "6006": "Windows штатно выключилась",
+    "6008": "внезапное выключение (свет, кнопка питания, зависание)",
+    "41": "компьютер выключился без штатного завершения (питание/сбой)",
+    "42": "компьютер УСНУЛ",
+    "107": "компьютер проснулся",
+}
+
+
+def check_why_stopped():
+    from datetime import datetime
+    line("8. ПОЧЕМУ БОТ ОСТАНАВЛИВАЛСЯ")
+    logs = BASE / "logs"
+    now = datetime.now()
+    # heartbeat: the bot writes it every minute
+    hb = logs / "bot-heartbeat.txt"
+    if hb.exists():
+        try:
+            txt = hb.read_text(encoding="utf-8").strip()
+            ts = _parse_ts(txt)
+            age = (now - ts).total_seconds() / 60 if ts else None
+            if age is not None and age <= 3:
+                print(f"{OK}Бот жив: последняя отметка {ts:%d.%m %H:%M} ({txt.split()[-1]})")
+            else:
+                when = f"{ts:%d.%m %H:%M}" if ts else "?"
+                print(f"{BAD}Бот НЕ работает: последняя отметка жизни {when}"
+                      + (f" — {age / 60:.1f} ч назад" if age else ""))
+                problem(f"Бот не работает с {when} — запустите restart_all.bat")
+        except Exception as exc:  # noqa: BLE001
+            print(f"{WARN}Отметка жизни не читается: {exc}")
+    else:
+        print(f"{WARN}Файла logs\\bot-heartbeat.txt нет — бот версии 33+ ещё не запускался")
+    # silent periods in the logs = the process was not running
+    for name, thr in (("bot.log", 20), ("server.log", 45)):
+        p = logs / name
+        if not p.exists():
+            continue
+        gaps, last = _gaps(p, thr)
+        if last:
+            print(f"         {name}: последняя запись {last:%d.%m %H:%M}")
+        if gaps:
+            print(f"{WARN}{name}: периоды без единой записи (процесс не работал):")
+            for a, b, m in gaps:
+                print(f"           {a:%d.%m %H:%M} → {b:%d.%m %H:%M}  ({m // 60} ч {m % 60:02d} мин)")
+        else:
+            print(f"{OK}{name}: пауз дольше {thr} мин за последние записи нет")
+    if os.name != "nt":
+        return
+    # Windows: reboots, sleep, power loss — the usual reasons a console window disappears
+    boot = _ps("(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('yyyy-MM-dd HH:mm')")
+    if boot:
+        print(f"         Windows загружена: {boot}")
+    ev = _ps(
+        "Get-WinEvent -FilterHashtable @{LogName='System'; Id=1074,6005,6006,6008,41,42,107; "
+        "StartTime=(Get-Date).AddDays(-7)} -MaxEvents 40 -ErrorAction SilentlyContinue | "
+        "ForEach-Object { $_.TimeCreated.ToString('yyyy-MM-dd HH:mm') + '|' + $_.Id + '|' + "
+        "(($_.Message -split \"`n\")[0]) }"
+    )
+    rows = [r for r in ev.splitlines() if "|" in r]
+    if rows:
+        print("         События Windows за 7 дней (перезагрузки, сон, питание):")
+        reboots = sleeps = 0
+        for r in rows[:25]:
+            ts, eid, msg = (r.split("|", 2) + ["", ""])[:3]
+            label = _EVENT_NAMES.get(eid.strip(), msg.strip()[:60])
+            print(f"           {ts}  {label}")
+            if eid.strip() in ("1074", "6005", "6008", "41"):
+                reboots += 1
+            if eid.strip() == "42":
+                sleeps += 1
+        if reboots:
+            problem(f"Компьютер перезагружался ({reboots} событ. за 7 дней) — после перезагрузки бот "
+                    f"не стартует сам, пока не выполнен autostart.bat")
+        if sleeps:
+            problem(f"Компьютер засыпал ({sleeps} раз за 7 дней) — во сне бот не работает; "
+                    f"autostart.bat отключает сон")
+    else:
+        print(f"{WARN}Журнал событий Windows не прочитался (нет прав?) — не страшно")
+    # sleep timeout of the active power plan (AC)
+    pc = _ps("powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE")
+    import re
+    m = re.search(r"AC Power Setting Index:\s*0x([0-9a-fA-F]+)", pc)
+    if m:
+        secs = int(m.group(1), 16)
+        if secs == 0:
+            print(f"{OK}Сон от сети отключён")
+        else:
+            print(f"{BAD}Компьютер засыпает через {secs // 60} мин бездействия — бот во сне не работает")
+            problem(f"Сон через {secs // 60} мин — запустите autostart.bat (он отключает сон)")
+    startup = Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs/Startup/NovaHome.bat"
+    if startup.exists():
+        print(f"{OK}Автозапуск после перезагрузки настроен")
+    else:
+        print(f"{BAD}Автозапуска нет: после перезагрузки бот не поднимется — запустите autostart.bat")
+        problem("Нет автозапуска — запустите autostart.bat один раз")
+
+
 def main():
     print("=" * 68)
     print("  NOVA HOME — САМОПРОВЕРКА")
@@ -222,6 +366,10 @@ def main():
     check_db()
     check_server()
     check_logs()
+    try:
+        check_why_stopped()
+    except Exception as exc:  # noqa: BLE001
+        print(f"{WARN}Раздел не отработал: {type(exc).__name__}: {exc}")
 
     line("ИТОГ")
     if PROBLEMS:

@@ -18,6 +18,8 @@ if errorlevel 1 (
 )
 
 echo [2/5] Ostanavlivayu starye processy Nova...
+rem the .bat windows restart python when it exits, so they must go first
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.Name -ne 'powershell.exe' -and ($_.CommandLine -like '*start_bot.bat*' -or $_.CommandLine -like '*start_server.bat*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.Name -ne 'powershell.exe' -and ($_.CommandLine -like '*backend.main:app*' -or $_.CommandLine -like '*bot.py*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8000 " ^| findstr LISTENING') do (
     echo     osvobozhdayu port 8000 (PID %%p)

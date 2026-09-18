@@ -1499,6 +1499,39 @@ async def daily_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to send daily summary to %s: %s", uid, exc)
 
 
+HEARTBEAT_PATH = logsetup.LOG_DIR / "bot-heartbeat.txt"
+EXIT_RESTART = 3  # start_bot.bat restarts the bot on this exit code
+
+
+async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Every minute: note that the bot is alive (diagnose.bat shows the age of
+    this mark, so a dead bot is visible at a glance) and make sure the Telegram
+    polling task is still running. PTB retries network errors forever, but if
+    the poller ever stops for good the process would sit there looking alive
+    while receiving nothing — better to exit and let the .bat start it again."""
+    updater = context.application.updater
+    polling = bool(updater and updater.running)
+    try:
+        HEARTBEAT_PATH.parent.mkdir(exist_ok=True)
+        HEARTBEAT_PATH.write_text(
+            f"{datetime.datetime.now().isoformat(timespec='seconds')} polling={'ok' if polling else 'DEAD'}\n",
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    # two misses in a row (2 min): a normal shutdown also passes through a
+    # short "updater stopped, app still running" moment and must not count
+    _dead_polls[0] = _dead_polls[0] + 1 if (not polling and context.application.running) else 0
+    if _dead_polls[0] >= 2:
+        logger.critical("Telegram polling stopped — exiting so start_bot.bat restarts the bot")
+        print("\n❌ Опрос Telegram остановился. Перезапускаюсь…\n", flush=True)
+        import os
+        os._exit(EXIT_RESTART)
+
+
+_dead_polls = [0]
+
+
 async def _set_commands(app) -> None:
     """Publish the command menu: a short list for everyone, the full one in
     the owners' private chats. Runs once at startup; failures are harmless."""
@@ -1646,6 +1679,9 @@ def main() -> None:
         app.job_queue.run_daily(cleaning_watch, time=datetime.time(hour=ch, minute=cm, tzinfo=LOCAL_TZ))
         # forgotten «после» reports: close sessions older than SESSION_MAX_HOURS
         app.job_queue.run_repeating(sessions_autoclose, interval=30 * 60, first=120)
+        # liveness: a timestamp file diagnose.bat reads, plus a self-check
+        # that restarts the process (via start_bot.bat) if polling ever dies
+        app.job_queue.run_repeating(heartbeat, interval=60, first=10)
 
     logger.info("Bot started (demo_mode=%s)", config.DEMO_MODE)
     print("\n" + "=" * 62)
@@ -1686,11 +1722,12 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        pass
+        logger.info("bot stopped: Ctrl+C or the window was closed")
     except SystemExit as exc:  # noqa: PERF203 — configuration problem, show it and wait
         if exc.code not in (0, None):
             print(f"\n❌ {exc.code}\n", flush=True)
             _pause()
+            sys.exit(2)  # start_bot.bat: a .env problem, restarting won't help
     except BaseException as exc:  # noqa: BLE001 — never let the window close silently
         path = logsetup.log_crash("bot", exc)
         logger.exception("bot crashed")
