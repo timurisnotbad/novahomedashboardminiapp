@@ -276,7 +276,10 @@ def check_why_stopped():
     if hb.exists():
         try:
             txt = hb.read_text(encoding="utf-8").strip()
-            ts = _parse_ts(txt)
+            try:
+                ts = datetime.fromisoformat(txt.split()[0])  # "2026-09-19T03:19:30 polling=ok"
+            except ValueError:
+                ts = None
             age = (now - ts).total_seconds() / 60 if ts else None
             if age is not None and age <= 3:
                 print(f"{OK}Бот жив: последняя отметка {ts:%d.%m %H:%M} ({txt.split()[-1]})")

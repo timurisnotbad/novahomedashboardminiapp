@@ -244,6 +244,16 @@ try:
 except ValueError:
     SESSION_MAX_HOURS = 8.0
 
+# Outage alerts. The server and the bot watch each other on the PC and DM the
+# owners when one of them is down. For the PC itself (power, internet) an
+# outside watcher is needed: healthchecks.io ping URLs — the bot and the
+# server call theirs every minute; when the pings stop, healthchecks.io
+# messages you in Telegram.
+HEARTBEAT_URL_BOT = os.environ.get("HEARTBEAT_URL_BOT", "").strip()
+HEARTBEAT_URL_SERVER = os.environ.get("HEARTBEAT_URL_SERVER", "").strip()
+# minutes without a bot heartbeat before the server raises the alarm
+BOT_DOWN_AFTER_MIN = max(2, _int_env("BOT_DOWN_AFTER_MIN", 3))
+
 # End-of-day cleaning control: post to the group which checkouts still have
 # no cleaning report.
 CLEANING_CHECK_T = _parse_hhmm(os.environ.get("CLEANING_CHECK", "18:00"), (18, 0))
@@ -292,4 +302,4 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "33"
+APP_VERSION = "34"

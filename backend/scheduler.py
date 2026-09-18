@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, notify, rc_sync, reminders, services
+from . import config, notify, rc_sync, reminders, services, watchdog
 
 logger = logging.getLogger("nova.scheduler")
 
@@ -73,8 +73,16 @@ def start() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        watchdog.tick,
+        "interval",
+        minutes=1,
+        id="watchdog",
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
-    logger.info("Scheduler started (sync %s min, reminders 10 min, summary 22:00)",
+    logger.info("Scheduler started (sync %s min, reminders 10 min, summary 22:00, watchdog 1 min)",
                 config.SYNC_INTERVAL_MINUTES)
 
 

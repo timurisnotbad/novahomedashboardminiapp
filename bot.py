@@ -1527,9 +1527,81 @@ async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
         print("\n❌ Опрос Telegram остановился. Перезапускаюсь…\n", flush=True)
         import os
         os._exit(EXIT_RESTART)
+    # outside watcher (healthchecks.io): "I'm alive" ping
+    if config.HEARTBEAT_URL_BOT:
+        from backend import watchdog as _wd
+        await asyncio.to_thread(_wd.ping, config.HEARTBEAT_URL_BOT)
+    # and the bot watches the server: the dashboard is what the owner opens
+    await _watch_server(context)
 
 
 _dead_polls = [0]
+_server_state = {"fails": 0, "alerted": False, "since": None}
+_SERVER_DOWN_AFTER = 3  # consecutive failed minutes
+
+
+def _server_alive() -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=8) as r:
+            return r.status == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _watch_server(context) -> None:
+    st = _server_state
+    alive = await asyncio.to_thread(_server_alive)
+    if alive:
+        if st["alerted"]:
+            st["alerted"] = False
+            since = st["since"]
+            text = "🟢 Сервер (дашборд) снова работает" + (f" (не отвечал с {since:%H:%M})." if since else ".")
+            for uid in config.OWNER_TELEGRAM_IDS:
+                try:
+                    await context.bot.send_message(chat_id=uid, text=text)
+                except Exception:  # noqa: BLE001
+                    pass
+        st["fails"] = 0
+        return
+    st["fails"] += 1
+    if st["fails"] == 1:
+        st["since"] = datetime.datetime.now()
+    if st["fails"] >= _SERVER_DOWN_AFTER and not st["alerted"]:
+        st["alerted"] = True
+        text = (f"🔴 Сервер (дашборд) не отвечает с {st['since']:%H:%M}. Бот работает, "
+                f"дашборд у всех не откроется.\nЧто делать: на компьютере запустить restart_all.bat; "
+                f"если окно «Nova Backend» открыто — посмотреть ошибку в нём.")
+        logger.warning("server health failed %d times — owners alerted", st["fails"])
+        for uid in config.OWNER_TELEGRAM_IDS:
+            try:
+                await context.bot.send_message(chat_id=uid, text=text)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def _announce_back(app) -> None:
+    """After a real outage (the previous heartbeat mark is old) tell the owner
+    the bot is up again and for how long it was gone. A quick restart by
+    restart_all.bat (mark younger than 5 min) stays silent."""
+    try:
+        txt = HEARTBEAT_PATH.read_text(encoding="utf-8").strip()
+        prev = datetime.datetime.fromisoformat(txt.split()[0])
+    except Exception:  # noqa: BLE001
+        return
+    gap = datetime.datetime.now() - prev
+    mins = int(gap.total_seconds() // 60)
+    if mins < 5:
+        return
+    h, m = divmod(mins, 60)
+    when = prev.strftime("%d.%m %H:%M") if gap.days else prev.strftime("%H:%M")
+    text = (f"🟢 Бот снова в сети (версия {config.APP_VERSION}). Не работал с {when} — "
+            f"{f'{h} ч {m:02d} мин' if h else f'{m} мин'}.")
+    for uid in config.OWNER_TELEGRAM_IDS:
+        try:
+            await app.bot.send_message(chat_id=uid, text=text, disable_notification=config.quiet_now())
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _set_commands(app) -> None:
@@ -1560,6 +1632,7 @@ async def _set_commands(app) -> None:
                 logger.info("owner command menu for %s skipped: %s", uid, exc)
     except Exception:  # noqa: BLE001
         logger.exception("set_my_commands failed")
+    await _announce_back(app)  # before the first heartbeat overwrites the old mark
     await _catch_up_jobs(app)
 
 
