@@ -263,6 +263,8 @@ def init_db() -> None:
                 raise
 
         _add_column("tasks", "deadline_time", "TEXT")
+        _add_column("bookings", "client_email", "TEXT")
+        _add_column("bookings", "client_phone2", "TEXT")
         # items the bot pulled out of the «Поломки» topic: who wrote it, and
         # the chat-line id so an edited message is not recorded twice
         _add_column("tasks", "created_by", "TEXT")
@@ -281,7 +283,7 @@ BOOKING_COLUMNS = [
     "id", "apartment_id", "apartment_name", "begin_date", "end_date", "status",
     "days_count", "amount", "debt", "prepayment", "prepayment_progress",
     "is_external", "source_id", "client_name", "client_phone", "arrival_time",
-    "departure_time", "short_notes", "is_delete", "created_at", "synced_at",
+    "departure_time", "short_notes", "is_delete", "created_at", "synced_at", "client_email", "client_phone2",
 ]
 
 
@@ -312,6 +314,8 @@ def _booking_rows(bookings: Iterable[dict]) -> list[tuple]:
             1 if b.get("is_delete") else 0,
             b.get("created_at"),
             now,
+            b.get("client_email") or client.get("email"),
+            b.get("client_phone2") or client.get("additional_phone") or client.get("phone2") or client.get("second_phone"),
         ))
     return rows
 

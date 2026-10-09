@@ -318,12 +318,38 @@ def get_client(cid: int, user: dict = Depends(current_user)):  # noqa: B008
     return c
 
 
+def _push_client_bg(cid: int, who: str, only_booking: int | None = None) -> None:
+    import threading
+
+    def go():
+        try:
+            r = rc_push.push_client(cid, who, only_booking)
+            if r.get("errors"):
+                logger.warning("client %s → RC: %s", cid, r["errors"])
+        except Exception:  # noqa: BLE001
+            logger.exception("client → RC push failed")
+    if not config.DEMO_MODE:
+        threading.Thread(target=go, daemon=True).start()
+
+
 @router.put("/clients/{cid}")
 def put_client(cid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
     try:
-        return crm.save_client(cid, payload)
+        c = crm.save_client(cid, payload)
     except ValueError as exc:
         _bad(exc)
+    _push_client_bg(cid, user["name"], payload.get("booking_id"))
+    c["rc_push"] = not config.DEMO_MODE and crm.get_setting("rc_sync_clients", "1") == "1"
+    return c
+
+
+@router.post("/clients/{cid}/push")
+def push_client_now(cid: int, user: dict = Depends(current_user)):  # noqa: B008
+    """«В календарь»: send the guest card to RealtyCalendar right now and report."""
+    try:
+        return rc_push.push_client(cid, user["name"])
+    except rc_push.RCError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.delete("/clients/{cid}")
@@ -858,6 +884,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
                      "booking_flow": crm.get_setting("booking_flow", "1") == "1",
+                     "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
                      "auto_checklist": crm.get_setting("auto_checklist", "0") == "1",
                      "checklist": crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)},
     }
@@ -869,6 +896,7 @@ class SettingsIn(BaseModel):
     checklist: str | None = None
     auto_deal: bool | None = None
     booking_flow: bool | None = None
+    rc_sync_clients: bool | None = None
 
 
 @router.post("/integrations/settings")
@@ -881,6 +909,8 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
     if payload.booking_flow is not None:
         crm.set_setting("booking_flow", "1" if payload.booking_flow else "0")
+    if payload.rc_sync_clients is not None:
+        crm.set_setting("rc_sync_clients", "1" if payload.rc_sync_clients else "0")
     if payload.checklist is not None:
         crm.set_setting("booking_checklist", payload.checklist.strip())
     return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}

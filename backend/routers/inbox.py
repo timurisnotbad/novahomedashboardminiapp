@@ -212,6 +212,11 @@ def patch_client(chat_id: int, payload: ClientPatch, user: dict = Depends(inbox_
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if payload.name is not None:
             inbox.update_chat(chat_id, name=payload.name)
+        try:
+            from .crm import _push_client_bg
+            _push_client_bg(cid, user["name"])
+        except Exception:  # noqa: BLE001
+            pass
     return inbox.get_chat(chat_id)
 
 

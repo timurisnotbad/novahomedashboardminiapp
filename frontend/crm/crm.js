@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=46&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=47&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -367,6 +367,7 @@
         </div></div>
       <div class="row-actions">${S.me.role === "admin" ? `<button class="btn danger" id="c-del">Удалить</button>` : ""}<span style="flex:1"></span>
         <button class="btn" id="c-task">+ Задача</button><button class="btn" id="c-deal">+ Сделка</button>
+        <button class="btn" id="c-rc" title="Отправить карточку гостя в RealtyCalendar: имя, телефон, email, доп. телефон — в гостя; язык, соцсети, особенности — в примечание брони">→ Календарь</button>
         <button class="btn" id="c-chat" title="WhatsApp"><i class="ch wa"></i> WhatsApp</button><button class="btn" id="c-tg" title="Telegram"><i class="ch tg"></i> Telegram</button>${c.email ? `<button class="btn" id="c-mail">✉ Email</button>` : ""}
         <button class="btn" id="c-edit">Изменить</button>${asPage ? `<a class="btn primary" href="#clients">К списку</a>` : `<button class="btn primary" data-close>Закрыть</button>`}</div>`;
     if (asPage) { $("main").innerHTML = `<div class="card">${html}</div>`; } else modal(html, true);
@@ -377,6 +378,7 @@
     root.querySelector("#c-deal").addEventListener("click", async () => { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); dealForm(null, { client_id: c.id, title: "" }); });
     root.querySelector("#c-chat").addEventListener("click", () => openClientChat(c.id, "wa"));
     root.querySelector("#c-tg").addEventListener("click", () => openClientChat(c.id, "tg"));
+    root.querySelector("#c-rc").addEventListener("click", async (e) => { e.target.disabled = true; try { const r = await post(`/clients/${id}/push`); toast(r.bookings ? `В календарь: обновлено ${r.ok} из ${r.bookings} броней${r.errors.length ? " · " + r.errors[0] : ""}` : "У гостя нет текущих или будущих броней"); } catch (err) { toast(err.message); } e.target.disabled = false; });
     const cm = root.querySelector("#c-mail"); if (cm) cm.addEventListener("click", () => emailForm({ to: c.email, client_id: c.id, subject: "", text: `${c.name ? c.name.split(" ")[0] + ", " : ""}здравствуйте!\n\n` }));
     root.querySelectorAll("[data-deal]").forEach((a) => a.addEventListener("click", async (e) => { e.preventDefault(); S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(a.dataset.deal, 10)); }));
     const dl = root.querySelector("#c-del");
@@ -433,7 +435,7 @@
         instagram: val("cf-instagram"), telegram: val("cf-telegram"), phone2: val("cf-phone2"), birthday: val("cf-birthday"), passport: val("cf-passport"), city: val("cf-city"), lang: val("cf-lang") };
       try {
         const r = c.id ? await put(`/clients/${c.id}`, body) : await post("/clients", body);
-        closeModal(); toast("Сохранено");
+        closeModal(); toast(r.rc_push ? "Сохранено · отправляю в RealtyCalendar" : "Сохранено");
         if (S.route === "clients" && !location.hash.includes("/")) navigate(); else openClient(r.id, S.route === "clients");
       } catch (err) { toast(err.message); }
     });
@@ -692,6 +694,7 @@
         <div class="muted small" style="margin-top:4px">Письма с PDF-счётом, квитанцией или подтверждением уходят из карточки брони и из карточки клиента.</div>
         ${d.email.configured ? `<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input class="field" id="em-test" type="email" placeholder="Адрес для тестового письма" style="flex:1;min-width:200px" /><button class="btn" id="em-test-go">Отправить тест</button></div>` : ""}
         ${d.email.log && d.email.log.length ? `<table class="table" style="margin-top:8px"><thead><tr><th>Когда</th><th>Кому</th><th>Тема</th><th>Статус</th></tr></thead><tbody>${d.email.log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td class="small">${esc(l.to_addr)}</td><td class="small">${esc(l.subject || "")}</td><td class="${l.status === "sent" ? "ok" : "bad"} small">${l.status === "sent" ? "отправлено" : esc((l.error || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
+      <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card"><h3>Чек-лист брони</h3>
         <div class="muted small">Шаблон задач, которые создаются по каждой брони (кнопка «Чек-лист» в карточке брони). Одна строка — одна задача: <span class="mono">Текст | заезд -1 10:00</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b> или <b>сегодня</b>; потом сдвиг в днях (−1 — за день до, +1 — на следующий день) и время. Без времени берётся время заезда/выезда из брони.</div>
@@ -704,6 +707,7 @@
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("co-save").addEventListener("click", async () => { try { await post("/company", { brand: val("co-brand"), tagline: val("co-tagline"), accent: val("co-accent"), legal: val("co-legal"), property: val("co-property"), signer: val("co-signer"), signer_title: val("co-signer_title"), name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); } catch (err) { toast(err.message); } });
     const et = $("em-test-go"); if (et) et.addEventListener("click", async (e) => { e.target.disabled = true; try { await post("/email", { to: val("em-test"), subject: "Nova Home CRM — тест", text: "Письмо из CRM работает." }); toast("Тестовое письмо отправлено"); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+    $("i-rcc").addEventListener("change", async (e) => { try { await post("/integrations/settings", { rc_sync_clients: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-cl-save").addEventListener("click", async () => { try { const r = await post("/integrations/settings", { checklist: $("i-cl").value }); toast(`Сохранено: ${r.items.length} задач в чек-листе`); } catch (err) { toast(err.message); } });
@@ -917,7 +921,7 @@
       e.target.disabled = true;
       try { await api(`/../inbox/chats/${to}/send`, { method: "POST", json: { text } }); toast("Отправлено"); $("bk-msg").value = ""; } catch (err) { toast(err.message); } finally { e.target.disabled = false; }
     });
-    $("bk-notes-save").addEventListener("click", async () => { try { await put(`/clients/${b.client.id}`, { name: b.client.name, phone: b.client.phone, email: b.client.email, source: b.client.source, fields: b.client.fields, notes: $("bk-notes").value }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("bk-notes-save").addEventListener("click", async () => { try { const r = await put(`/clients/${b.client.id}`, { name: b.client.name, phone: b.client.phone, email: b.client.email, source: b.client.source, fields: b.client.fields, notes: $("bk-notes").value, booking_id: b.id }); toast(r.rc_push ? "Сохранено · уходит в примечание брони в RealtyCalendar" : "Сохранено"); } catch (err) { toast(err.message); } });
     $("bk-edit").addEventListener("click", () => bookingForm(b));
     const bd = $("bk-deal"); if (bd) bd.addEventListener("click", async () => { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); try { const d = await post(`/bookings/${id}/deal`); openDeal(d.id); } catch (err) { toast(err.message); } });
     const wa = $("bk-wa"); if (wa) wa.addEventListener("click", async () => { if (!b.client) { toast("У брони нет карточки гостя"); return; } await openClientChat(b.client.id, "wa"); });

@@ -25,7 +25,8 @@ logger = logging.getLogger("nova.rc.push")
 # CRM field -> RC field. Dates go as DD.MM.YYYY like the read API expects them.
 FIELDS = {"guest": "fio", "phone": "phone", "amount": "amount", "arrival_time": "arrival_time",
           "departure_time": "departure_time", "notes": "short_notes", "checkin": "begin_date", "checkout": "end_date",
-          "status": "status", "prepayment": "prepayment"}
+          "status": "status", "prepayment": "prepayment", "email": "email", "phone2": "additional_phone"}
+CRM_MARK_START, CRM_MARK_END = "--- CRM ---", "--- /CRM ---"
 STATUSES = ("booked", "prepaid", "paid", "confirmed", "not_confirmed")
 
 SCHEMA = """
@@ -64,6 +65,11 @@ def _payload(changes: dict) -> dict:
             client["fio"] = (v or "").strip()
         elif k == "phone":
             client["phone"] = ("+" + re.sub(r"\D", "", str(v))) if v else ""
+        elif k == "email":
+            client["email"] = (v or "").strip()
+        elif k == "phone2":
+            client["additional_phone"] = ("+" + re.sub(r"\D", "", str(v))) if v else ""
+            client["phone2"] = client["additional_phone"]
         elif k in ("amount", "prepayment"):
             ev[k] = float(str(v).replace(",", ".").replace(" ", "")) if v not in (None, "") else 0
         elif k == "status":
@@ -86,6 +92,73 @@ def _log(bid: int, changes: dict, status: str, http: int | None, response: str, 
                      (bid, json.dumps(changes, ensure_ascii=False), status, http, (response or "")[:2000], who,
                       datetime.now().isoformat(timespec="seconds")))
         conn.execute("DELETE FROM crm_rc_log WHERE id NOT IN (SELECT id FROM crm_rc_log ORDER BY id DESC LIMIT 200)")
+
+
+def crm_block(client: dict) -> str:
+    """The CRM-only guest data as a block for the booking note in RealtyCalendar."""
+    lines = []
+    for key, label in (("status", "Статус"), ("lang", "Язык"), ("instagram", "Instagram"), ("telegram", "Telegram"),
+                       ("city", "Город"), ("birthday", "Дата рождения"), ("passport", "Паспорт")):
+        if client.get(key):
+            lines.append(f"{label}: {client[key]}")
+    if client.get("notes"):
+        lines.append("Особенности: " + " ".join(str(client["notes"]).split()))
+    return (CRM_MARK_START + "\n" + "\n".join(lines) + "\n" + CRM_MARK_END) if lines else ""
+
+
+def merge_notes(notes: str, block: str) -> str:
+    """Replace (or append) the CRM block inside the booking note, keeping what people wrote by hand."""
+    notes = notes or ""
+    if CRM_MARK_START in notes and CRM_MARK_END in notes:
+        pre = notes.split(CRM_MARK_START)[0].rstrip()
+        post = notes.split(CRM_MARK_END, 1)[1].lstrip()
+        base = (pre + ("\n" + post if post else "")).strip()
+    else:
+        base = notes.strip()
+    return (base + "\n\n" + block).strip() if block else base
+
+
+def push_client(cid: int, who: str = "", only_booking: int | None = None) -> dict:
+    """Guest card → RealtyCalendar: name, phone, email, second phone go to the
+    booking's guest; language, socials, notes go into the booking note as a
+    «--- CRM ---» block. Applied to the guest's current and future bookings."""
+    from . import crm
+    if crm.get_setting("rc_sync_clients", "1") != "1":
+        return {"bookings": 0, "ok": 0, "errors": ["выключено в Интеграциях"]}
+    c = crm.get_client(cid)
+    if not c:
+        return {"bookings": 0, "ok": 0, "errors": ["клиент не найден"]}
+    today = date.today().isoformat()
+    targets = [b for b in (c.get("bookings") or []) if b.get("checkout", "") >= today and (not only_booking or b["id"] == only_booking)][:10]
+    if only_booking and not targets:
+        targets = [{"id": only_booking}]
+    block = crm_block(c)
+    ok, errors = 0, []
+    for b in targets:
+        with database.get_conn() as conn:
+            cur = conn.execute("SELECT * FROM bookings WHERE id = ?", (b["id"],)).fetchone()
+        if not cur:
+            continue
+        changes: dict = {}
+        if c.get("name") and not c["name"].startswith("+") and c["name"] != (cur["client_name"] or ""):
+            changes["guest"] = c["name"]
+        if c.get("phone") and re.sub(r"\D", "", cur["client_phone"] or "") != c["phone"]:
+            changes["phone"] = c["phone"]
+        if c.get("email") and (cur["client_email"] or "") != c["email"]:
+            changes["email"] = c["email"]
+        if c.get("phone2") and re.sub(r"\D", "", cur["client_phone2"] or "") != re.sub(r"\D", "", c["phone2"]):
+            changes["phone2"] = c["phone2"]
+        new_notes = merge_notes(cur["short_notes"] or "", block)
+        if new_notes != (cur["short_notes"] or "").strip():
+            changes["notes"] = new_notes
+        if not changes:
+            continue
+        try:
+            update_booking(b["id"], changes, who or "CRM")
+            ok += 1
+        except RCError as exc:
+            errors.append(f"#{b['id']}: {exc}")
+    return {"bookings": len(targets), "ok": ok, "errors": errors}
 
 
 def recent_log(limit: int = 20) -> list[dict]:
@@ -146,6 +219,8 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
                "arrival_time": fresh["arrival_time"], "departure_time": fresh["departure_time"], "notes": fresh["short_notes"],
                "checkin": fresh["begin_date"], "checkout": fresh["end_date"], "status": fresh["status"], "prepayment": fresh["prepayment"]}
         for k, v in changes.items():
+            if k in ("email", "phone2"):  # RC may not echo these back on the calendar feed: accept its 2xx
+                continue
             want = re.sub(r"\D", "", str(v)) if k == "phone" else (float(str(v).replace(",", ".") or 0) if k in ("amount", "prepayment") else (v or ""))
             have = got.get(k)
             if k in ("amount", "prepayment"):
