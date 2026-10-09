@@ -156,8 +156,9 @@ label.lbl { display:block; font-size:13px; color:var(--label-2); margin:10px 0 4
 .task__del { color:var(--label-3); }
 
 /* ---------- messages (embedded inbox) ---------- */
-.inbox-frame { width:100%; height:calc(100vh - 56px); border:1px solid var(--sep); border-radius:var(--r); background:var(--card); }
+.inbox-frame { flex:1; min-width:0; height:100vh; border:none; background:var(--card); }
 .main.full { padding:16px 20px 20px; }
+details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 
 /* ---------- modal / toast ---------- */
 .modal { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:16px; }
@@ -189,7 +190,7 @@ label.lbl { display:block; font-size:13px; color:var(--label-2); margin:10px 0 4
   .side__nav, .side__me { display:none; width:100%; }
   .side.open .side__nav { display:flex; }
   .side.open .side__me { display:block; margin-top:8px; }
-  .inbox-frame { height:calc(100vh - 80px); }
+  .inbox-frame { height:calc(100vh - 56px); }
   .list__row { grid-template-columns:1fr; gap:4px; }
   .table th:nth-child(n+3), .table td:nth-child(n+3) { display:none; }
   .table td.actions, .table th:last-child { display:table-cell; }

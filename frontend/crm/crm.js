@@ -46,6 +46,7 @@
 
   // one click handler per rendered page (the <main> element itself survives renders)
   function onMain(fn) { $("main").onclick = fn; }
+  function keepFocus(id) { const el = $(id); if (el && el.value) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
   function modal(html, wide) {
     $("modal-card").innerHTML = html;
     $("modal-card").classList.toggle("wide", !!wide);
@@ -68,6 +69,7 @@
   let setupMode = false;
   function showAuth(setup) {
     setupMode = !!setup;
+    if (inboxFrame) { inboxFrame.remove(); inboxFrame = null; } // no chats behind the login form
     $("app").classList.add("hidden");
     $("auth").classList.remove("hidden");
     $("auth-sub").textContent = setup ? "Первый запуск: создайте администратора" : "Войдите, чтобы продолжить";
@@ -109,8 +111,9 @@
     S.route = r;
     document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
     document.querySelector(".side").classList.remove("open");
-    $("main").classList.toggle("full", r === "messages");
     const main = $("main");
+    main.classList.remove("hidden");
+    if (inboxFrame && r !== "messages") inboxFrame.classList.add("hidden");
     main.onclick = null;
     main.innerHTML = `<div class="empty">Загрузка…</div>`;
     Promise.resolve(ROUTES[r](arg)).catch((err) => { main.innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
@@ -157,8 +160,22 @@
   };
 
   // ---- messages (embedded inbox) ----------------------------------------
+  // the chats iframe is created once and kept alive (no reload, no lost
+  // draft when switching sections); other screens render into #main
+  let inboxFrame = null;
   ROUTES.messages = (chatId) => {
-    $("main").innerHTML = `<iframe class="inbox-frame" src="/inbox/?v=35&embed=1${chatId ? "#chat=" + chatId : ""}" title="Чаты"></iframe>`;
+    if (!inboxFrame) {
+      inboxFrame = document.createElement("iframe");
+      inboxFrame.className = "inbox-frame";
+      inboxFrame.title = "Чаты";
+      inboxFrame.src = "/inbox/?v=35&embed=1" + (chatId ? "#chat=" + chatId : "");
+      document.getElementById("app").appendChild(inboxFrame);
+    } else if (chatId) {
+      try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
+    }
+    $("main").innerHTML = "";
+    $("main").classList.add("hidden");
+    inboxFrame.classList.remove("hidden");
   };
 
   // ---- deals ------------------------------------------------------------------
@@ -184,6 +201,7 @@
             <div class="muted small">${esc(d.client_name || "")}${d.apartment ? " · " + esc(d.apartment) : ""}${d.checkin ? " · " + esc(dShort(d.checkin)) + (d.checkout ? "–" + esc(dShort(d.checkout)) : "") : ""}</div>
             <div class="meta"><span>${esc(d.owner_name || "")}</span><span class="amt">${money(d.amount)}</span></div></div>`).join("")}</div>`;
       }).join("")}</div>`;
+    keepFocus("deal-q");
     const sel = $("pipe-sel");
     if (sel) sel.addEventListener("change", () => { sessionStorage.setItem("crm_pipeline", sel.value); navigate(); });
     let t;
@@ -274,6 +292,7 @@
       ${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Имя</th><th>Телефон</th><th>Источник</th><th>Email</th><th>Обновлён</th></tr></thead><tbody>
         ${list.map((c) => `<tr class="click" data-id="${c.id}"><td><b>${esc(c.name)}</b></td><td>${c.phone ? "+" + esc(c.phone) : "—"}</td><td>${esc(c.source || "")}</td><td>${esc(c.email || "")}</td><td class="muted small">${esc(dtShort(c.updated_at))}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="card empty">${q ? "Ничего не найдено" : "Клиентов пока нет. Нажмите «Подтянуть из броней и чатов» — карточки создадутся по номерам телефонов."}</div>`}`;
+    keepFocus("c-q");
     let t;
     $("c-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { S.cache.clientQ = e.target.value.trim(); navigate(); }, 300); });
     $("c-add").addEventListener("click", () => clientForm(null));
@@ -468,31 +487,64 @@
 
   // ---- channels ---------------------------------------------------------------
   let chTimer = null;
+  let tgStep = null; // telegram login: null | "code" | "password"
   ROUTES.channels = async () => {
     clearInterval(chTimer);
+    const admin = S.me.role === "admin";
     const render = async () => {
+      if (!$("modal").classList.contains("hidden")) return; // don't repaint under an open dialog
       const d = await get("/channels");
       if (S.route !== "channels") { clearInterval(chTimer); return; }
-      const w = d.whatsapp;
+      const w = d.whatsapp, wc = d.whatsapp_cloud, ig = d.instagram, tg = d.telegram, gb = d.telegram_guest_bot, mw = d.meta_webhook;
       const ok = w.status === "connected";
       const num = w.me ? "+" + (w.me.id || "").split("@")[0].split(":")[0] : "";
-      $("main").innerHTML = `<div class="page-head"><h1>Каналы</h1></div><div class="page-sub">Откуда приходят сообщения в «Сообщения».</div>
+      const state = (good, text) => `<div class="small ${good === true ? "ok" : good === false ? "bad" : "muted"}">${text}</div>`;
+      const cfgRow = (name, hint) => `<div class="muted small">${name}: <span class="mono">${esc(hint)}</span></div>`;
+      const tgForm = !tg.configured ? "" : tg.authorized ? "" : !admin ? `<div class="muted small">Вход выполняет администратор.</div>` :
+        tgStep === "code" || tg.pending_phone && tgStep !== "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Код из Telegram (${esc(tg.pending_phone || "")})</label><input class="field" id="tg-code" inputmode="numeric" placeholder="12345" /></div><div><button class="btn primary" id="tg-sign">Войти</button> <button class="btn link" id="tg-again">другой номер</button></div></div>`
+        : tgStep === "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Пароль двухэтапной защиты</label><input class="field" id="tg-pass" type="password" /></div><div><button class="btn primary" id="tg-sign-pass">Войти</button></div></div>`
+        : `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Номер телефона аккаунта</label><input class="field" id="tg-phone" type="tel" placeholder="+998 90 123 45 67" /></div><div><button class="btn primary" id="tg-send">Получить код</button></div></div>`;
+      $("main").innerHTML = `<div class="page-head"><h1>Каналы</h1></div><div class="page-sub">Откуда приходят сообщения в «Сообщения». Все каналы попадают в один список чатов, карточка клиента создаётся сама.</div>
         <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-          <div><h3>WhatsApp ${num ? `<span class="muted">${esc(num)}</span>` : ""}</h3><div class="small ${ok ? "ok" : "bad"}">${ok ? "Подключён" : w.status === "offline" ? "Мост не запущен (окно «Nova WhatsApp»)" : w.status === "qr" || w.status === "logged_out" ? "Не привязан — отсканируйте QR-код" : "Подключение… " + esc(w.error || "")}</div>
-            <div class="muted small">Чатов: ${w.chats}</div></div>
-          ${ok && S.me.role === "admin" ? `<button class="btn danger" id="wa-off">Отключить</button>` : ""}</div>
-          ${w.qr ? `<ol class="muted small" style="margin:14px 0 0 18px"><li>WhatsApp на рабочем телефоне → Настройки → Связанные устройства</li><li>Привязка устройства → навести камеру на код</li></ol><img class="qr" src="${esc(w.qr)}" alt="QR" /><div class="muted small" style="text-align:center">Код обновляется сам</div>` : ""}
-          ${!ok && w.status !== "offline" && !w.qr && S.me.role !== "admin" ? `<div class="muted small" style="margin-top:10px">QR-код видит администратор.</div>` : ""}
-          ${w.status === "offline" ? `<div class="muted small" style="margin-top:10px">На компьютере с ботом запустите <b>restart_all.bat</b>. Нужен Node.js (см. README, раздел «Чаты»).</div>` : ""}
+          <div><h3>WhatsApp — привязка по QR ${num ? `<span class="muted">${esc(num)}</span>` : ""}</h3>${state(ok ? true : false, ok ? "Подключён" : w.status === "offline" ? "Мост не запущен (окно «Nova WhatsApp»)" : w.status === "qr" || w.status === "logged_out" ? "Не привязан — отсканируйте QR-код" : "Подключение… " + esc(w.error || ""))}
+            <div class="muted small">Как WhatsApp Web: бесплатно, телефон работает как обычно. Чатов: ${w.chats}</div></div>
+          ${ok && admin ? `<button class="btn danger" id="wa-off">Отключить</button>` : ""}</div>
+          ${w.qr && admin ? `<ol class="muted small" style="margin:14px 0 0 18px"><li>WhatsApp на рабочем телефоне → Настройки → Связанные устройства</li><li>Привязка устройства → навести камеру на код</li></ol><img class="qr" src="${esc(w.qr)}" alt="QR" /><div class="muted small" style="text-align:center">Код обновляется сам</div>` : ""}
+          ${!ok && w.status !== "offline" && !admin ? `<div class="muted small" style="margin-top:10px">QR-код видит администратор.</div>` : ""}
+          ${w.status === "offline" ? `<div class="muted small" style="margin-top:10px">На компьютере с ботом запустите <b>restart_all.bat</b>. Нужен Node.js (README, раздел «Чаты»).</div>` : ""}
         </div>
-        <div class="card"><h3>Telegram-бот</h3><div class="small ${d.telegram_bot.configured ? "ok" : "bad"}">${d.telegram_bot.configured ? "Настроен" : "BOT_TOKEN не задан"}</div>
-          <div class="muted small">Уведомления о новых сообщениях WhatsApp приходят в Telegram (${d.telegram_bot.notify_targets.length ? "чатов: " + d.telegram_bot.notify_targets.length : "выключены"}); ответ на уведомление уходит гостю. Переписка с гостями через Telegram — не подключена.</div></div>
-        <div class="card"><h3>Booking.com · Airbnb</h3><div class="muted small">Брони этих каналов приходят через RealtyCalendar (раздел «Интеграции»). Сообщения гостей — в приложениях площадок.</div></div>`;
-      const off = $("wa-off");
-      if (off) off.addEventListener("click", async () => { if (!confirm("Отключить WhatsApp? Для возврата нужно будет снова сканировать QR.")) return; try { await post("/channels/whatsapp/logout"); toast("Отключено"); render(); } catch (err) { toast(err.message); } });
+        <div class="card"><h3>WhatsApp Business — официальный Cloud API ${wc.phone ? `<span class="muted">${esc(wc.phone)}</span>` : ""}</h3>
+          ${state(wc.configured ? wc.ok : null, !wc.configured ? "Не настроен" : wc.ok ? `Подключён${wc.name ? " · " + esc(wc.name) : ""}${wc.quality ? " · качество " + esc(wc.quality) : ""}` : "Ошибка: " + esc(wc.error || ""))}
+          <div class="muted small">Прямое подключение к Meta без телефона и QR: номер не заблокируют, а первые 1000 диалогов в месяц бесплатны (дальше по тарифу Meta за диалог). Чатов: ${wc.chats}.</div>
+          ${wc.configured ? "" : `<details class="small" style="margin-top:8px"><summary>Как подключить</summary><ol class="muted" style="margin:6px 0 0 18px"><li>developers.facebook.com → создать приложение (Business) → добавить WhatsApp.</li><li>Привязать номер (не тот, что на QR-бридже — у номера может быть только один способ).</li><li>Скопировать <b>Phone number ID</b> и постоянный токен (System User → Generate token, права whatsapp_business_messaging).</li><li>В <code>.env</code>: ${esc("WA_CLOUD_TOKEN=…, WA_CLOUD_PHONE_ID=…, META_VERIFY_TOKEN=любое слово, META_APP_SECRET=App secret")}.</li><li>Webhooks → WhatsApp → Callback URL: <span class="mono">${esc(mw.url || "")}</span>, Verify token — как в .env, подписаться на <b>messages</b>.</li><li><code>restart_all.bat</code>.</li></ol><div class="muted" style="margin-top:6px">Ограничение Meta: писать гостю первым или спустя 24 часа после его последнего сообщения можно только утверждённым шаблоном.</div></details>`}
+        </div>
+        <div class="card"><h3>Instagram Direct ${ig.username ? `<span class="muted">@${esc(ig.username)}</span>` : ""}</h3>
+          ${state(ig.configured ? ig.ok : null, !ig.configured ? "Не настроен" : ig.ok ? `Подключён${ig.page ? " · страница " + esc(ig.page) : ""}` : "Ошибка: " + esc(ig.error || ""))}
+          <div class="muted small">Сообщения из Direct бизнес-аккаунта попадают в «Сообщения», ответы уходят обратно. Чатов: ${ig.chats}.</div>
+          ${ig.configured ? "" : `<details class="small" style="margin-top:8px"><summary>Как подключить</summary><ol class="muted" style="margin:6px 0 0 18px"><li>Instagram должен быть профессиональным (Business) и привязан к Facebook-странице.</li><li>В том же приложении Meta добавить продукт <b>Messenger</b> → Instagram settings; права pages_messaging, instagram_basic, instagram_manage_messages (для чужих аккаунтов нужна проверка приложения — свой аккаунт работает в режиме разработки).</li><li>Сгенерировать <b>Page access token</b> страницы и вписать в <code>.env</code>: <span class="mono">IG_PAGE_TOKEN=…</span>.</li><li>Webhooks → Instagram → Callback URL: <span class="mono">${esc(mw.url || "")}</span>, verify token как в .env, подписаться на <b>messages</b>.</li><li>В настройках Instagram: Сообщения → Разрешить доступ к сообщениям (подключённые инструменты).</li></ol></details>`}
+        </div>
+        <div class="card"><h3>Telegram — аккаунт компании ${tg.me ? `<span class="muted">${esc(tg.me.phone ? "+" + tg.me.phone : tg.me.name || "")}</span>` : ""}</h3>
+          ${state(tg.configured ? (tg.authorized && !tg.error ? true : false) : null, !tg.configured ? "Не настроен" : tg.authorized ? "Подключён" + (tg.error ? " · " + esc(tg.error) : "") : tg.error ? "Ошибка: " + esc(tg.error) : "Не выполнен вход")}
+          <div class="muted small">Как в Wazzup: личные чаты аккаунта (например, рабочего номера) видны всей команде. Чатов: ${tg.chats}.</div>
+          ${tg.configured ? tgForm : `<details class="small" style="margin-top:8px"><summary>Как подключить</summary><ol class="muted" style="margin:6px 0 0 18px"><li>Зайти на <b>my.telegram.org</b> с номера аккаунта → API development tools → создать приложение.</li><li>В <code>.env</code>: <span class="mono">TG_API_ID=…</span>, <span class="mono">TG_API_HASH=…</span>, затем <code>restart_all.bat</code>.</li><li>Здесь появится форма входа: номер → код из Telegram → (пароль, если включена двухэтапная защита).</li></ol></details>`}
+          ${tg.authorized && admin ? `<div class="row-actions" style="justify-content:flex-start"><button class="btn danger" id="tg-off">Выйти из аккаунта</button></div>` : ""}
+        </div>
+        <div class="card"><h3>Telegram-бот для гостей ${gb.me && gb.me.username ? `<span class="muted">@${esc(gb.me.username)}</span>` : ""}</h3>
+          ${state(gb.configured ? gb.ok : null, !gb.configured ? "Не настроен" : gb.ok ? "Работает" : "Ошибка: " + esc(gb.error || "запуск…"))}
+          <div class="muted small">Отдельный бот, которому пишут гости (ссылку можно давать в объявлениях). Чатов: ${gb.chats}.${gb.configured ? "" : " Создать в @BotFather и вписать <span class=\"mono\">TG_GUEST_BOT_TOKEN</span> в .env (не тот же токен, что у рабочего бота)."}</div></div>
+        <div class="card"><h3>Рабочий Telegram-бот</h3>${state(d.telegram_bot.configured, d.telegram_bot.configured ? "Настроен" : "BOT_TOKEN не задан")}
+          <div class="muted small">Уведомления о новых сообщениях из всех каналов (${d.telegram_bot.notify_targets.length ? "чатов: " + d.telegram_bot.notify_targets.length : "выключены"}); ответ на уведомление уходит гостю.</div></div>
+        <div class="card"><h3>Booking.com · Airbnb</h3><div class="muted small">Брони приходят через RealtyCalendar («Интеграции»). Сообщения гостей — в приложениях площадок.</div></div>`;
+      const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+      on("wa-off", async () => { if (!confirm("Отключить WhatsApp? Для возврата нужно будет снова сканировать QR.")) return; try { await post("/channels/whatsapp/logout"); toast("Отключено"); render(); } catch (err) { toast(err.message); } });
+      on("tg-send", async (e) => { e.target.disabled = true; try { await post("/channels/telegram/send_code", { phone: val("tg-phone") }); tgStep = "code"; toast("Код отправлен в Telegram"); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+      on("tg-again", () => { tgStep = "phone"; render(); });
+      on("tg-sign", async (e) => { e.target.disabled = true; try { const r = await post("/channels/telegram/sign_in", { code: val("tg-code") }); if (r.password_needed) { tgStep = "password"; toast("Нужен пароль двухэтапной защиты"); } else { tgStep = null; toast("Telegram подключён"); } render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+      on("tg-sign-pass", async (e) => { e.target.disabled = true; try { await post("/channels/telegram/sign_in", { password: $("tg-pass").value }); tgStep = null; toast("Telegram подключён"); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+      on("tg-off", async () => { if (!confirm("Выйти из Telegram-аккаунта? Чаты останутся, новые сообщения приходить перестанут.")) return; await post("/channels/telegram/logout"); tgStep = null; render(); });
     };
     await render();
-    chTimer = setInterval(render, 4000);
+    chTimer = setInterval(() => { if (!document.activeElement || !/^tg-/.test(document.activeElement.id)) render(); }, 5000);
   };
 
   // ---- integrations -------------------------------------------------------------
@@ -528,6 +580,7 @@
           <div style="margin-top:8px"><span class="chip">{заезд}</span><div class="muted small">дата заезда, например «20 октября»</div></div>
           <div style="margin-top:8px"><span class="chip">{выезд}</span><div class="muted small">дата выезда</div></div>
           <div class="muted small" style="margin-top:10px">Если брони нет, переменная останется в тексте — допишите вручную перед отправкой.</div></div></div>`;
+    keepFocus("cmd-q");
     let tm;
     $("cmd-q").addEventListener("input", (e) => { clearTimeout(tm); tm = setTimeout(() => { S.cache.cmdQ = e.target.value.trim(); navigate(); }, 250); });
     $("cmd-add").addEventListener("click", () => cmdForm(null));
@@ -639,7 +692,7 @@
   // ---- boot --------------------------------------------------------------------------
   async function badges() {
     try {
-      const d = await get("/home");
+      const d = await get("/badges");
       $("nav-unread").textContent = d.unread || "";
       $("nav-unread").classList.toggle("hidden", !d.unread);
       $("nav-tasks").textContent = d.my_open_tasks || "";

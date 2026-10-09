@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import config, inbox
+from .. import config, inbox, meta_api
 
 MAX_UPLOAD = 30 * 1024 * 1024
 
@@ -207,7 +207,9 @@ async def hook(request: Request, x_inbox_secret: str = Header(default="")):  # n
     from starlette.concurrency import run_in_threadpool
     ev = data.get("event")
     if ev == "message":
-        await run_in_threadpool(inbox.store_message, data.get("message") or {}, bool(data.get("notify")))
+        # "append" messages are the phone's older history: no unread, no alert
+        notify = bool(data.get("notify"))
+        await run_in_threadpool(inbox.store_message, data.get("message") or {}, notify, not notify)
     elif ev == "history":
         await run_in_threadpool(inbox.store_history, data.get("messages") or [])
     elif ev == "contacts":
@@ -216,6 +218,29 @@ async def hook(request: Request, x_inbox_secret: str = Header(default="")):  # n
         await run_in_threadpool(inbox.store_ack, data.get("id") or "", data.get("status") or "")
     elif ev == "status":
         await run_in_threadpool(inbox.on_bridge_status, data.get("status") or "")
+    return {"ok": True}
+
+
+@public.get("/meta/webhook")
+def meta_verify(request: Request):
+    """Meta's one-time subscription check (hub.challenge)."""
+    q = request.query_params
+    if q.get("hub.mode") == "subscribe" and config.META_VERIFY_TOKEN and q.get("hub.verify_token") == config.META_VERIFY_TOKEN:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(q.get("hub.challenge") or "")
+    raise HTTPException(status_code=403, detail="bad verify token")
+
+
+@public.post("/meta/webhook")
+async def meta_webhook(request: Request):
+    body = await request.body()
+    if not meta_api.signature_ok(body, request.headers.get("x-hub-signature-256", "")):
+        raise HTTPException(status_code=403, detail="bad signature")
+    try:
+        data = await request.json()
+    except ValueError:
+        return {"ok": False}
+    meta_api.handle_webhook(data)  # answer fast, process in a thread
     return {"ok": True}
 
 

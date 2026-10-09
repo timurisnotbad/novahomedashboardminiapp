@@ -97,7 +97,7 @@
     const t = (c.title || "?").replace(/^\+/, "");
     const letters = /\d/.test(t[0]) ? "#" : t.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
     const color = COLORS[(c.id || 0) % COLORS.length];
-    return `<div class="ib-av" style="background:${color}">${esc(letters)}</div>`;
+    return `<div class="ib-av ch-${esc(c.channel || "wa")}" style="background:${color}" title="${esc(c.channel_name || "WhatsApp")}">${esc(letters)}</div>`;
   }
   const TICK1 = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.4 4.4L19 7.3"/></svg>';
   const TICK2 = '<svg viewBox="0 0 24 24"><path d="M2 12.5l4.4 4.4L16 7.3"/><path d="M10 15l1.9 1.9L21.5 7.3"/></svg>';
@@ -162,7 +162,8 @@
     if (!c) return;
     $("conv-title").textContent = c.title;
     const phone = c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : "";
-    $("conv-sub").innerHTML = [phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
+    const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
+    $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
     const b = $("conv-booking");
     b.innerHTML = bookingText(c.booking, true);
     b.classList.toggle("hidden", !c.booking);
@@ -710,6 +711,10 @@
       }
     });
 
+    // the CRM shell asks to open a chat (the iframe is kept alive between sections)
+    window.addEventListener("message", (e) => {
+      if (e.origin === location.origin && e.data && e.data.nh === "open" && e.data.chat) openChat(e.data.chat);
+    });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         pollNow();

@@ -107,6 +107,13 @@ CREATE INDEX IF NOT EXISTS idx_inbox_chat_rev ON inbox_chats(rev);
 CREATE INDEX IF NOT EXISTS idx_inbox_chat_lid ON inbox_chats(lid);
 """
 
+# Channels («труба»): every source lands in the same chats/messages tables.
+#   wa    — WhatsApp through the QR bridge (wa-bridge/)
+#   wac   — WhatsApp Cloud API (official, Meta)         backend/meta_api.py
+#   ig    — Instagram Direct (Meta)                      backend/meta_api.py
+#   tg    — Telegram, the company's own account          backend/tg_channels.py
+#   tgbot — Telegram bot for guests                      backend/tg_channels.py
+CHANNELS = {"wa": "WhatsApp", "wac": "WhatsApp", "ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram-бот"}
 STATUS_ORDER = {"failed": -1, "pending": 0, "sent": 1, "delivered": 2, "read": 3}
 PREVIEW = {
     "image": "📷 Фото", "video": "🎬 Видео", "audio": "🎤 Голосовое", "document": "📄 Файл",
@@ -117,6 +124,9 @@ PREVIEW = {
 def init_db() -> None:
     with database.get_conn() as conn:
         conn.executescript(SCHEMA)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_msg_chat_at ON inbox_messages(chat_id, at, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_chat_last ON inbox_chats(last_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_chat_phone ON inbox_chats(phone)")
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -304,7 +314,9 @@ def booking_for(phone: str) -> dict | None:
 # ---------------------------------------------------------------------------
 def _chat_out(r) -> dict:
     c = dict(r)
-    c["title"] = c.get("name") or c.get("push_name") or (("+" + c["phone"]) if c.get("phone") else "Без номера")
+    c["channel"] = c.get("channel") or "wa"
+    c["channel_name"] = CHANNELS.get(c["channel"], c["channel"])
+    c["title"] = c.get("name") or c.get("push_name") or (("+" + c["phone"]) if c.get("phone") else c["channel_name"])
     b = booking_for(c.get("phone") or "")
     c["booking"] = ({"apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
                      "guest": b["client_name"], "when": b["when"]} if b else None)
@@ -394,7 +406,8 @@ def _find_chat(conn, jid: str, lid: str | None):
     return None
 
 
-def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None = None):
+def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None = None,
+                 channel: str = "wa", phone: str | None = None):
     r = _find_chat(conn, jid, lid)
     if r:
         if push_name and push_name != r["push_name"]:
@@ -402,13 +415,19 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
                          (push_name, _bump(conn), r["id"]))
         if lid and not r["lid"]:
             conn.execute("UPDATE inbox_chats SET lid = ? WHERE id = ?", (lid, r["id"]))
+        if channel != (r["channel"] or "wa") and channel in ("wa", "wac") and (r["channel"] or "wa") in ("wa", "wac"):
+            # the same WhatsApp number now talks through the other transport: answer there
+            conn.execute("UPDATE inbox_chats SET channel = ?, rev = ? WHERE id = ?", (channel, _bump(conn), r["id"]))
+        if phone and not r["phone"]:
+            conn.execute("UPDATE inbox_chats SET phone = ? WHERE id = ?", (phone, r["id"]))
         return r["id"]
+    phone = phone if phone is not None else phone_of_jid(jid)
     cur = conn.execute(
-        "INSERT INTO inbox_chats (jid, lid, phone, push_name, created_at, rev, unread) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0)",
-        (jid, lid, phone_of_jid(jid), push_name, _now(), _bump(conn)),
+        "INSERT INTO inbox_chats (channel, jid, lid, phone, push_name, created_at, rev, unread) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+        (channel, jid, lid, phone, push_name, _now(), _bump(conn)),
     )
-    _new_chat_ids.append((cur.lastrowid, phone_of_jid(jid), push_name or ""))
+    _new_chat_ids.append((cur.lastrowid, phone, push_name or "", CHANNELS.get(channel, channel)))
     return cur.lastrowid
 
 
@@ -418,10 +437,13 @@ _new_chat_ids: list = []
 def _flush_new_clients() -> None:
     """A new chat = a client card in the CRM (outside the chat's transaction)."""
     while _new_chat_ids:
-        chat_id, phone, name = _new_chat_ids.pop()
+        chat_id, phone, name, source = _new_chat_ids.pop()
         try:
             from . import crm
-            crm.ensure_client(phone, name, "WhatsApp", chat_id)
+            if phone:
+                crm.ensure_client(phone, name, source, chat_id)
+            else:
+                crm.ensure_client_for_chat(chat_id, name, source)
         except Exception:  # noqa: BLE001
             logger.exception("crm client from chat failed")
 
@@ -451,12 +473,22 @@ def _touch_chat(conn, chat_id: int, at: str, direction: str, kind: str, text: st
 
 
 def store_message(m: dict, notify: bool = False, history: bool = False) -> dict | None:
-    """One message from the bridge (incoming, or sent from the phone/by us)."""
+    """One message from any channel (incoming, or sent from the phone/by us).
+    m: id, jid, from_me, push_name, at, kind, text, media, mime, file_name,
+    voice, lat, lng, quoted_id, reaction_to; channel (default wa), phone."""
+    try:
+        return _store_message(m, notify, history)
+    finally:
+        _flush_new_clients()
+
+
+def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
     jid = m.get("jid")
     if not jid or not m.get("id"):
         return None
     out = bool(m.get("from_me"))
     at = _local(m.get("at"))
+    channel = m.get("channel") or "wa"
     with database.get_conn() as conn:
         if m.get("kind") == "reaction":
             target = m.get("reaction_to")
@@ -465,7 +497,7 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
                 conn.execute("UPDATE inbox_messages SET reaction = ?, rev = ? WHERE wa_id = ?",
                              (m.get("text") or None, rev, target))
             return None
-        chat_id = _ensure_chat(conn, jid, m.get("lid"), None if out else m.get("push_name"))
+        chat_id = _ensure_chat(conn, jid, m.get("lid"), None if out else m.get("push_name"), channel, m.get("phone"))
         exists = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ?", (m["id"],)).fetchone()
         if exists:
             return None
@@ -493,7 +525,6 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
         _touch_chat(conn, chat_id, at, "out" if out else "in", m.get("kind") or "text",
                     m.get("text") or "", "sent" if out else None,
                     0 if (out or history) else 1)
-    _flush_new_clients()
     if notify and not out and not history:
         _alert(chat_id, m)
     return {"chat_id": chat_id}
@@ -581,21 +612,25 @@ def bridge_logout() -> None:
 
 def mark_read(chat_id: int) -> None:
     with database.get_conn() as conn:
-        r = conn.execute("SELECT jid, unread FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
+        r = conn.execute("SELECT jid, unread, channel FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
         if not r or not r["unread"]:
             return
         ids = [x["wa_id"] for x in conn.execute(
             "SELECT wa_id FROM inbox_messages WHERE chat_id = ? AND direction = 'in' "
             "ORDER BY id DESC LIMIT ?", (chat_id, min(int(r["unread"]), 30))).fetchall()]
         conn.execute("UPDATE inbox_chats SET unread = 0, rev = ? WHERE id = ?", (_bump(conn), chat_id))
-    # blue ticks for the guest — best effort, in the background
-    threading.Thread(target=_safe_read, args=(r["jid"], ids), daemon=True).start()
+    # read receipts for the guest — best effort, in the background
+    threading.Thread(target=_safe_read, args=(r["channel"] or "wa", r["jid"], ids), daemon=True).start()
 
 
-def _safe_read(jid, ids) -> None:
+def _safe_read(channel, jid, ids) -> None:
     try:
-        _bridge("POST", "/read", {"jid": jid, "ids": ids}, timeout=10)
-    except BridgeError:
+        if channel == "wa":
+            _bridge("POST", "/read", {"jid": jid, "ids": ids}, timeout=10)
+        elif channel == "tg":
+            from . import tg_channels
+            tg_channels.user_read(jid)
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -611,8 +646,8 @@ def update_chat(chat_id: int, **fields) -> dict | None:
 
 def send(chat_id: int, author: str, text: str = "", media: str | None = None, mime: str | None = None,
          file_name: str | None = None, quoted_id: str | None = None) -> dict:
-    """Store the reply as 'pending', hand it to the bridge, then record the
-    WhatsApp id (or the error, so the operator sees a red mark and can retry)."""
+    """Store the reply as 'pending', hand it to the chat's channel, then record
+    the external id (or the error, so the operator sees a red mark and can retry)."""
     text = (text or "").strip()
     if not text and not media:
         raise BridgeError("Пустое сообщение")
@@ -646,7 +681,7 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
         payload.update(quoted_id=quoted_id, quoted_from_me=quoted["direction"] == "out",
                        quoted_text=quoted["text"] or "")
     try:
-        res = _bridge("POST", "/send", payload, timeout=60)
+        res = _dispatch_send(chat["channel"] or "wa", payload)
     except BridgeError as exc:
         with database.get_conn() as conn:
             rev = _bump(conn)
@@ -666,6 +701,35 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
                      (rev, chat_id))
         row = conn.execute("SELECT * FROM inbox_messages WHERE id = ?", (mid,)).fetchone()
     return _msg_out(row)
+
+
+def _dispatch_send(channel: str, payload: dict) -> dict:
+    """Hand an outgoing message to its channel; returns {"id": external id}."""
+    if channel == "wa":
+        st = bridge_status()
+        if st.get("status") != "connected" and config.WA_CLOUD_TOKEN and config.WA_CLOUD_PHONE_ID:
+            channel = "wac"  # the QR bridge is down but the official API is set up: use it
+        else:
+            return _bridge("POST", "/send", payload, timeout=60)
+    try:
+        if channel == "wac":
+            from . import meta_api
+            return meta_api.wa_send(payload)
+        if channel == "ig":
+            from . import meta_api
+            return meta_api.ig_send(payload)
+        if channel == "tg":
+            from . import tg_channels
+            return tg_channels.user_send(payload)
+        if channel == "tgbot":
+            from . import tg_channels
+            return tg_channels.bot_send(payload)
+    except BridgeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("send via %s failed", channel)
+        raise BridgeError(f"{CHANNELS.get(channel, channel)}: {exc}") from exc
+    raise BridgeError(f"Неизвестный канал {channel}")
 
 
 def retry(message_id: int, author: str) -> dict:
@@ -722,6 +786,11 @@ def agents() -> list[str]:
         for r in conn.execute("SELECT uid FROM inbox_agents").fetchall():
             if may_use(r["uid"]):
                 names.add(_agent_name(r["uid"]))
+        try:
+            for r in conn.execute("SELECT name FROM crm_users WHERE active = 1").fetchall():
+                names.add(r["name"])
+        except Exception:  # noqa: BLE001 — CRM tables not created yet
+            pass
     return sorted(n for n in names if n)
 
 
@@ -760,7 +829,7 @@ def _alert(chat_id: int, m: dict) -> None:
             if b:
                 who += f" · {b['apartment']}"
             body = _preview(m.get("kind") or "text", m.get("text") or "")
-            text = f"💬 WhatsApp · {who}\n\n{body}\n\n↩️ Ответьте на это сообщение — ответ уйдёт гостю."
+            text = f"💬 {c.get('channel_name') or 'WhatsApp'} · {who}\n\n{body}\n\n↩️ Ответьте на это сообщение — ответ уйдёт гостю."
             for tg_chat, tg_msg in _tg_send_all(targets, text):
                 with database.get_conn() as conn:
                     conn.execute("INSERT OR REPLACE INTO inbox_tg_map VALUES (?, ?, ?, ?)",

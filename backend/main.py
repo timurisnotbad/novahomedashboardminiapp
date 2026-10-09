@@ -6,9 +6,10 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, crm, database, inbox, logsetup, rc_sync, reminders, scheduler
+from . import auth, config, crm, database, inbox, logsetup, rc_sync, reminders, scheduler, tg_channels
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
@@ -42,6 +43,10 @@ async def lifespan(app: FastAPI):
     inbox.init_db()
     crm.init_db()
     scheduler.start()
+    if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
+        logger.warning("META_APP_SECRET is empty: webhook signatures are not checked — set it in .env")
+    await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
+    tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
     scheduler.shutdown()
@@ -58,6 +63,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1500)  # chat lists / bookings grids shrink 5-10x over the tunnel
 
 # API routers — every data endpoint requires a legitimate dashboard user
 # (see auth.access_guard); owner-only routers add their own stricter guard.

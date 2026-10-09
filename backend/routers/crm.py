@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, database, inbox, rc_sync
+from .. import config, crm, database, inbox, meta_api, rc_sync, tg_channels
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -141,6 +141,14 @@ def home(user: dict = Depends(current_user)):  # noqa: B008
     d = crm.home(user["id"])
     d["wa"] = inbox.bridge_status().get("status")
     return d
+
+
+@router.get("/badges")
+def badges(user: dict = Depends(current_user)):  # noqa: B008
+    with database.get_conn() as conn:
+        unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
+        mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ?", (user["id"],)).fetchone()[0]
+    return {"unread": unread, "my_open_tasks": mine}
 
 
 # ---- pipelines & fields -------------------------------------------------------
@@ -406,9 +414,49 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
     if user["role"] != "admin":
         st.pop("qr", None)
     with database.get_conn() as conn:
-        chats = conn.execute("SELECT COUNT(*) FROM inbox_chats").fetchone()[0]
-    return {"whatsapp": {**st, "chats": chats},
-            "telegram_bot": {"configured": bool(config.BOT_TOKEN), "notify_targets": config.inbox_notify_targets()}}
+        counts = {r[0] or "wa": r[1] for r in conn.execute(
+            "SELECT channel, COUNT(*) FROM inbox_chats GROUP BY channel").fetchall()}
+    return {
+        "whatsapp": {**st, "chats": counts.get("wa", 0)},
+        "whatsapp_cloud": {**meta_api.wa_status(), "chats": counts.get("wac", 0)},
+        "instagram": {**meta_api.ig_status(), "chats": counts.get("ig", 0)},
+        "meta_webhook": {"url": meta_api.webhook_url(), "verify_token_set": bool(config.META_VERIFY_TOKEN),
+                         "app_secret_set": bool(config.META_APP_SECRET)},
+        "telegram": {**tg_channels.user_status(), "chats": counts.get("tg", 0)},
+        "telegram_guest_bot": {**tg_channels.bot_status(), "chats": counts.get("tgbot", 0)},
+        "telegram_bot": {"configured": bool(config.BOT_TOKEN), "notify_targets": config.inbox_notify_targets()},
+    }
+
+
+class TgPhoneIn(BaseModel):
+    phone: str
+
+
+class TgCodeIn(BaseModel):
+    code: str = ""
+    password: str = ""
+
+
+@router.post("/channels/telegram/send_code")
+def tg_send_code(payload: TgPhoneIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return tg_channels.user_send_code(payload.phone)
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/channels/telegram/sign_in")
+def tg_sign_in(payload: TgCodeIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return tg_channels.user_sign_in(payload.code, payload.password)
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/channels/telegram/logout")
+def tg_logout(user: dict = Depends(admin_user)):  # noqa: B008
+    tg_channels.user_logout()
+    return {"ok": True}
 
 
 @router.post("/channels/whatsapp/logout")

@@ -523,18 +523,33 @@ def ensure_client(phone: str, name: str = "", source: str = "", chat_id=None) ->
             (name.strip() or "+" + phone, phone, source, chat_id, _now(), _now())).lastrowid
 
 
+def ensure_client_for_chat(chat_id: int, name: str = "", source: str = "") -> int:
+    """Client card for a chat without a phone number (Instagram, Telegram)."""
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT id FROM crm_clients WHERE chat_id = ?", (chat_id,)).fetchone()
+        if r:
+            return r["id"]
+        return conn.execute(
+            "INSERT INTO crm_clients (name, phone, source, fields, chat_id, created_at, updated_at) VALUES (?, '', ?, '{}', ?, ?, ?)",
+            (name.strip() or source or "Гость", source, chat_id, _now(), _now())).lastrowid
+
+
 def import_clients() -> int:
     """Create clients for every phone seen in bookings and chats."""
     n = 0
     with database.get_conn() as conn:
         bk = conn.execute("SELECT client_name, client_phone, source_id FROM bookings WHERE COALESCE(is_delete, 0) = 0 "
                           "AND client_phone IS NOT NULL AND client_phone != '' ORDER BY begin_date DESC").fetchall()
-        ch = conn.execute("SELECT id, phone, name, push_name FROM inbox_chats WHERE phone IS NOT NULL AND phone != ''").fetchall()
+        ch = conn.execute("SELECT id, phone, name, push_name, channel FROM inbox_chats").fetchall()
     before = len(clients(limit=100000))
     for r in bk:
         ensure_client(r["client_phone"], r["client_name"] or "", config.SOURCE_NAMES.get(r["source_id"], "") or "")
     for r in ch:
-        ensure_client(r["phone"], r["name"] or r["push_name"] or "", "WhatsApp", r["id"])
+        src = {"ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram"}.get(r["channel"] or "wa", "WhatsApp")
+        if r["phone"]:
+            ensure_client(r["phone"], r["name"] or r["push_name"] or "", src, r["id"])
+        else:
+            ensure_client_for_chat(r["id"], r["name"] or r["push_name"] or "", src)
     n = len(clients(limit=100000)) - before
     return n
 
