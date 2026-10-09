@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=50&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=51&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -680,7 +680,7 @@
           <div class="muted small">Броней: ${rc.bookings} · объектов: ${rc.apartments} · каждые ${rc.interval_min} мин · последняя синхронизация: ${rc.last_sync ? esc(dtShort(rc.last_sync)) : "—"}</div></div>
         <button class="btn" id="i-sync">Синхронизировать сейчас</button></div>
         <div class="muted small" style="margin-top:10px">Запись в календарь: из карточки брони («Изменить бронь») уходят гость, телефон, сумма, даты, время, заметка. ${rc.push_log && rc.push_log.length ? `Последние записи:` : "Записей пока не было."}</div>
-        ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
+        ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small" style="cursor:pointer" title="Нажмите, чтобы показать ответ календаря целиком" onclick="this.textContent=this.dataset.full" data-full="${esc(l.response || "")}">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160)) + ((l.response || "").length > 160 ? "…" : "")}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Задачи из броней</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-auto" ${d.settings.auto_tasks ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать задачи «Заезд» и «Выезд» на день заезда/выезда (исполнитель — администратор)</label></div>
       <div class="card"><h3>Реквизиты компании (для счетов и подтверждений)</h3>
         <div class="form-row c3"><div><label class="lbl">Бренд (шапка)</label><input class="field" id="co-brand" value="${esc(d.company.brand || "")}" /></div><div><label class="lbl">Подпись под брендом</label><input class="field" id="co-tagline" value="${esc(d.company.tagline || "")}" /></div><div><label class="lbl">Цвет акцента</label><input class="field" id="co-accent" value="${esc(d.company.accent || "#8B7D5A")}" /></div></div>

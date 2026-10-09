@@ -110,6 +110,23 @@ def refresh_booking(bid: int) -> None:
         database.upsert_bookings(rows)
 
 
+RAW_EXTRA = ("apartment_name", "client_name", "client_phone", "client_email", "client_phone2")
+
+
+def fetch_raw_event(bid: int) -> dict | None:
+    """The calendar's own full object for one booking (for a full-object PUT)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return None
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    for ev in fetch_bookings(d0, d1, [cur["apartment_id"]]):
+        if ev.get("id") == bid:
+            return {k: v for k, v in ev.items() if k not in RAW_EXTRA}
+    return None
+
+
 def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = None) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 

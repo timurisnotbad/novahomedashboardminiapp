@@ -86,6 +86,74 @@ def _payload(changes: dict) -> dict:
     return ev
 
 
+# write-schema names RC may require, from what we know about the booking
+_ALIASES = {
+    "prepaid_amount": lambda raw, cur: raw.get("prepayment", cur.get("prepayment")) or 0,
+    "prepayment": lambda raw, cur: raw.get("prepayment", cur.get("prepayment")) or 0,
+    "amount": lambda raw, cur: raw.get("amount", cur.get("amount")) or 0,
+    "price": lambda raw, cur: raw.get("price", raw.get("amount", cur.get("amount"))) or 0,
+    "notes": lambda raw, cur: raw.get("short_notes", cur.get("short_notes")) or "",
+    "short_notes": lambda raw, cur: raw.get("short_notes", cur.get("short_notes")) or "",
+    "begin_date": lambda raw, cur: _dmy(cur["begin_date"]),
+    "end_date": lambda raw, cur: _dmy(cur["end_date"]),
+    "apartment_id": lambda raw, cur: raw.get("apartment_id", cur.get("apartment_id")),
+    "status": lambda raw, cur: raw.get("status", cur.get("status")) or "booked",
+    "source_id": lambda raw, cur: raw.get("source_id", cur.get("source_id")),
+    "arrival_time": lambda raw, cur: raw.get("arrival_time", cur.get("arrival_time")) or "",
+    "departure_time": lambda raw, cur: raw.get("departure_time", cur.get("departure_time")) or "",
+    "days_count": lambda raw, cur: raw.get("days_count", cur.get("days_count")) or 0,
+    "guests_count": lambda raw, cur: raw.get("guests_count", 1),
+    "is_external": lambda raw, cur: bool(raw.get("is_external", cur.get("is_external"))),
+}
+
+
+def _guess_value(name: str, raw: dict, cur: dict):
+    if name in _ALIASES:
+        return _ALIASES[name](raw, cur)
+    if name in raw:
+        return raw[name]
+    n = name.lower()
+    if n.endswith(("amount", "price", "count", "_id", "sum", "progress", "deposit", "commission")):
+        return 0
+    if n.startswith("is_") or n.startswith("has_") or n.endswith("_enabled"):
+        return False
+    return ""
+
+
+def _full_event(raw: dict, cur: dict, changes: dict) -> dict:
+    """The calendar's own event + our changes (+ the names its write schema is known to want)."""
+    ev = dict(raw)
+    ev.pop("id", None)
+    client = dict(raw.get("client") or {})
+    ev["client"] = client
+    payload = _payload(changes)
+    for k, v in payload.items():
+        if k == "client":
+            client.update(v)
+        elif k == "client_attributes":
+            continue
+        else:
+            ev[k] = v
+    if "fio" not in client and cur.get("client_name"):
+        client["fio"] = cur["client_name"]
+    if "phone" not in client and cur.get("client_phone"):
+        client["phone"] = cur["client_phone"]
+    ev["client_attributes"] = dict(client)
+    # names the write schema asked for before: send them from the start
+    for name in ("prepaid_amount", "begin_date", "end_date", "apartment_id", "status", "amount", "notes"):
+        if name not in ev:
+            ev[name] = _guess_value(name, raw, cur)
+    for k in ("begin_date", "end_date"):  # the calendar reads ISO but writes DD.MM.YYYY
+        v = ev.get(k)
+        if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}", v):
+            ev[k] = _dmy(v)
+    if "prepayment" in payload:
+        ev["prepaid_amount"] = payload["prepayment"]
+    if "short_notes" in payload:
+        ev["notes"] = payload["short_notes"]
+    return ev
+
+
 def _log(bid: int, changes: dict, status: str, http: int | None, response: str, who: str) -> None:
     with database.get_conn() as conn:
         conn.execute("INSERT INTO crm_rc_log (booking_id, changes, status, http, response, by_user, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -183,16 +251,37 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
         co = changes.get("checkout") or cur["end_date"]
         if co <= ci:
             raise RCError("Дата выезда должна быть позже заезда")
-    body = {"event_calendar": _payload(changes)}
+    # RC validates the whole object on PUT («required property …»): send its own
+    # full event with our changes merged in, and fill whatever it still asks for.
+    try:
+        raw = rc_sync.fetch_raw_event(bid) or {}
+    except Exception:  # noqa: BLE001
+        raw = {}
+    ev = _full_event(raw, dict(cur), changes)
     url = f"{config.RC_BASE_URL}/v2/event_calendars/{bid}"
     headers = {**rc_sync._headers(), "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"}  # noqa: SLF001
-    try:
-        resp = requests.put(url, json=body, headers=headers, timeout=25)
-        if resp.status_code in (404, 405):  # some RC builds take PATCH
-            resp = requests.patch(url, json=body, headers=headers, timeout=25)
-    except requests.RequestException as exc:
-        _log(bid, changes, "error", None, str(exc), who)
-        raise RCError(f"RealtyCalendar недоступен: {exc}") from exc
+    resp = None
+    for attempt in range(4):
+        body = {"event_calendar": ev}
+        try:
+            resp = requests.put(url, json=body, headers=headers, timeout=25)
+            if resp.status_code in (404, 405):  # some RC builds take PATCH
+                resp = requests.patch(url, json=body, headers=headers, timeout=25)
+        except requests.RequestException as exc:
+            _log(bid, changes, "error", None, str(exc), who)
+            raise RCError(f"RealtyCalendar недоступен: {exc}") from exc
+        if resp.status_code < 400:
+            break
+        missing = re.findall(r"required property of '([A-Za-z0-9_]+)'", resp.text or "")
+        if not missing or attempt == 3:
+            break
+        added = False
+        for name in missing:
+            if name not in ev:
+                ev[name] = _guess_value(name, raw, dict(cur))
+                added = True
+        if not added:
+            break
     text = resp.text or ""
     if resp.status_code >= 400:
         msg = text[:300]
