@@ -35,7 +35,7 @@
     let data = null;
     try { data = await res.json(); } catch (e) { /* empty */ }
     if (res.status === 401 && S.me) { S.me = null; showAuth(false); }
-    if (!res.ok) { const err = new Error((data && data.detail) || (res.status === 502 || res.status === 504 ? "Сервер не ответил (ошибка " + res.status + "). Проверьте, что окно Nova Backend запущено, и попробуйте ещё раз" : "Ошибка " + res.status)); err.status = res.status; throw err; }
+    if (!res.ok) { const err = new Error((data && data.detail) || (res.status === 502 || res.status === 504 ? "Сервер не ответил (ошибка " + res.status + "): окно Nova Backend закрыто или туннель оборван. Попробуйте ещё раз" : "Ошибка " + res.status)); err.status = res.status; throw err; }
     return data;
   }
   const get = (p) => api(p);
@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=51&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=52&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }

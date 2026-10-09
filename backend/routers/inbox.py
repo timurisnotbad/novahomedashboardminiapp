@@ -37,7 +37,7 @@ public = APIRouter(prefix="/inbox", tags=["inbox"])
 
 
 def _fail(exc: Exception):
-    raise HTTPException(status_code=502, detail=str(exc)) from exc
+    raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 class SendIn(BaseModel):

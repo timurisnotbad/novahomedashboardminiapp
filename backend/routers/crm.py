@@ -349,7 +349,7 @@ def push_client_now(cid: int, user: dict = Depends(current_user)):  # noqa: B008
     try:
         return rc_push.push_client(cid, user["name"])
     except rc_push.RCError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 @router.delete("/clients/{cid}")
@@ -374,7 +374,7 @@ def client_chat(cid: int, payload: dict | None = None, user: dict = Depends(curr
     try:
         chat = inbox.start_chat(c["phone"], c.get("name") or "", channel)  # QR bridge / Wazzup / Telegram account
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=f"Не удалось открыть чат: {exc}") from exc
+        raise HTTPException(status_code=424, detail=f"Не удалось открыть чат: {exc}") from exc
     with database.get_conn() as conn:
         conn.execute("UPDATE crm_clients SET chat_id = COALESCE(chat_id, ?) WHERE id = ?", (chat["id"], cid))
     return {"chat_id": chat["id"]}
@@ -450,7 +450,7 @@ def email_send(payload: EmailIn, user: dict = Depends(current_user)):  # noqa: B
         return docs.send_email(payload.to, payload.subject, payload.text, att, user["name"],
                                payload.booking_id, payload.client_id, payload.doc_id)
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 # ---- deals --------------------------------------------------------------------
@@ -538,7 +538,7 @@ def deal_send(did: int, payload: DealSendIn, user: dict = Depends(current_user))
     try:
         m = inbox.send(payload.chat_id, user["name"], payload.text[:4000])
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
     crm_amo.link_chat(did, payload.chat_id)
     return m
 
@@ -687,7 +687,7 @@ def edit_booking(bid: int, payload: dict, user: dict = Depends(current_user)):  
     try:
         return rc_push.update_booking(bid, payload, user["name"])
     except rc_push.RCError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 @router.post("/bookings/{bid}/chats")
@@ -837,7 +837,7 @@ def wazzup_register(user: dict = Depends(admin_user)):  # noqa: B008
     try:
         return wazzup.register_webhook()
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 class TgPhoneIn(BaseModel):
@@ -854,7 +854,7 @@ def tg_send_code(payload: TgPhoneIn, user: dict = Depends(admin_user)):  # noqa:
     try:
         return tg_channels.user_send_code(payload.phone)
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 @router.post("/channels/telegram/sign_in")
@@ -862,7 +862,7 @@ def tg_sign_in(payload: TgCodeIn, user: dict = Depends(admin_user)):  # noqa: B0
     try:
         return tg_channels.user_sign_in(payload.code, payload.password)
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
 
 
 @router.post("/channels/telegram/logout")
@@ -876,7 +876,7 @@ def wa_logout(user: dict = Depends(admin_user)):  # noqa: B008
     try:
         inbox.bridge_logout()
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -939,7 +939,7 @@ async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
     try:
         n = await asyncio.get_event_loop().run_in_executor(None, rc_sync.sync_to_db)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
+        raise HTTPException(status_code=424, detail=f"Синхронизация не удалась: {exc}") from exc
     try:
         await asyncio.get_event_loop().run_in_executor(None, crm.auto_tasks)
         await asyncio.get_event_loop().run_in_executor(None, crm.auto_checklists)
