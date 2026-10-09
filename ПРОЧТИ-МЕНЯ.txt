@@ -1,0 +1,54 @@
+NOVA HOME — дашборд, бот, CRM и чаты в одной папке
+=====================================================
+
+УСТАНОВКА (первый раз или обновление) — 3 шага
+-----------------------------------------------
+1. Распаковать архив в папку, например  C:\NovaHome\novahomedashboard
+   (при обновлении — поверх старой папки, с заменой файлов; ваш .env и база не трогаются).
+2. Запустить install.bat
+   - поставит библиотеки,
+   - создаст .env (или допишет в ваш .env новые настройки),
+   - проверит систему и предложит запустить.
+3. Открыть .env в Блокноте, заполнить и сохранить:
+     BOT_TOKEN=        токен бота от @BotFather
+     OWNER_IDS=        ваш Telegram ID (узнать: написать боту /myid)
+     OWNER_KEY=        любое длинное слово-секрет
+     RC_TOKEN=         токен RealtyCalendar
+     WEBAPP_URL=       https://app.novahomedashboard.com (ваш адрес Cloudflare)
+     WAZZUP_API_KEY=   ключ API из Wazzup (Настройки → Интеграция с CRM)
+   Остальное можно оставить пустым — это выключенные функции.
+
+ЗАПУСК
+------
+restart_all.bat — открывает окна «Nova Backend», «Nova Bot» и (если есть Node.js)
+«Nova WhatsApp». Окна не закрывать. Один раз запустите autostart.bat — тогда всё
+поднимется само после перезагрузки компьютера.
+
+ГДЕ ЧТО
+-------
+Дашборд (Telegram): бот → /start → «Открыть дашборд»
+CRM (браузер):       WEBAPP_URL/crm/   — первый вход создаст администратора
+Чаты (Telegram):     бот → /chats
+Проверка:            diagnose.bat — покажет, что не так, и сохранит отчёт в logs\diagnose.txt
+
+ЧТО НУЖНО УСТАНОВИТЬ НА КОМПЬЮТЕР
+---------------------------------
+Обязательно:  Python 3.11+  (python.org, галочка "Add python.exe to PATH")
+Опционально:  Node.js LTS   (nodejs.org) — только для WhatsApp по QR-коду.
+              Если WhatsApp подключён через Wazzup, Node.js не нужен.
+
+КАНАЛЫ
+------
+Настраиваются в CRM → «Каналы», там же пошаговые инструкции:
+  Wazzup (основной WhatsApp)  — WAZZUP_API_KEY в .env, вебхук подключится сам
+  WhatsApp по QR              — окно «Nova WhatsApp», QR в CRM → Каналы
+  WhatsApp Cloud API (Meta)   — WA_CLOUD_TOKEN, WA_CLOUD_PHONE_ID, META_VERIFY_TOKEN, META_APP_SECRET
+  Instagram Direct (Meta)     — IG_PAGE_TOKEN
+  Telegram — аккаунт компании — TG_API_ID, TG_API_HASH (my.telegram.org), вход в CRM → Каналы
+  Telegram-бот для гостей     — TG_GUEST_BOT_TOKEN (отдельный бот)
+
+ЕСЛИ ЧТО-ТО НЕ ТАК
+------------------
+1. diagnose.bat — внизу окна список найденных проблем.
+2. Логи: logs\server.log, logs\bot.log, logs\bot-error.log.
+3. Подробности по каждому симптому — README.md, раздел «Если что-то не работает».
