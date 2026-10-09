@@ -200,17 +200,18 @@ class FieldIn(BaseModel):
     name: str
     type: str = "text"
     options: list[str] = []
+    entity: str = "client"
 
 
 @router.get("/fields")
-def get_fields(user: dict = Depends(current_user)):  # noqa: B008
-    return crm.fields()
+def get_fields(entity: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return crm.fields(entity or None)
 
 
 @router.post("/fields")
 def add_field(payload: FieldIn, user: dict = Depends(admin_user)):  # noqa: B008
     try:
-        return crm.save_field(None, payload.name, payload.type, payload.options)
+        return crm.save_field(None, payload.name, payload.type, payload.options, payload.entity)
     except ValueError as exc:
         _bad(exc)
 
@@ -218,7 +219,7 @@ def add_field(payload: FieldIn, user: dict = Depends(admin_user)):  # noqa: B008
 @router.put("/fields/{fid}")
 def put_field(fid: int, payload: FieldIn, user: dict = Depends(admin_user)):  # noqa: B008
     try:
-        return crm.save_field(fid, payload.name, payload.type, payload.options)
+        return crm.save_field(fid, payload.name, payload.type, payload.options, payload.entity)
     except ValueError as exc:
         _bad(exc)
 
@@ -335,12 +336,13 @@ def add_deal(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
 
 @router.get("/deals/{did}")
 def get_deal(did: int, user: dict = Depends(current_user)):  # noqa: B008
-    d = crm_amo.deal_full(did)
+    d = crm.get_deal(did)
     if not d:
         raise HTTPException(status_code=404, detail="Сделка не найдена")
-    for ch in d["chats"]:  # reading the timeline = reading the chats
-        if ch.get("unread"):
-            inbox.mark_read(ch["id"])
+    d["chats"] = crm_amo.deal_chats(did)
+    with database.get_conn() as conn:
+        d["log"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM crm_auto_log WHERE dedupe LIKE ? ORDER BY id DESC LIMIT 10", (f"stage:%:d{did}:%",)).fetchall()]
     return d
 
 

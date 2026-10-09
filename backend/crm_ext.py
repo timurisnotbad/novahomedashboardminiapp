@@ -621,3 +621,82 @@ def on_incoming(chat_id: int, is_first: bool) -> None:
             _send_rule(rule, bo, key, now, chat)
     except Exception:  # noqa: BLE001
         logger.exception("incoming auto rules failed")
+
+
+# ---------------------------------------------------------------------------
+# Stage actions («digital pipeline»): run when a deal enters a stage
+# ---------------------------------------------------------------------------
+def _deal_vars(d: dict, conn) -> dict:
+    """A booking-like dict for fill(): the deal's own fields, or its booking."""
+    b = None
+    if d.get("booking_id"):
+        r = conn.execute("SELECT * FROM bookings WHERE id = ?", (d["booking_id"],)).fetchone()
+        b = crm._booking_out(dict(r)) if r else None  # noqa: SLF001
+    c = conn.execute("SELECT name FROM crm_clients WHERE id = ?", (d["client_id"],)).fetchone() if d.get("client_id") else None
+    return {"guest": (c["name"] if c else "") or (b or {}).get("guest") or "", "apartment": d.get("apartment") or (b or {}).get("apartment"),
+            "checkin": d.get("checkin") or (b or {}).get("checkin"), "checkout": d.get("checkout") or (b or {}).get("checkout"),
+            "nights": (b or {}).get("nights"), "amount": d.get("amount") if d.get("amount") is not None else (b or {}).get("amount"),
+            "debt": (b or {}).get("debt"), "id": d.get("booking_id")}
+
+
+def _deal_chat(d: dict, conn) -> dict | None:
+    """Chat to message the guest: linked to the deal, else by the client's phone."""
+    ids = [r[0] for r in conn.execute("SELECT chat_id FROM crm_deal_chats WHERE deal_id = ? ORDER BY linked_at DESC", (d["id"],)).fetchall()]
+    if not ids and d.get("client_id"):
+        c = conn.execute("SELECT phone, chat_id FROM crm_clients WHERE id = ?", (d["client_id"],)).fetchone()
+        if c and c["chat_id"]:
+            ids.append(c["chat_id"])
+        if c and c["phone"] and len(c["phone"]) >= 7:
+            ids += [r[0] for r in conn.execute("SELECT id FROM inbox_chats WHERE phone LIKE ? ORDER BY last_at DESC",
+                                               ("%" + c["phone"][-9:],)).fetchall()]
+    for cid in ids:
+        ch = inbox.get_chat(cid)
+        if ch:
+            return ch
+    return None
+
+
+def run_stage_actions(deal_id: int, stage_id: int, uid: int) -> list[dict]:
+    with database.get_conn() as conn:
+        actions = [dict(r) for r in conn.execute("SELECT * FROM crm_stage_actions WHERE stage_id = ? ORDER BY sort, id", (stage_id,)).fetchall()]
+        if not actions:
+            return []
+        d = dict(conn.execute("SELECT * FROM crm_deals WHERE id = ?", (deal_id,)).fetchone())
+        stage = conn.execute("SELECT name FROM crm_stages WHERE id = ?", (stage_id,)).fetchone()
+        vars_ = _deal_vars(d, conn)
+        chat = _deal_chat(d, conn)
+    stamp = crm._now()
+    out = []
+    for a in actions:
+        rule = {"id": 0, "name": f"Этап «{stage['name'] if stage else stage_id}»"}
+        key = f"stage:{a['id']}:d{deal_id}:{stamp}"
+        text = fill(a["text"], vars_, chat)
+        status, error = "sent", None
+        try:
+            if a["kind"] == "message":
+                if not chat:
+                    status, error = "skipped", "у сделки нет чата с гостем"
+                else:
+                    inbox.send(chat["id"], AUTHOR, text)
+            elif a["kind"] == "task":
+                from datetime import datetime as _dt
+                h, m = (int(x) for x in (a["at_time"] or "10:00").split(":"))
+                due = (_dt.now() + timedelta(days=int(a["days"] or 0))).replace(hour=h, minute=m, second=0, microsecond=0)
+                crm.save_task(None, {"title": text, "due": due.isoformat(timespec="minutes"), "assignee_uid": d.get("owner_uid") or uid,
+                                     "deal_id": deal_id, "client_id": d.get("client_id")}, uid)
+            elif a["kind"] == "notify":
+                targets = config.inbox_notify_targets()
+                if not targets or not config.BOT_TOKEN:
+                    status, error = "skipped", "Telegram-уведомления не настроены"
+                else:
+                    inbox._tg_send_all(targets, f"⚡ {rule['name']}: {d['title']}\n{text}")  # noqa: SLF001
+        except inbox.BridgeError as exc:
+            status, error = "failed", str(exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("stage action failed")
+            status, error = "failed", str(exc)
+        with database.get_conn() as conn:
+            _log(conn, rule, d.get("booking_id"), chat if a["kind"] == "message" else None,
+                 f"[{ {'message': 'сообщение', 'task': 'задача', 'notify': 'уведомление'}[a['kind']] }] {text}", status, error, key)
+        out.append({"kind": a["kind"], "status": status, "error": error})
+    return out

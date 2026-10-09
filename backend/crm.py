@@ -105,6 +105,17 @@ CREATE TABLE IF NOT EXISTS crm_fields (
     sort INTEGER DEFAULT 0
 );
 
+-- amo-style «digital pipeline»: what happens when a deal enters a stage
+CREATE TABLE IF NOT EXISTS crm_stage_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stage_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,              -- message | task | notify
+    text TEXT,                       -- message/notify text (variables allowed) or task title
+    days INTEGER DEFAULT 0,          -- task: due in N days
+    at_time TEXT DEFAULT '10:00',    -- task: due time
+    sort INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS crm_settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -143,6 +154,10 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_templates)").fetchall()]
         if cols and "command" not in cols:
             conn.execute("ALTER TABLE inbox_templates ADD COLUMN command TEXT")
+        if "entity" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_fields)").fetchall()]:
+            conn.execute("ALTER TABLE crm_fields ADD COLUMN entity TEXT DEFAULT 'client'")
+        if "fields" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]:
+            conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
         if not conn.execute("SELECT 1 FROM crm_pipelines").fetchone():
             pid = conn.execute("INSERT INTO crm_pipelines (name, sort) VALUES ('Продажи', 0)").lastrowid
             for i, (nm, color, kind) in enumerate(DEFAULT_STAGES):
@@ -313,6 +328,9 @@ def pipelines() -> list[dict]:
         for p in ps:
             p["stages"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM crm_stages WHERE pipeline_id = ? ORDER BY sort, id", (p["id"],)).fetchall()]
+            for s in p["stages"]:
+                s["actions"] = [dict(r) for r in conn.execute(
+                    "SELECT * FROM crm_stage_actions WHERE stage_id = ? ORDER BY sort, id", (s["id"],)).fetchall()]
     return ps
 
 
@@ -344,12 +362,20 @@ def save_pipeline(pid: int | None, name: str, stages: list[dict]) -> dict:
                 sid = conn.execute("INSERT INTO crm_stages (pipeline_id, name, sort, color, kind) VALUES (?, ?, ?, ?, ?)",
                                    (pid, s["name"].strip(), i, s.get("color") or None, kind)).lastrowid
             keep.append(sid)
+            # stage actions: replace the set
+            conn.execute("DELETE FROM crm_stage_actions WHERE stage_id = ?", (sid,))
+            for j, a in enumerate(s.get("actions") or []):
+                if a.get("kind") not in ("message", "task", "notify") or not (a.get("text") or "").strip():
+                    continue
+                conn.execute("INSERT INTO crm_stage_actions (stage_id, kind, text, days, at_time, sort) VALUES (?, ?, ?, ?, ?, ?)",
+                             (sid, a["kind"], a["text"].strip(), int(a.get("days") or 0), (a.get("at_time") or "10:00")[:5], j))
         first = keep[0]
         gone = [r[0] for r in conn.execute("SELECT id FROM crm_stages WHERE pipeline_id = ?", (pid,)).fetchall()
                 if r[0] not in keep]
         for sid in gone:
             conn.execute("UPDATE crm_deals SET stage_id = ? WHERE stage_id = ?", (first, sid))
             conn.execute("DELETE FROM crm_stages WHERE id = ?", (sid,))
+            conn.execute("DELETE FROM crm_stage_actions WHERE stage_id = ?", (sid,))
     return next(p for p in pipelines() if p["id"] == pid)
 
 
@@ -366,28 +392,33 @@ def delete_pipeline(pid: int) -> None:
 # ---------------------------------------------------------------------------
 # Card fields
 # ---------------------------------------------------------------------------
-def fields() -> list[dict]:
+def fields(entity: str | None = None) -> list[dict]:
+    """Custom fields; entity = client | deal (None = all)."""
     with database.get_conn() as conn:
         out = []
         for r in conn.execute("SELECT * FROM crm_fields ORDER BY sort, id").fetchall():
             f = dict(r)
+            f["entity"] = f.get("entity") or "client"
+            if entity and f["entity"] != entity:
+                continue
             f["options"] = [o.strip() for o in (f["options"] or "").splitlines() if o.strip()]
             out.append(f)
         return out
 
 
-def save_field(fid: int | None, name: str, type_: str, options: list[str]) -> dict:
+def save_field(fid: int | None, name: str, type_: str, options: list[str], entity: str = "client") -> dict:
     name = name.strip()
     if not name:
         raise ValueError("Название поля")
     type_ = type_ if type_ in ("text", "number", "date", "select", "checkbox") else "text"
+    entity = entity if entity in ("client", "deal") else "client"
     opts = "\n".join(o.strip() for o in options if o.strip())
     with database.get_conn() as conn:
         if fid:
-            conn.execute("UPDATE crm_fields SET name = ?, type = ?, options = ? WHERE id = ?", (name, type_, opts, fid))
+            conn.execute("UPDATE crm_fields SET name = ?, type = ?, options = ?, entity = ? WHERE id = ?", (name, type_, opts, entity, fid))
         else:
-            fid = conn.execute("INSERT INTO crm_fields (name, type, options, sort) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM crm_fields))",
-                               (name, type_, opts)).lastrowid
+            fid = conn.execute("INSERT INTO crm_fields (name, type, options, entity, sort) VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM crm_fields))",
+                               (name, type_, opts, entity)).lastrowid
     return next(f for f in fields() if f["id"] == fid)
 
 
@@ -559,6 +590,10 @@ def import_clients() -> int:
 # ---------------------------------------------------------------------------
 def _deal_out(r, names=None, clients_map=None) -> dict:
     d = dict(r)
+    try:
+        d["fields"] = json.loads(d.get("fields") or "{}")
+    except (ValueError, TypeError):
+        d["fields"] = {}
     if names is not None:
         d["owner_name"] = names.get(d["owner_uid"])
     if clients_map is not None and d["client_id"]:
@@ -632,17 +667,26 @@ def save_deal(did: int | None, data: dict, uid: int) -> dict:
             booking_id=data.get("booking_id") if "booking_id" in data else (cur and cur["booking_id"]),
             owner_uid=data.get("owner_uid") if "owner_uid" in data else ((cur and cur["owner_uid"]) or uid),
             notes=(data.get("notes") or "") if "notes" in data else (cur and cur["notes"]),
+            fields=json.dumps(data["fields"], ensure_ascii=False) if isinstance(data.get("fields"), dict) else (cur and cur["fields"]),
         )
+        stage_changed = not cur or cur["stage_id"] != st["id"]
         if did:
             conn.execute(
                 "UPDATE crm_deals SET title=?, client_id=?, pipeline_id=?, stage_id=?, amount=?, apartment=?, checkin=?, "
-                "checkout=?, guests=?, booking_id=?, owner_uid=?, notes=?, updated_at=?, closed_at=? WHERE id=?",
+                "checkout=?, guests=?, booking_id=?, owner_uid=?, notes=?, fields=?, updated_at=?, closed_at=? WHERE id=?",
                 (*vals.values(), _now(), closed, did))
         else:
             did = conn.execute(
                 "INSERT INTO crm_deals (title, client_id, pipeline_id, stage_id, amount, apartment, checkin, checkout, "
-                "guests, booking_id, owner_uid, notes, created_at, updated_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "guests, booking_id, owner_uid, notes, fields, created_at, updated_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (*vals.values(), _now(), _now(), closed)).lastrowid
+    if stage_changed:
+        # «digital pipeline»: the stage's actions run after the deal is saved
+        try:
+            from . import crm_ext
+            crm_ext.run_stage_actions(did, st["id"], uid)
+        except Exception:  # noqa: BLE001
+            logger.exception("stage actions failed")
     return get_deal(did)
 
 

@@ -50,12 +50,11 @@
   function modal(html, wide) {
     $("modal-card").innerHTML = html;
     $("modal-card").classList.toggle("wide", !!wide);
-    $("modal-card").classList.remove("modal__card--deal");
     $("modal").classList.remove("hidden");
     const f = $("modal-card").querySelector("input, textarea, select");
     if (f) setTimeout(() => f.focus(), 50);
   }
-  function closeModal() { $("modal").classList.add("hidden"); $("modal-card").classList.remove("modal__card--deal"); }
+  function closeModal() { $("modal").classList.add("hidden"); }
   function val(id) { const el = $(id); return el ? el.value.trim() : ""; }
   function userOptions(selected) {
     return S.users.filter((u) => u.active || u.id === selected).map((u) => `<option value="${u.id}" ${u.id === selected ? "selected" : ""}>${esc(u.name)}</option>`).join("");
@@ -65,6 +64,24 @@
     return `<option value="">— без клиента —</option>` + list.map((c) => `<option value="${c.id}" ${c.id === selected ? "selected" : ""}>${esc(c.name)}${c.phone ? " · +" + esc(c.phone) : ""}</option>`).join("");
   }
   async function loadClients() { S.cache.clients = await get("/clients"); return S.cache.clients; }
+  async function loadFields() { if (!S.fields.length) S.fields = await get("/fields"); return S.fields; }
+  const fieldsFor = (entity) => S.fields.filter((f) => (f.entity || "client") === entity);
+  function fieldInputs(entity, values) {
+    values = values || {};
+    return fieldsFor(entity).map((f) => {
+      const v = values[f.id];
+      let inp;
+      if (f.type === "select") inp = `<select class="field" data-field="${f.id}"><option value="">—</option>${f.options.map((o) => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+      else if (f.type === "checkbox") inp = `<label><input type="checkbox" data-field="${f.id}" ${v ? "checked" : ""} /> да</label>`;
+      else inp = `<input class="field" data-field="${f.id}" type="${f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}" value="${esc(v || "")}" />`;
+      return `<div><label class="lbl">${esc(f.name)}</label>${inp}</div>`;
+    }).join("");
+  }
+  function readFields(root) { const out = {}; root.querySelectorAll("[data-field]").forEach((el) => { out[el.dataset.field] = el.type === "checkbox" ? el.checked : el.value; }); return out; }
+  function fieldRows(entity, values) {
+    values = values || {};
+    return fieldsFor(entity).map((f) => `<dt>${esc(f.name)}</dt><dd>${f.type === "checkbox" ? (values[f.id] ? "да" : "нет") : esc(values[f.id] || "—")}</dd>`).join("");
+  }
 
   // ---- auth ---------------------------------------------------------------
   let setupMode = false;
@@ -110,12 +127,7 @@
     const [name, arg] = h.split("/");
     const r = ROUTES[name] ? name : "home";
     S.route = r;
-    const SETTINGS = ["auto", "channels", "integrations", "commands", "fields", "pipelines", "users"];
-    const navKey = SETTINGS.includes(r) ? "settings" : r;
-    document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === navKey));
-    const sub = $("subnav");
-    sub.classList.toggle("hidden", navKey !== "settings");
-    if (navKey === "settings") sub.querySelectorAll("a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
+    document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
     document.querySelector(".side").classList.remove("open");
     const main = $("main");
     main.classList.remove("hidden");
@@ -129,41 +141,42 @@
   $("modal").addEventListener("click", (e) => { if (e.target.closest("[data-close]")) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal(); });
 
-  ROUTES.settings = () => { location.hash = "#auto"; };
-
-  // ---- Рабочий стол: what needs attention now ----------------------------------
+  // ---- home -----------------------------------------------------------------
   ROUTES.home = async () => {
     const d = await get("/home");
     const open = d.stages.filter((s) => s.kind === "open");
-    const now = new Date().toISOString().slice(0, 16);
-    const task = (t) => `<div class="task ${t.status}" data-id="${t.id}"><input type="checkbox" data-done="${t.id}" /><div class="task__body"><div class="task__title">${esc(t.title)}</div><div class="task__meta">${t.due ? `<span class="${t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}${t.deal_id ? `<a href="#" data-deal="${t.deal_id}">сделка</a>` : ""}${t.client_id ? `<a href="#clients/${t.client_id}">${esc(t.client_name || "контакт")}</a>` : ""}</div></div></div>`;
     $("main").innerHTML = `
-      <div class="page-head"><h1>Рабочий стол</h1><span class="muted">${esc(dLong(d.date))}</span></div>
+      <div class="page-head"><h1>Главная</h1><span class="muted">${esc(dLong(d.date))}</span></div>
       <div class="grid c4" style="margin-bottom:16px">
-        <div class="stat ${d.unsorted ? "warn" : ""}" onclick="location.hash='#deals'"><b>${d.unsorted}</b><span>неразобранных чатов</span></div>
+        <div class="stat" onclick="location.hash='#bookings'"><b>${d.arrivals}</b><span>заездов сегодня</span></div>
+        <div class="stat" onclick="location.hash='#bookings'"><b>${d.departures}</b><span>выездов сегодня · живут ${d.staying}</span></div>
         <div class="stat" onclick="location.hash='#messages'"><b>${d.unread}</b><span>непрочитанных сообщений</span></div>
-        <div class="stat ${d.my_overdue ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач${d.my_overdue ? " · просрочено " + d.my_overdue : ""}</span></div>
-        <div class="stat" onclick="location.hash='#bookings'"><b>${d.arrivals} / ${d.departures}</b><span>заезды / выезды сегодня · живут ${d.staying}</span></div>
+        <div class="stat ${d.overdue_tasks ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач${d.overdue_tasks ? " · просрочено " + d.overdue_tasks : ""}</span></div>
       </div>
       <div class="grid c2">
-        <div class="card"><div class="card__title">Мои задачи</div>${d.my_tasks.length ? d.my_tasks.map(task).join("") : `<div class="muted">Задач нет</div>`}<div style="margin-top:10px"><a href="#tasks">Все задачи →</a></div></div>
-        <div>
-          <div class="card"><div class="card__title">Ждут ответа</div>${d.unanswered.length ? d.unanswered.map((c) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--sep)"><a href="#messages/${c.id}" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><i class="ch chat-pill" style="padding:0;background:none"><span class="ch ${esc(c.channel)}"></span></i> <b style="color:var(--label)">${esc(c.title)}</b> <span class="muted small">${esc(c.last_text || "")}</span></a><span class="muted small" style="flex:none">${esc(shortAgo(c.last_at))}</span></div>`).join("") : `<div class="muted">Все чаты отвечены 👍</div>`}</div>
-          <div class="card"><div class="card__title">Воронка</div>${open.map((s) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--sep)"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><span><b>${s.n}</b>${s.amount ? ` <span class="muted small">· ${money(s.amount)}</span>` : ""}</span></div>`).join("")}${d.no_task_deals ? `<div class="small warn" style="margin-top:8px">⚠ Сделок без задачи: ${d.no_task_deals} — по каждой открытой сделке должен быть следующий шаг</div>` : ""}<div style="margin-top:10px"><a href="#deals">Открыть сделки →</a></div></div>
-          <div class="card small muted">WhatsApp: <span class="${d.wa === "connected" ? "ok" : "bad"}">${d.wa === "connected" ? "подключён" : d.wa === "offline" ? "мост не запущен" : d.wa || "—"}</span> · RealtyCalendar: ${d.last_sync ? esc(dtShort(d.last_sync)) : "—"} · <a href="#revenue">выручка</a> · <a href="#settings">настройки</a></div>
+        <div class="card"><div class="card__title">Воронка</div>
+          ${open.length ? open.map((s) => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--sep)">
+            <span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)} <small class="muted">${esc(s.pipeline)}</small></span>
+            <span><b>${s.n}</b> ${s.amount ? `<span class="muted small">· ${money(s.amount)}</span>` : ""}</span></div>`).join("") : `<div class="muted">Сделок пока нет</div>`}
+          <div style="margin-top:10px"><a href="#deals">Открыть сделки →</a></div>
+        </div>
+        <div class="card"><div class="card__title">Задачи на сегодня</div>
+          ${d.today_tasks.length ? d.today_tasks.map((t) => `<div style="padding:6px 0;border-bottom:1px solid var(--sep)">${esc(t.title)}<div class="muted small">${esc(dtShort(t.due))} · ${esc(t.assignee_name || "")}</div></div>`).join("") : `<div class="muted">На сегодня задач нет</div>`}
+          <div style="margin-top:10px"><a href="#tasks">Все задачи →</a></div>
+        </div>
+        <div class="card"><div class="card__title">Последние чаты</div>
+          ${d.recent_chats.length ? d.recent_chats.map((c) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--sep)">
+            <a href="#messages/${c.id}" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style="color:var(--label)">${esc(c.name || c.push_name || "+" + c.phone)}</b> <span class="muted small">${esc(c.last_text || "")}</span></a>
+            ${c.unread ? `<b class="pill">${c.unread}</b>` : ""}</div>`).join("") : `<div class="muted">WhatsApp ${d.wa === "connected" ? "подключён, сообщений пока нет" : "не подключён — раздел «Каналы»"}</div>`}
+        </div>
+        <div class="card"><div class="card__title">Система</div>
+          <dl class="kv"><dt>WhatsApp</dt><dd class="${d.wa === "connected" ? "ok" : "bad"}">${d.wa === "connected" ? "подключён" : d.wa === "offline" ? "мост не запущен" : d.wa || "—"}</dd>
+          <dt>RealtyCalendar</dt><dd>${d.last_sync ? "синхронизация " + esc(dtShort(d.last_sync)) : "ещё не синхронизировано"}</dd>
+          <dt>Клиентов</dt><dd>${d.clients}</dd></dl>
+          <div style="margin-top:10px"><a href="#revenue">Выручка по каналам →</a> · <a href="#auto">Автосообщения →</a></div>
         </div>
       </div>`;
-    onMain(async (e) => {
-      const dn = e.target.closest("[data-done]"); if (dn) { try { await patch(`/tasks/${dn.dataset.done}`, { status: "done" }); toast("Выполнено"); navigate(); } catch (err) { toast(err.message); } return; }
-      const dl = e.target.closest("[data-deal]"); if (dl) { e.preventDefault(); openDeal(parseInt(dl.dataset.deal, 10)); }
-    });
   };
-  function shortAgo(iso) {
-    if (!iso) return "";
-    const m = Math.round((Date.now() - new Date(iso)) / 60000);
-    return m < 1 ? "сейчас" : m < 60 ? m + " мин" : m < 1440 ? Math.round(m / 60) + " ч" : Math.round(m / 1440) + " дн";
-  }
-
 
   // ---- messages (embedded inbox) ----------------------------------------
   // the chats iframe is created once and kept alive (no reload, no lost
@@ -184,35 +197,28 @@
     inboxFrame.classList.remove("hidden");
   };
 
-  // ---- Сделки: kanban with «Неразобранное» (amoCRM style) ------------------------
-  const CH_DOT = (c) => `<span class="ch ${esc(c)}" title="${esc({ wa: "WhatsApp", wac: "WhatsApp", ig: "Instagram", tg: "Telegram", tgbot: "Telegram-бот" }[c] || c)}"></span>`;
+  // ---- deals ------------------------------------------------------------------
   ROUTES.deals = async () => {
     S.pipelines = await get("/pipelines");
     const pid = parseInt(sessionStorage.getItem("crm_pipeline") || S.pipelines[0].id, 10);
     const p = S.pipelines.find((x) => x.id === pid) || S.pipelines[0];
     sessionStorage.setItem("crm_pipeline", p.id);
     const q = S.cache.dealQ || "";
-    const k = await get(`/kanban?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
-    const deals = k.deals;
-    const card = (d) => `<div class="kcard ${d.unread ? "has-unread" : ""}" draggable="true" data-deal="${d.id}">
-      <b>${esc(d.title)}</b>
-      <div class="muted small">${esc(d.client_name || "")}${d.apartment ? " · " + esc(d.apartment) : ""}${d.checkin ? " · " + esc(dShort(d.checkin)) + (d.checkout ? "–" + esc(dShort(d.checkout)) : "") : ""}</div>
-      ${d.last_message ? `<div class="kcard__msg">${d.channels.map(CH_DOT).join("")}${d.last_message.dir === "out" ? "↗ " : ""}${esc((d.last_message.text || "").slice(0, 60))}</div>` : ""}
-      <div class="meta"><span>${d.task_state ? `<i class="tdot ${d.task_state}" title="Задача: ${esc(dtShort(d.task_due))}"></i>` : `<i class="tdot none" title="Нет задачи"></i>`}${esc(d.owner_name || "")}${d.unread ? ` <b class="pill">${d.unread}</b>` : ""}</span><span class="amt">${money(d.amount)}</span></div></div>`;
-    const unsortedCol = q ? "" : `<div class="kcol kcol--unsorted"><div class="kcol__head"><span>Неразобранное</span><small>${k.unsorted.length}</small></div>
-      ${k.unsorted.map((c) => `<div class="kcard ucard" data-uchat="${c.id}"><b>${CH_DOT(c.channel)} ${esc(c.title)}</b><div class="muted small">${esc(c.channel_name)}${c.phone ? " · +" + esc(c.phone) : ""}${c.booking ? " · " + esc(c.booking.apartment) : ""}</div><div class="kcard__msg">${esc((c.last_text || "").slice(0, 70))}</div>
-        <div class="meta"><span class="muted">${esc(shortAgo(c.last_at))}</span><span><button class="btn sm" data-reject="${c.id}">✕</button> <button class="btn sm primary" data-accept="${c.id}">Принять</button></span></div></div>`).join("") || `<div class="muted small" style="padding:6px">Новых обращений нет</div>`}</div>`;
+    const deals = await get(`/deals?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
     $("main").innerHTML = `
-      <div class="page-head"><h1>Сделки</h1><button class="btn primary" id="deal-add">+ Сделка</button></div>
+      <div class="page-head"><h1>Сделки</h1><button class="btn primary" id="deal-add">Новая сделка</button></div>
       <div class="toolbar">
         ${S.pipelines.length > 1 ? `<select class="field" id="pipe-sel" style="width:auto">${S.pipelines.map((x) => `<option value="${x.id}" ${x.id === p.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : ""}
-        <input class="field grow" id="deal-q" placeholder="Поиск: название, клиент, телефон, объект" value="${esc(q)}" />
-        <span class="muted small">${plural(deals.length, "сделка", "сделки", "сделок")} · ${money(deals.reduce((a, d) => a + (Number(d.amount) || 0), 0))}</span>
+        <input class="field grow" id="deal-q" placeholder="Поиск: название, клиент, объект" value="${esc(q)}" />
+        <span class="muted small">${plural(deals.length, "сделка", "сделки", "сделок")}</span>
       </div>
-      <div class="kanban" id="kanban">${unsortedCol}${p.stages.map((s) => {
+      <div class="kanban" id="kanban">${p.stages.map((s) => {
         const items = deals.filter((d) => d.stage_id === s.id);
         const sum = items.reduce((a, d) => a + (Number(d.amount) || 0), 0);
-        return `<div class="kcol" data-stage="${s.id}"><div class="kcol__head"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><small>${items.length}${sum ? " · " + money(sum) : ""}</small></div>${items.map(card).join("")}</div>`;
+        return `<div class="kcol" data-stage="${s.id}"><div class="kcol__head"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><small>${items.length}${sum ? " · " + money(sum) : ""}</small></div>
+          ${items.map((d) => `<div class="kcard" draggable="true" data-deal="${d.id}"><b>${esc(d.title)}</b>
+            <div class="muted small">${esc(d.client_name || "")}${d.apartment ? " · " + esc(d.apartment) : ""}${d.checkin ? " · " + esc(dShort(d.checkin)) + (d.checkout ? "–" + esc(dShort(d.checkout)) : "") : ""}</div>
+            <div class="meta"><span>${esc(d.owner_name || "")}</span><span class="amt">${money(d.amount)}</span></div></div>`).join("")}</div>`;
       }).join("")}</div>`;
     keepFocus("deal-q");
     const sel = $("pipe-sel");
@@ -221,21 +227,13 @@
     $("deal-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { S.cache.dealQ = e.target.value.trim(); navigate(); }, 300); });
     $("deal-add").addEventListener("click", () => dealForm(null, { pipeline_id: p.id }));
     const kb = $("kanban");
-    kb.addEventListener("click", async (e) => {
-      const ac = e.target.closest("[data-accept]");
-      if (ac) { ac.disabled = true; try { const d = await post(`/unsorted/${ac.dataset.accept}/accept`, { pipeline_id: p.id }); toast("Сделка создана"); navigate(); openDeal(d.id); } catch (err) { toast(err.message); ac.disabled = false; } return; }
-      const rj = e.target.closest("[data-reject]");
-      if (rj) { if (!confirm("Убрать из неразобранного? Чат останется в «Чатах».")) return; await post(`/unsorted/${rj.dataset.reject}/reject`); navigate(); return; }
-      const uc = e.target.closest("[data-uchat]");
-      if (uc) { location.hash = `#messages/${uc.dataset.uchat}`; return; }
-      const c = e.target.closest("[data-deal]"); if (c) openDeal(parseInt(c.dataset.deal, 10));
-    });
+    kb.addEventListener("click", (e) => { const c = e.target.closest("[data-deal]"); if (c) openDeal(parseInt(c.dataset.deal, 10)); });
     let dragId = null;
     kb.addEventListener("dragstart", (e) => { const c = e.target.closest("[data-deal]"); if (c) { dragId = c.dataset.deal; e.dataTransfer.effectAllowed = "move"; } });
-    kb.addEventListener("dragover", (e) => { const col = e.target.closest(".kcol[data-stage]"); if (col && dragId) { e.preventDefault(); col.classList.add("over"); } });
+    kb.addEventListener("dragover", (e) => { const col = e.target.closest(".kcol"); if (col && dragId) { e.preventDefault(); col.classList.add("over"); } });
     kb.addEventListener("dragleave", (e) => { const col = e.target.closest(".kcol"); if (col) col.classList.remove("over"); });
     kb.addEventListener("drop", async (e) => {
-      const col = e.target.closest(".kcol[data-stage]");
+      const col = e.target.closest(".kcol");
       if (!col || !dragId) return;
       e.preventDefault();
       col.classList.remove("over");
@@ -244,87 +242,43 @@
     });
   };
 
-  // ---- Карточка сделки: fields left, timeline + composer right -----------------------
   async function openDeal(id) {
-    let d;
-    try { d = await get(`/deals/${id}`); } catch (err) { toast(err.message); return; }
-    S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines");
+    const d = await get(`/deals/${id}`);
+    await loadFields();
     const p = S.pipelines.find((x) => x.id === d.pipeline_id) || S.pipelines[0];
-    const stage = p.stages.find((s) => s.id === d.stage_id);
-    const c = d.client;
-    const now = new Date().toISOString().slice(0, 16);
-    const item = (x) => {
-      if (x.type === "message") {
-        const out = x.direction === "out";
-        const body = x.media_url ? (x.kind === "image" ? `<img src="${esc(x.media_url)}" style="max-width:220px;border-radius:8px;display:block;margin-bottom:4px" />` : `<a href="${esc(x.media_url)}" target="_blank">📎 ${esc(x.file_name || x.kind)}</a> `) : "";
-        return `<div class="tl ${out ? "out" : "in"}"><div class="tl__b"><div class="tl__who">${CH_DOT(x.channel_code)} ${out ? esc(x.author || "") : esc(x.chat_title || "")}</div>${body}<div class="tl__t">${esc(x.text || (x.media_url ? "" : x.kind))}</div><div class="tl__meta">${esc(dtShort(x.at))}${out && x.status ? " · " + ({ pending: "⏳", sent: "✓", delivered: "✓✓", read: "✓✓ прочитано", failed: "✕ не отправлено" }[x.status] || "") : ""}</div></div></div>`;
-      }
-      if (x.type === "note") return `<div class="tl note"><div class="tl__b"><div class="tl__who">📝 ${esc(x.author || "")} <button class="tl__del" data-delnote="${x.id}" title="Удалить">✕</button></div><div class="tl__t">${esc(x.text)}</div><div class="tl__meta">${esc(dtShort(x.at))}</div></div></div>`;
-      if (x.type === "task") return `<div class="tl task ${x.status}"><div class="tl__b"><label class="tl__who"><input type="checkbox" data-tdone="${x.id}" ${x.status === "done" ? "checked" : ""} /> Задача · ${esc(x.assignee || "")}</label><div class="tl__t">${esc(x.text)}</div><div class="tl__meta ${x.status === "open" && x.due && x.due < now ? "bad" : ""}">${x.due ? "до " + esc(dtShort(x.due)) : ""}${x.status === "done" ? " · выполнена" : ""}</div></div></div>`;
-      return `<div class="tl ev"><span>${esc(dtShort(x.at))} · ${esc(x.text)}</span></div>`;
-    };
-    const openTasks = d.timeline.filter((x) => x.type === "task" && x.status === "open");
-    modal(`<div class="deal">
-      <div class="deal__side">
-        <h2 style="margin-bottom:6px">${esc(d.title)}</h2>
-        <select class="field" id="d-stage" style="margin-bottom:10px;border-left:4px solid ${esc(stage && stage.color || "#999")}">${p.stages.map((s) => `<option value="${s.id}" ${s.id === d.stage_id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
-        <dl class="kv kv--tight">
-          <dt>Сумма</dt><dd><b>${money(d.amount) || "—"}</b></dd>
-          <dt>Объект</dt><dd>${esc(d.apartment || "—")}</dd>
-          <dt>Даты</dt><dd>${d.checkin ? esc(dShort(d.checkin)) + " – " + esc(dShort(d.checkout)) + (nights(d.checkin, d.checkout) ? " · " + plural(nights(d.checkin, d.checkout), "ночь", "ночи", "ночей") : "") : "—"}</dd>
-          ${d.guests ? `<dt>Гостей</dt><dd>${d.guests}</dd>` : ""}
-          <dt>Ответственный</dt><dd>${esc(d.owner_name || "—")}</dd>
-          ${d.booking ? `<dt>Бронь RC</dt><dd><a href="#" data-bopen="${d.booking.id}">${esc(d.booking.source)} · ${money(d.booking.amount)}${Number(d.booking.debt) > 0 ? ` · <span class="bad">долг ${money(d.booking.debt)}</span>` : ""}</a></dd>` : ""}
-        </dl>
-        <button class="btn sm" id="d-edit" style="margin-top:6px">Изменить поля</button>
-        <div class="card__title" style="margin-top:16px">Контакт</div>
-        ${c ? `<div><b>${esc(c.name)}</b></div>${c.phone ? `<div><a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a></div>` : ""}${c.email ? `<div class="small">${esc(c.email)}</div>` : ""}${c.source ? `<div class="muted small">${esc(c.source)}</div>` : ""}${c.notes ? `<div class="small" style="margin-top:4px;white-space:pre-wrap">📝 ${esc(c.notes)}</div>` : ""}<div style="margin-top:4px"><a href="#clients/${c.id}" data-close class="small">Открыть контакт →</a></div>` : `<div class="muted small">Контакт не указан</div>`}
-        <div class="card__title" style="margin-top:16px">Чаты</div>
-        <div id="d-chats">${d.chats.map((ch) => `<span class="chat-pill">${CH_DOT(ch.channel)}<a href="#messages/${ch.id}" data-close>${esc(ch.title)}</a><button data-unlinkchat="${ch.id}" title="Отвязать">✕</button></span>`).join("") || `<div class="muted small">Нет чатов</div>`}</div>
-        <div style="display:flex;gap:6px;margin-top:6px"><input class="field" id="d-find" placeholder="Привязать чат" /><button class="btn sm" id="d-find-go">Найти</button></div><div id="d-found"></div>
-        ${c && c.phone && !d.chats.length ? `<button class="btn sm" id="d-wa" style="margin-top:6px">Написать в WhatsApp</button>` : ""}
-        <div class="row-actions" style="justify-content:flex-start;margin-top:18px"><button class="btn sm danger" id="d-del">Удалить сделку</button></div>
-      </div>
-      <div class="deal__main">
-        <div class="deal__tl" id="d-tl">${d.timeline.length ? d.timeline.map(item).join("") : `<div class="muted" style="text-align:center;padding:30px">Пока пусто — напишите гостю, добавьте примечание или задачу</div>`}</div>
-        <div class="composer">
-          <div class="composer__tabs"><button class="is-on" data-ct="chat">Чат</button><button data-ct="note">Примечание</button><button data-ct="task">Задача</button>${openTasks.length ? "" : `<span class="warn small" style="margin-left:auto">нет открытой задачи</span>`}</div>
-          <div data-cp="chat"><div style="display:flex;gap:6px;margin-bottom:6px"><select class="field" id="d-to" style="width:auto">${d.chats.map((ch) => `<option value="${ch.id}">${esc(ch.channel_name)} · ${esc(ch.title)}</option>`).join("") || `<option value="">— привяжите чат —</option>`}</select><select class="field" id="d-tpl" style="width:auto"><option value="">Шаблон…</option></select></div>
-            <textarea class="field" id="d-msg" rows="2" placeholder="Сообщение гостю… ({имя} {объект} {заезд} {выезд})"></textarea><div class="composer__row"><button class="btn primary sm" id="d-send">Отправить</button></div></div>
-          <div data-cp="note" class="hidden"><textarea class="field" id="d-note" rows="2" placeholder="Примечание для команды (гость не видит)"></textarea><div class="composer__row"><button class="btn primary sm" id="d-note-go">Добавить</button></div></div>
-          <div data-cp="task" class="hidden"><input class="field" id="d-task" placeholder="Что сделать, например «Отправить адрес и код»" /><div class="composer__row"><input class="field" id="d-task-due" type="datetime-local" style="width:auto" /><select class="field" id="d-task-who" style="width:auto">${userOptions(S.me.id)}</select><button class="btn primary sm" id="d-task-go">Поставить</button></div></div>
-        </div>
-      </div></div>`, true);
-    $("modal-card").classList.add("modal__card--deal");
-    const tl = $("d-tl"); tl.scrollTop = tl.scrollHeight;
-    const refresh = () => openDeal(id);
-    $("d-stage").addEventListener("change", async (e) => { try { await patch(`/deals/${id}`, { stage_id: parseInt(e.target.value, 10) }); toast("Этап изменён"); if (S.route === "deals") navigate(); refresh(); } catch (err) { toast(err.message); } });
+    modal(`<h2>${esc(d.title)}</h2>
+      <div class="muted small" style="margin-bottom:12px">${esc(d.owner_name || "")} · создана ${esc(dtShort(d.created_at))}</div>
+      <dl class="kv">
+        <dt>Этап</dt><dd><select class="field" id="d-stage" style="width:auto">${p.stages.map((s) => `<option value="${s.id}" ${s.id === d.stage_id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></dd>
+        <dt>Клиент</dt><dd>${d.client_id ? `<a href="#clients/${d.client_id}" data-close>${esc(d.client_name)}</a>${d.client_phone ? " · +" + esc(d.client_phone) : ""}` : "—"}</dd>
+        <dt>Объект</dt><dd>${esc(d.apartment || "—")}</dd>
+        <dt>Даты</dt><dd>${d.checkin ? esc(dShort(d.checkin)) + " – " + esc(dShort(d.checkout)) + (nights(d.checkin, d.checkout) ? " · " + plural(nights(d.checkin, d.checkout), "ночь", "ночи", "ночей") : "") : "—"}${d.guests ? " · гостей " + d.guests : ""}</dd>
+        <dt>Сумма</dt><dd>${money(d.amount) || "—"}</dd>
+        ${d.booking_id ? `<dt>Бронь</dt><dd><a href="#" data-bopen="${d.booking_id}">RealtyCalendar #${d.booking_id}</a></dd>` : ""}
+        ${fieldRows("deal", d.fields)}
+        ${d.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(d.notes)}</dd>` : ""}
+        ${d.chats && d.chats.length ? `<dt>Чаты</dt><dd>${d.chats.map((c) => `<a href="#messages/${c.id}" data-close>${esc(c.channel_name)} · ${esc(c.title)}</a>`).join(" · ")}</dd>` : ""}
+      </dl>
+      ${d.log && d.log.length ? `<div class="muted small" style="margin-top:8px">⚡ ${d.log.map((l) => `${esc(l.rule_name)}: ${esc((l.text || "").slice(0, 50))} — <span class="${l.status === "sent" ? "ok" : l.status === "failed" ? "bad" : ""}">${l.status === "sent" ? "выполнено" : esc(l.error || l.status)}</span>`).join("<br>")}</div>` : ""}
+      <div class="card" style="margin-top:14px;padding:12px 14px"><div class="card__title">Задачи</div>
+        ${d.tasks.length ? d.tasks.map((t) => `<div class="small ${t.status === "done" ? "muted" : ""}">${t.status === "done" ? "✓ " : "○ "}${esc(t.title)} <span class="muted">${esc(dtShort(t.due))}</span></div>`).join("") : `<div class="muted small">Нет задач</div>`}
+        <button class="btn sm" id="d-task" style="margin-top:8px">+ Задача</button></div>
+      <div class="row-actions"><button class="btn danger" id="d-del">Удалить</button><span style="flex:1"></span>
+        ${d.client_id ? `<button class="btn" id="d-chat">Написать в WhatsApp</button>` : ""}
+        <button class="btn" id="d-edit">Изменить</button><button class="btn primary" data-close>Закрыть</button></div>`);
+    $("d-stage").addEventListener("change", async (e) => { try { await patch(`/deals/${id}`, { stage_id: parseInt(e.target.value, 10) }); toast("Этап изменён"); if (S.route === "deals") navigate(); } catch (err) { toast(err.message); } });
     $("d-edit").addEventListener("click", () => dealForm(d));
+    $("d-task").addEventListener("click", () => taskForm({ deal_id: d.id, client_id: d.client_id, title: "" }, () => openDeal(id)));
     $("d-del").addEventListener("click", async () => { if (!confirm("Удалить сделку?")) return; await del(`/deals/${id}`); closeModal(); navigate(); });
-    const wa = $("d-wa"); if (wa) wa.addEventListener("click", async () => { try { const r = await post(`/clients/${c.id}/chat`); await post(`/deals/${id}/chats`, { chat_id: r.chat_id }); refresh(); } catch (err) { toast(err.message); } });
-    const fillVars = (t) => { const dd = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = ((c && c.name) || "").replace(/^\+?\d+$/, "").split(" ")[0]; return t.replace(/\{(имя|объект|заезд|выезд)\}/g, (m, k) => ({ "имя": nm, "объект": d.apartment || "", "заезд": dd(d.checkin), "выезд": dd(d.checkout) }[k] || m)); };
-    get("/commands").then((list) => { $("d-tpl").innerHTML += list.map((t) => `<option value="${t.id}">${esc(t.command ? "/" + t.command + " " : "")}${esc(t.title)}</option>`).join(""); $("d-tpl").dataset.list = JSON.stringify(list); }).catch(() => {});
-    $("d-tpl").addEventListener("change", (e) => { const t = JSON.parse(e.target.dataset.list || "[]").find((x) => String(x.id) === e.target.value); if (t) { $("d-msg").value = fillVars(t.text); $("d-msg").focus(); } });
-    $("modal-card").querySelectorAll("[data-ct]").forEach((b) => b.addEventListener("click", () => { $("modal-card").querySelectorAll("[data-ct]").forEach((x) => x.classList.toggle("is-on", x === b)); $("modal-card").querySelectorAll("[data-cp]").forEach((x) => x.classList.toggle("hidden", x.dataset.cp !== b.dataset.ct)); const f = $("modal-card").querySelector(`[data-cp="${b.dataset.ct}"] .field`); if (f) f.focus(); }));
-    $("d-send").addEventListener("click", async (e) => { const to = $("d-to").value, text = $("d-msg").value.trim(); if (!to) { toast("Сначала привяжите чат"); return; } if (!text) return; e.target.disabled = true; try { await post(`/deals/${id}/send`, { chat_id: parseInt(to, 10), text }); refresh(); } catch (err) { toast(err.message); e.target.disabled = false; } });
-    $("d-msg").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("d-send").click(); } });
-    $("d-note-go").addEventListener("click", async () => { const text = $("d-note").value.trim(); if (!text) return; try { await post(`/deals/${id}/notes`, { text }); refresh(); } catch (err) { toast(err.message); } });
-    $("d-task-go").addEventListener("click", async () => { const title = $("d-task").value.trim(); if (!title) { toast("Введите задачу"); return; } try { await post("/tasks", { title, due: $("d-task-due").value || null, assignee_uid: parseInt($("d-task-who").value, 10), deal_id: id, client_id: d.client_id }); refresh(); } catch (err) { toast(err.message); } });
-    const find = async () => { const q = $("d-find").value.trim(); if (!q) return; const list = await get(`/chats/search?q=${encodeURIComponent(q)}`); $("d-found").innerHTML = list.filter((x) => !d.chats.some((y) => y.id === x.id)).map((x) => `<div class="small" style="padding:3px 0">${CH_DOT(x.channel)} ${esc(x.title)} <span class="muted">${esc((x.last_text || "").slice(0, 30))}</span> <button class="btn sm" data-linkchat="${x.id}">Привязать</button></div>`).join("") || `<div class="muted small">Не найдено</div>`; };
-    $("d-find-go").addEventListener("click", find); $("d-find").addEventListener("keydown", (e) => { if (e.key === "Enter") find(); });
-    $("modal-card").addEventListener("click", async (e) => {
-      const l = e.target.closest("[data-linkchat]"); if (l) { await post(`/deals/${id}/chats`, { chat_id: parseInt(l.dataset.linkchat, 10) }); refresh(); return; }
-      const u = e.target.closest("[data-unlinkchat]"); if (u) { await del(`/deals/${id}/chats/${u.dataset.unlinkchat}`); refresh(); return; }
-      const dn = e.target.closest("[data-delnote]"); if (dn && confirm("Удалить примечание?")) { await del(`/notes/${dn.dataset.delnote}`); refresh(); return; }
-      const td = e.target.closest("[data-tdone]"); if (td) { await patch(`/tasks/${td.dataset.tdone}`, { status: td.checked ? "done" : "open" }); refresh(); return; }
-      const bo = e.target.closest("[data-bopen]"); if (bo) { e.preventDefault(); openBooking(parseInt(bo.dataset.bopen, 10)); }
-    });
+    const ch = $("d-chat");
+    if (ch) ch.addEventListener("click", () => openClientChat(d.client_id));
+    $("modal-card").querySelectorAll("[data-bopen]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openBooking(parseInt(a.dataset.bopen, 10)); }));
   }
-
 
   async function dealForm(d, defaults) {
     d = d || Object.assign({ title: "", amount: "", apartment: "", checkin: "", checkout: "", guests: "", notes: "", client_id: null }, defaults || {});
     await loadClients();
+    await loadFields();
     const pid = d.pipeline_id || S.pipelines[0].id;
     const p = S.pipelines.find((x) => x.id === pid) || S.pipelines[0];
     modal(`<h2>${d.id ? "Сделка" : "Новая сделка"}</h2>
@@ -337,17 +291,17 @@
       <div class="form-row c3"><div><label class="lbl">Сумма, $</label><input class="field" id="f-amt" type="number" step="any" value="${esc(d.amount ?? "")}" /></div>
         <div><label class="lbl">Гостей</label><input class="field" id="f-guests" type="number" value="${esc(d.guests ?? "")}" /></div>
         <div><label class="lbl">Ответственный</label><select class="field" id="f-owner">${userOptions(d.owner_uid || S.me.id)}</select></div></div>
+      ${fieldsFor("deal").length ? `<div class="form-row">${fieldInputs("deal", d.fields)}</div>` : ""}
       <label class="lbl">Заметки</label><textarea class="field" id="f-notes">${esc(d.notes || "")}</textarea>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="f-go">Сохранить</button></div>`);
     $("f-go").addEventListener("click", async () => {
       const body = { title: val("f-title"), client_id: val("f-client") ? parseInt(val("f-client"), 10) : null, pipeline_id: p.id,
         stage_id: parseInt(val("f-stage"), 10), apartment: val("f-apt"), checkin: val("f-in"), checkout: val("f-out"),
-        amount: val("f-amt"), guests: val("f-guests"), owner_uid: parseInt(val("f-owner"), 10), notes: val("f-notes") };
+        amount: val("f-amt"), guests: val("f-guests"), owner_uid: parseInt(val("f-owner"), 10), notes: val("f-notes"), fields: readFields($("modal-card")) };
       try {
         const r = d.id ? await patch(`/deals/${d.id}`, body) : await post("/deals", body);
         closeModal(); toast("Сохранено");
-        if (S.route === "deals") navigate();
-        openDeal(r.id);
+        if (S.route === "deals") navigate(); else openDeal(r.id);
       } catch (err) { toast(err.message); }
     });
   }
@@ -374,13 +328,13 @@
 
   async function openClient(id, asPage) {
     const c = await get(`/clients/${id}`);
-    if (!S.fields.length) S.fields = await get("/fields");
-    const fieldRows = S.fields.map((f) => `<dt>${esc(f.name)}</dt><dd>${f.type === "checkbox" ? (c.fields[f.id] ? "да" : "нет") : esc(c.fields[f.id] || "—")}</dd>`).join("");
+    await loadFields();
+    const fieldRowsHtml = fieldRows("client", c.fields);
     const html = `<h2>${esc(c.name)}</h2>
       <div class="muted small" style="margin-bottom:12px">${c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : ""}${c.email ? " · " + esc(c.email) : ""}${c.source ? " · " + esc(c.source) : ""}</div>
       <div class="grid c2">
-        <div><dl class="kv">${fieldRows}${c.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(c.notes)}</dd>` : ""}</dl>
-          ${!fieldRows && !c.notes ? `<div class="muted small">Дополнительных полей нет — настраиваются в «Поля карточек»</div>` : ""}</div>
+        <div><dl class="kv">${fieldRowsHtml}${c.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(c.notes)}</dd>` : ""}</dl>
+          ${!fieldRowsHtml && !c.notes ? `<div class="muted small">Дополнительных полей нет — настраиваются в «Поля карточек»</div>` : ""}</div>
         <div>
           <div class="card__title">Брони</div>
           ${c.bookings.length ? c.bookings.slice(0, 6).map((b) => `<div class="small" style="padding:4px 0;border-bottom:1px solid var(--sep)"><b>${esc(b.apartment)}</b> · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${money(b.amount)} <span class="muted">${esc(b.source)}</span></div>`).join("") : `<div class="muted small">Броней не найдено</div>`}
@@ -410,27 +364,18 @@
 
   async function clientForm(c) {
     c = c || { name: "", phone: "", email: "", source: "", notes: "", fields: {} };
-    if (!S.fields.length) S.fields = await get("/fields");
-    const fieldInputs = S.fields.map((f) => {
-      const v = c.fields[f.id];
-      let inp;
-      if (f.type === "select") inp = `<select class="field" data-field="${f.id}"><option value="">—</option>${f.options.map((o) => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
-      else if (f.type === "checkbox") inp = `<label><input type="checkbox" data-field="${f.id}" ${v ? "checked" : ""} /> да</label>`;
-      else inp = `<input class="field" data-field="${f.id}" type="${f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}" value="${esc(v || "")}" />`;
-      return `<div><label class="lbl">${esc(f.name)}</label>${inp}</div>`;
-    }).join("");
+    await loadFields();
+    const fieldInputsHtml = fieldInputs("client", c.fields);
     modal(`<h2>${c.id ? "Клиент" : "Новый клиент"}</h2>
       <div class="form-row"><div><label class="lbl">Имя</label><input class="field" id="cf-name" value="${esc(c.name)}" /></div>
         <div><label class="lbl">Телефон</label><input class="field" id="cf-phone" value="${c.phone ? "+" + esc(c.phone) : ""}" placeholder="+998 90 123 45 67" /></div></div>
       <div class="form-row"><div><label class="lbl">Email</label><input class="field" id="cf-email" value="${esc(c.email || "")}" /></div>
         <div><label class="lbl">Источник</label><input class="field" id="cf-source" value="${esc(c.source || "")}" placeholder="Booking.com, Airbnb, WhatsApp…" list="src-list" /><datalist id="src-list"><option>Booking.com</option><option>Airbnb</option><option>WhatsApp</option><option>Telegram</option><option>Instagram</option><option>Рекомендация</option></datalist></div></div>
-      ${fieldInputs ? `<div class="form-row">${fieldInputs}</div>` : ""}
+      ${fieldInputsHtml ? `<div class="form-row">${fieldInputsHtml}</div>` : ""}
       <label class="lbl">Заметки</label><textarea class="field" id="cf-notes">${esc(c.notes || "")}</textarea>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="cf-go">Сохранить</button></div>`);
     $("cf-go").addEventListener("click", async () => {
-      const fields = {};
-      $("modal-card").querySelectorAll("[data-field]").forEach((el) => { fields[el.dataset.field] = el.type === "checkbox" ? el.checked : el.value; });
-      const body = { name: val("cf-name"), phone: val("cf-phone"), email: val("cf-email"), source: val("cf-source"), notes: val("cf-notes"), fields };
+      const body = { name: val("cf-name"), phone: val("cf-phone"), email: val("cf-email"), source: val("cf-source"), notes: val("cf-notes"), fields: readFields($("modal-card")) };
       try {
         const r = c.id ? await put(`/clients/${c.id}`, body) : await post("/clients", body);
         closeModal(); toast("Сохранено");
@@ -677,28 +622,31 @@
   const TYPES = { text: "Текст", number: "Число", date: "Дата", select: "Список", checkbox: "Галочка" };
   ROUTES.fields = async () => {
     S.fields = await get("/fields");
+    const group = (entity, title, hint) => `<div class="card__title" style="margin:${entity === "client" ? 0 : 18}px 0 8px">${title}</div><div class="list">${fieldsFor(entity).map((f, i) => `<div class="list__row"><span class="tag">${TYPES[f.type] || f.type}</span><div><b>${esc(f.name)}</b>${f.type === "select" ? `<small>${esc(f.options.join(", "))}</small>` : ""}</div>
+        <div class="actions">${i > 0 ? `<button data-up="${f.id}">↑</button>` : ""}<button data-edit="${f.id}">Изменить</button><button data-del="${f.id}" class="muted">Удалить</button></div></div>`).join("") || `<div class="empty">${hint}</div>`}</div>`;
     $("main").innerHTML = `<div class="page-head"><h1>Поля карточек</h1><button class="btn primary" id="fl-add">Добавить поле</button></div>
-      <div class="page-sub">Дополнительные поля в карточке клиента: паспорт, язык, откуда узнал, предпочтения…</div>
-      <div class="list">${S.fields.map((f, i) => `<div class="list__row"><span class="tag">${TYPES[f.type] || f.type}</span><div><b>${esc(f.name)}</b>${f.type === "select" ? `<small>${esc(f.options.join(", "))}</small>` : ""}</div>
-        <div class="actions">${i > 0 ? `<button data-up="${f.id}">↑</button>` : ""}<button data-edit="${f.id}">Изменить</button><button data-del="${f.id}" class="muted">Удалить</button></div></div>`).join("") || `<div class="empty">Полей пока нет. Стандартные поля (имя, телефон, email, источник, заметки) есть всегда.</div>`}</div>`;
+      <div class="page-sub">Свои поля в карточке контакта и сделки — как в amoCRM. Стандартные (имя, телефон, источник, сумма, даты…) есть всегда.</div>
+      ${group("client", "Контакт", "Полей контакта нет. Примеры: паспорт, язык, откуда узнал, предпочтения.")}
+      ${group("deal", "Сделка", "Полей сделки нет. Примеры: цель поездки, количество детей, откуда запрос, депозит внесён.")}`;
     $("fl-add").addEventListener("click", () => fieldForm(null));
     onMain(async (e) => {
       const ed = e.target.closest("[data-edit]"); if (ed) { fieldForm(S.fields.find((f) => f.id === parseInt(ed.dataset.edit, 10))); return; }
       const dl = e.target.closest("[data-del]"); if (dl && confirm("Удалить поле? Значения в карточках пропадут.")) { await del(`/fields/${dl.dataset.del}`); navigate(); return; }
       const up = e.target.closest("[data-up]");
-      if (up) { const ids = S.fields.map((f) => f.id); const i = ids.indexOf(parseInt(up.dataset.up, 10)); [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]]; await post("/fields/order", { ids }); navigate(); }
+      if (up) { const f = S.fields.find((x) => x.id === parseInt(up.dataset.up, 10)); const same = fieldsFor(f.entity || "client").map((x) => x.id); const i = same.indexOf(f.id); [same[i - 1], same[i]] = [same[i], same[i - 1]]; const other = S.fields.filter((x) => (x.entity || "client") !== (f.entity || "client")).map((x) => x.id); await post("/fields/order", { ids: same.concat(other) }); navigate(); }
     });
   };
   function fieldForm(f) {
-    f = f || { name: "", type: "text", options: [] };
+    f = f || { name: "", type: "text", options: [], entity: "client" };
     modal(`<h2>${f.id ? "Поле" : "Новое поле"}</h2>
-      <div class="form-row"><div><label class="lbl">Название</label><input class="field" id="ff-name" value="${esc(f.name)}" /></div>
+      <div class="form-row"><div><label class="lbl">Где</label><select class="field" id="ff-entity"><option value="client" ${(f.entity || "client") === "client" ? "selected" : ""}>Контакт</option><option value="deal" ${f.entity === "deal" ? "selected" : ""}>Сделка</option></select></div>
         <div><label class="lbl">Тип</label><select class="field" id="ff-type">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}" ${k === f.type ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
+      <label class="lbl">Название</label><input class="field" id="ff-name" value="${esc(f.name)}" />
       <div id="ff-opts-row" class="${f.type === "select" ? "" : "hidden"}"><label class="lbl">Варианты (по одному в строке)</label><textarea class="field" id="ff-opts">${esc(f.options.join("\n"))}</textarea></div>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="ff-go">Сохранить</button></div>`);
     $("ff-type").addEventListener("change", (e) => $("ff-opts-row").classList.toggle("hidden", e.target.value !== "select"));
     $("ff-go").addEventListener("click", async () => {
-      const body = { name: val("ff-name"), type: val("ff-type"), options: $("ff-opts").value.split("\n") };
+      const body = { name: val("ff-name"), type: val("ff-type"), options: $("ff-opts").value.split("\n"), entity: val("ff-entity") };
       try { if (f.id) await put(`/fields/${f.id}`, body); else await post("/fields", body); closeModal(); navigate(); } catch (err) { toast(err.message); }
     });
   }
@@ -709,7 +657,8 @@
     $("main").innerHTML = `<div class="page-head"><h1>Воронки</h1><button class="btn primary" id="pp-add">Новая воронка</button></div>
       <div class="page-sub">Этапы, по которым движется сделка. Этап с типом «успех» или «отказ» закрывает сделку.</div>
       ${S.pipelines.map((p) => `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h3>${esc(p.name)}</h3><div><button class="btn sm" data-edit="${p.id}">Изменить</button> ${S.pipelines.length > 1 ? `<button class="btn sm danger" data-del="${p.id}">Удалить</button>` : ""}</div></div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${p.stages.map((s) => `<span class="tag" style="background:${esc(s.color || "#eee")}22;color:${esc(s.color || "#555")}">${esc(s.name)}${s.kind !== "open" ? " · " + (s.kind === "won" ? "успех" : "отказ") : ""}</span>`).join("")}</div></div>`).join("")}`;
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${p.stages.map((s) => `<span class="tag" style="background:${esc(s.color || "#eee")}22;color:${esc(s.color || "#555")}">${esc(s.name)}${s.kind !== "open" ? " · " + (s.kind === "won" ? "успех" : "отказ") : ""}${(s.actions || []).length ? ` ⚡${s.actions.length}` : ""}</span>`).join("")}</div>
+        <div class="muted small" style="margin-top:8px">⚡ — автодействия при переходе сделки на этап: сообщение гостю, задача ответственному, уведомление в Telegram.</div></div>`).join("")}`;
     $("pp-add").addEventListener("click", () => pipelineForm(null));
     onMain(async (e) => {
       const ed = e.target.closest("[data-edit]"); if (ed) { pipelineForm(S.pipelines.find((p) => p.id === parseInt(ed.dataset.edit, 10))); return; }
@@ -718,13 +667,26 @@
   };
   function pipelineForm(p) {
     p = p || { name: "", stages: [{ name: "Новый запрос", color: "#5B8DEF", kind: "open" }, { name: "В работе", color: "#E08A2B", kind: "open" }, { name: "Успех", color: "#2EAD6B", kind: "won" }, { name: "Отказ", color: "#D9534F", kind: "lost" }] };
-    const stageRow = (s, i) => `<div class="stage-row" data-i="${i}"><span class="muted">${i + 1}</span><input class="field" value="${esc(s.name)}" data-k="name" data-id="${s.id || ""}" /><select class="field" data-k="kind"><option value="open" ${s.kind === "open" ? "selected" : ""}>обычный</option><option value="won" ${s.kind === "won" ? "selected" : ""}>успех</option><option value="lost" ${s.kind === "lost" ? "selected" : ""}>отказ</option></select><input type="color" value="${esc(s.color || "#5B8DEF")}" data-k="color" /><button data-rm="${i}" title="Убрать">✕</button></div>`;
+    const KINDS = { message: "Сообщение гостю", task: "Задача ответственному", notify: "Уведомление в Telegram" };
+    const actRow = (a, i, j) => `<div class="act-row" data-j="${j}"><select class="field" data-a="kind">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}" ${a.kind === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+      <input class="field" data-a="text" value="${esc(a.text || "")}" placeholder="${a.kind === "task" ? "Текст задачи, напр. «Отправить реквизиты»" : "Текст ({имя} {объект} {заезд} {выезд} {сумма})"}" />
+      <span class="act-task ${a.kind === "task" ? "" : "hidden"}">через <input class="field" data-a="days" type="number" min="0" value="${a.days || 0}" style="width:60px" /> дн. в <input class="field" data-a="at_time" type="time" value="${esc(a.at_time || "10:00")}" style="width:110px" /></span>
+      <button data-rma="${i}:${j}" title="Убрать">✕</button></div>`;
+    const stageRow = (s, i) => `<div class="stage-row" data-i="${i}"><span class="muted">${i + 1}</span><input class="field" value="${esc(s.name)}" data-k="name" data-id="${s.id || ""}" /><select class="field" data-k="kind"><option value="open" ${s.kind === "open" ? "selected" : ""}>обычный</option><option value="won" ${s.kind === "won" ? "selected" : ""}>успех</option><option value="lost" ${s.kind === "lost" ? "selected" : ""}>отказ</option></select><input type="color" value="${esc(s.color || "#5B8DEF")}" data-k="color" /><button data-rm="${i}" title="Убрать">✕</button>
+      <div class="stage-acts">${(s.actions || []).map((a, j) => actRow(a, i, j)).join("")}<button class="btn link sm" data-adda="${i}">⚡ + автодействие</button></div></div>`;
     modal(`<h2>${p.id ? "Воронка" : "Новая воронка"}</h2><label class="lbl">Название</label><input class="field" id="pp-name" value="${esc(p.name)}" />
       <label class="lbl">Этапы</label><div id="pp-stages">${p.stages.map(stageRow).join("")}</div><button class="btn sm" id="pp-more">+ Этап</button>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="pp-go">Сохранить</button></div>`, true);
-    const read = () => Array.from($("pp-stages").querySelectorAll(".stage-row")).map((r) => ({ id: r.querySelector("[data-k=name]").dataset.id ? parseInt(r.querySelector("[data-k=name]").dataset.id, 10) : null, name: r.querySelector("[data-k=name]").value, kind: r.querySelector("[data-k=kind]").value, color: r.querySelector("[data-k=color]").value }));
-    $("pp-more").addEventListener("click", () => { const st = read(); st.push({ name: "", color: "#8E6CC6", kind: "open" }); $("pp-stages").innerHTML = st.map(stageRow).join(""); });
-    $("pp-stages").addEventListener("click", (e) => { const rm = e.target.closest("[data-rm]"); if (rm) { const st = read(); st.splice(parseInt(rm.dataset.rm, 10), 1); $("pp-stages").innerHTML = st.map(stageRow).join(""); } });
+    const read = () => Array.from($("pp-stages").querySelectorAll(".stage-row")).map((r) => ({ id: r.querySelector("[data-k=name]").dataset.id ? parseInt(r.querySelector("[data-k=name]").dataset.id, 10) : null, name: r.querySelector("[data-k=name]").value, kind: r.querySelector("[data-k=kind]").value, color: r.querySelector("[data-k=color]").value,
+      actions: Array.from(r.querySelectorAll(".act-row")).map((a) => ({ kind: a.querySelector("[data-a=kind]").value, text: a.querySelector("[data-a=text]").value, days: a.querySelector("[data-a=days]").value, at_time: a.querySelector("[data-a=at_time]").value })) }));
+    const rerender = (st) => { $("pp-stages").innerHTML = st.map(stageRow).join(""); };
+    $("pp-more").addEventListener("click", () => { const st = read(); st.push({ name: "", color: "#8E6CC6", kind: "open", actions: [] }); rerender(st); });
+    $("pp-stages").addEventListener("click", (e) => {
+      const rm = e.target.closest("[data-rm]"); if (rm) { const st = read(); st.splice(parseInt(rm.dataset.rm, 10), 1); rerender(st); return; }
+      const ad = e.target.closest("[data-adda]"); if (ad) { const st = read(); st[parseInt(ad.dataset.adda, 10)].actions.push({ kind: "message", text: "", days: 0, at_time: "10:00" }); rerender(st); return; }
+      const ra = e.target.closest("[data-rma]"); if (ra) { const [i, j] = ra.dataset.rma.split(":").map(Number); const st = read(); st[i].actions.splice(j, 1); rerender(st); }
+    });
+    $("pp-stages").addEventListener("change", (e) => { if (e.target.dataset.a === "kind") { const row = e.target.closest(".act-row"); row.querySelector(".act-task").classList.toggle("hidden", e.target.value !== "task"); row.querySelector("[data-a=text]").placeholder = e.target.value === "task" ? "Текст задачи, напр. «Отправить реквизиты»" : "Текст ({имя} {объект} {заезд} {выезд} {сумма})"; } });
     $("pp-go").addEventListener("click", async () => {
       const body = { name: val("pp-name"), stages: read() };
       try { if (p.id) await put(`/pipelines/${p.id}`, body); else await post("/pipelines", body); closeModal(); navigate(); } catch (err) { toast(err.message); }
