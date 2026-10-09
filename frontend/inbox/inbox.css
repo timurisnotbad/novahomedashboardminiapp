@@ -3,9 +3,9 @@
 :root {
   --bg:#F2F2F7; --card:#FFFFFF; --sep:rgba(60,60,67,.13);
   --label:#1C1C1E; --label-2:#8A8A8E; --label-3:#C2C2C7;
-  --tint:#A67C4E; --tint-text:#8A6234; --tint-soft:#F3EBE1;
-  --out:#E7F7DE; --in:#FFFFFF; --chat-bg:#EFEAE2;
-  --green:#34C759; --red:#FF3B30; --orange:#FF9500; --blue:#34B7F1;
+  --tint:#2563EB; --tint-text:#1D4ED8; --tint-soft:#DBEAFE;
+  --out:#DBEAFE; --in:#FFFFFF; --chat-bg:#EEF2F7;
+  --green:#22C55E; --red:#EF4444; --orange:#F59E0B; --blue:#2563EB;
   --fill:#E9E9EE; --r:14px;
 }
 * { box-sizing:border-box; margin:0; padding:0; }
@@ -91,7 +91,7 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-conv__sub { font-size:13px; color:var(--label-2); }
 .ib-conv__sub a { color:inherit; }
 .ib-assignee { border:none; background:var(--fill); border-radius:9px; padding:6px 8px; font-size:13px; max-width:150px; }
-.ib-booking { padding:7px 16px; background:#FFF8EE; border-bottom:1px solid var(--sep); font-size:13px; color:var(--tint-text); }
+.ib-booking { padding:7px 16px; background:#F3F6FC; border-bottom:1px solid var(--sep); font-size:13px; color:var(--tint-text); }
 .ib-booking b { color:var(--label); }
 .ib-notes { color:var(--label); margin-top:2px; white-space:pre-wrap; }
 
@@ -175,3 +175,21 @@ textarea.ib-field { resize:vertical; min-height:80px; }
   .ib-m__act { display:none; }
   .ib-assignee { max-width:110px; }
 }
+
+/* booking link + client status in the chat header */
+.ib-booking__row { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+.ib-booking a { color:inherit; text-decoration:none; } .ib-booking a:hover { text-decoration:underline; }
+.ib-link { color:var(--tint); font-weight:600; font-size:13px; background:none; border:none; cursor:pointer; padding:2px 0; }
+.ib-muted { color:var(--label-2); }
+.ib-sec { font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--label-2); margin:12px 0 4px; }
+.ib-status { max-width:150px; font-weight:600; }
+
+/* new chat: channel choice + check */
+.ib-chans { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+.ib-chan-opt { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:10px; background:var(--fill); font-size:13px; font-weight:600; cursor:pointer; }
+.ib-chan-opt.off { opacity:.55; cursor:not-allowed; }
+.ib-chan-opt:has(input:checked) { background:var(--tint-soft); color:var(--tint-text); box-shadow:inset 0 0 0 1.5px var(--tint); }
+.ib-chan-opt input { display:none; } .ib-chan-opt small { font-weight:400; color:var(--label-2); }
+.ch-dot { width:9px; height:9px; border-radius:50%; background:#25D366; } .ch-dot.ch-tg { background:#2AABEE; } .ch-dot.ch-ig { background:linear-gradient(45deg,#F77737,#D62976,#962FBF); }
+.ib-check { display:flex; gap:6px; align-items:center; margin-bottom:6px; } .ib-check .ib-field { flex:1; }
+.ib-ok { color:#15803D; font-weight:600; } .ib-bad { color:var(--red); font-weight:600; }

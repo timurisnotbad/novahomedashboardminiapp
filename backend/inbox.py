@@ -319,9 +319,10 @@ def _chat_out(r) -> dict:
     c["channel"] = c.get("channel") or "wa"
     c["channel_name"] = CHANNELS.get(c["channel"], c["channel"])
     c["title"] = c.get("name") or c.get("push_name") or (("+" + c["phone"]) if c.get("phone") else c["channel_name"])
-    b = _pinned_booking(c["id"]) or booking_for(c.get("phone") or "")
-    c["booking"] = ({"apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
-                     "guest": b["client_name"], "when": b["when"]} if b else None)
+    pb = _pinned_booking(c["id"])
+    b = pb or booking_for(c.get("phone") or "")
+    c["booking"] = ({"id": b["id"], "apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
+                     "guest": b["client_name"], "when": b["when"], "pinned": bool(pb)} if b else None)
     return c
 
 
@@ -388,13 +389,14 @@ def get_chat(chat_id: int) -> dict | None:
         c = _chat_out(r)
         # the guest's notes from the CRM card («особенности гостя»)
         try:
-            n = conn.execute("SELECT id, notes FROM crm_clients WHERE chat_id = ? OR (? != '' AND phone LIKE ?) "
+            n = conn.execute("SELECT id, notes, status FROM crm_clients WHERE chat_id = ? OR (? != '' AND phone LIKE ?) "
                              "ORDER BY CASE WHEN chat_id = ? THEN 0 ELSE 1 END LIMIT 1",
                              (chat_id, c.get("phone") or "", "%" + (c.get("phone") or "")[-9:], chat_id)).fetchone()
             c["client_id"] = n["id"] if n else None
             c["client_notes"] = (n["notes"] or "") if n else ""
+            c["client_status"] = (n["status"] or "") if n else ""
         except Exception:  # noqa: BLE001 — CRM tables not there yet
-            c["client_id"], c["client_notes"] = None, ""
+            c["client_id"], c["client_notes"], c["client_status"] = None, "", ""
     return c
 
 
@@ -571,6 +573,11 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
 
 
 def _auto_incoming(chat_id: int, is_first: bool) -> None:
+    try:
+        from . import crm_amo
+        crm_amo.on_incoming(chat_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto deal failed")
     try:
         from . import crm_ext
         crm_ext.on_incoming(chat_id, is_first)
@@ -798,18 +805,80 @@ def retry(message_id: int, author: str) -> dict:
     return send(r["chat_id"], author, r["text"] or "", r["media"], r["mime"], r["file_name"], r["quoted_wa_id"])
 
 
-def start_chat(phone: str, name: str = "") -> dict:
-    """«+ Новый чат»: check the number has WhatsApp, create (or find) the chat."""
+def _norm_phone(phone: str) -> str:
     d = digits(phone)
     if len(d) == 9:  # local Uzbek number without the country code
         d = "998" + d
     if len(d) < 10:
         raise BridgeError("Введите номер с кодом страны, например +998 90 123 45 67")
-    res = _bridge("POST", "/check", {"phone": d}, timeout=20)
-    if not res.get("exists"):
-        raise BridgeError("У этого номера нет WhatsApp")
+    return d
+
+
+def new_chat_channels() -> list[dict]:
+    """Which channels can start a conversation by phone number right now."""
+    out = []
+    st = bridge_status()
+    if config.WAZZUP_API_KEY:
+        from . import wazzup
+        try:
+            ok, hint = bool(wazzup.default_channel("whatsapp")), "В Wazzup нет активного WhatsApp-канала"
+        except BridgeError as exc:
+            ok, hint = False, str(exc)
+        out.append({"code": "wz", "name": "WhatsApp (Wazzup)", "ready": ok, "check": False, "hint": "" if ok else hint})
+    out.append({"code": "wa", "name": "WhatsApp (QR)", "ready": st.get("status") == "connected", "check": True,
+                "hint": "" if st.get("status") == "connected" else "Телефон не привязан (нужен QR)"})
+    if config.TG_API_ID and config.TG_API_HASH:
+        from . import tg_channels
+        ts = tg_channels.user_status()
+        out.append({"code": "tg", "name": "Telegram", "ready": bool(ts.get("authorized")), "check": True,
+                    "hint": "" if ts.get("authorized") else "Аккаунт не подключён — CRM → Каналы"})
+    return out
+
+
+def check_contact(phone: str, channel: str) -> dict:
+    """Is the number reachable through this channel? exists: True / False / None (can't tell)."""
+    d = _norm_phone(phone)
+    if channel == "wa":
+        res = _bridge("POST", "/check", {"phone": d}, timeout=20)
+        return {"exists": bool(res.get("exists")), "phone": d, "jid": res.get("jid"),
+                "note": "Номер есть в WhatsApp" if res.get("exists") else "У этого номера нет WhatsApp"}
+    if channel == "tg":
+        from . import tg_channels
+        r = tg_channels.user_lookup(d)
+        return {"exists": bool(r.get("exists")), "phone": d, "tg_id": r.get("id"), "name": r.get("name") or "",
+                "note": ("Номер есть в Telegram" + (" · " + r["name"] if r.get("name") else "")) if r.get("exists")
+                else "Номера нет в Telegram или он скрыл себя от поиска по номеру"}
+    if channel == "wz":
+        return {"exists": None, "phone": d, "note": "Wazzup не умеет проверять номер заранее: если WhatsApp нет, отправка вернёт ошибку"}
+    raise BridgeError("Через этот канал нельзя начать чат по номеру")
+
+
+def start_chat(phone: str, name: str = "", channel: str = "wa") -> dict:
+    """«+ Новый чат»: check the number is reachable through the channel, create (or find) the chat."""
+    d = _norm_phone(phone)
+    channel = channel or "wa"
+    if channel == "wa":
+        st = bridge_status()
+        if st.get("status") != "connected" and config.WAZZUP_API_KEY:
+            channel = "wz"  # the QR bridge is down: Wazzup carries WhatsApp
+    if channel == "wa":
+        res = _bridge("POST", "/check", {"phone": d}, timeout=20)
+        if not res.get("exists"):
+            raise BridgeError("У этого номера нет WhatsApp")
+        jid, phone_val = res["jid"], None
+    elif channel == "wz":
+        jid, phone_val = f"{d}@s.whatsapp.net", d
+    elif channel == "tg":
+        r = check_contact(d, "tg")
+        if not r.get("exists"):
+            raise BridgeError(r["note"])
+        jid, phone_val = f"tg:{r['tg_id']}", d
+        if not name.strip() and r.get("name"):
+            name = r["name"]
+    else:
+        raise BridgeError("Через этот канал нельзя начать чат по номеру")
     with database.get_conn() as conn:
-        chat_id = _ensure_chat(conn, res["jid"])
+        chat_id = _ensure_chat(conn, jid, None, None, channel, phone_val)
         if name.strip():
             conn.execute("UPDATE inbox_chats SET name = ?, rev = ? WHERE id = ?", (name.strip(), _bump(conn), chat_id))
         conn.execute("UPDATE inbox_chats SET last_at = COALESCE(last_at, ?), rev = ? WHERE id = ?",

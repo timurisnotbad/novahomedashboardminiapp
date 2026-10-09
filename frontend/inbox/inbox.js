@@ -92,7 +92,7 @@
     return `${d.getDate()} ${MONTHS[d.getMonth()]}${d.getFullYear() !== now.getFullYear() ? " " + d.getFullYear() : ""}`;
   }
   const dm = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "");
-  const COLORS = ["#A67C4E", "#5B8DEF", "#2EAD6B", "#D9534F", "#8E6CC6", "#E08A2B", "#2A9DA8", "#C2577F"];
+  const COLORS = ["#2563EB", "#5B8DEF", "#2EAD6B", "#D9534F", "#8E6CC6", "#E08A2B", "#2A9DA8", "#C2577F"];
   function avatar(c) {
     const t = (c.title || "?").replace(/^\+/, "");
     const letters = /\d/.test(t[0]) ? "#" : t.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
@@ -112,9 +112,11 @@
     if (!b) return "";
     const when = b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "был";
     return long
-      ? `🏠 <b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))} · ${when}${b.guest ? " · " + esc(b.guest) : ""}`
+      ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : ' <span class="ib-muted">· по номеру</span>'}`
       : `${esc(b.apartment)}`;
   }
+  let statuses = null;
+  function loadStatuses() { if (statuses) return; req("/client-statuses").then((l) => { statuses = l || []; renderHead(); }).catch(() => { statuses = []; }); }
 
   // ---- chat list --------------------------------------------------------------
   function visibleChats() {
@@ -165,8 +167,15 @@
     const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
     $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
     const b = $("conv-booking");
-    b.innerHTML = bookingText(c.booking, true) + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
-    b.classList.toggle("hidden", !c.booking && !c.client_notes);
+    b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : '<span class="ib-muted">Бронь не привязана</span>'}</span><button class="ib-link" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : "Привязать бронь"}</button></div>` + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    b.classList.remove("hidden");
+    const st = $("cl-status");
+    loadStatuses();
+    const stNames = (statuses || []).map((s) => s.name);
+    if (c.client_status && !stNames.includes(c.client_status)) stNames.push(c.client_status);
+    st.innerHTML = `<option value="">— статус —</option>` + stNames.map((n) => `<option value="${esc(n)}" ${n === c.client_status ? "selected" : ""}>${esc(n)}</option>`).join("");
+    const col = ((statuses || []).find((s) => s.name === c.client_status) || {}).color;
+    st.style.background = col ? col + "22" : ""; st.style.color = col || "";
     const sel = $("assignee");
     const names = Array.from(new Set(S.agents.concat(c.assignee ? [c.assignee] : [])));
     sel.innerHTML = `<option value="">— ничей —</option>` + names.map((n) =>
@@ -535,6 +544,7 @@
   }
   function closeModal() {
     $("modal").classList.add("hidden");
+    $("modal-card").onclick = null;
     connModalOpen = false;
     clearInterval(connTimer);
   }
@@ -557,14 +567,78 @@
     $("modal-card").dataset.tpls = JSON.stringify(list);
   }
 
-  function openNewChat() {
+  // ---- link the chat to a booking from the calendar ------------------------------
+  async function openBookingPick() {
+    if (!S.open) return;
+    const id = S.open.id;
     $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    const when = (b) => b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "прошлая";
+    const row = (b, pinned) => `<div class="ib-tpl"><div class="ib-tpl__body"><b>${esc(b.apartment)} · ${esc(dm(b.checkin))}–${esc(dm(b.checkout))}</b><span>${esc(b.guest || "гость")}${b.phone ? " · +" + esc(b.phone) : ""} · ${when(b)} · ${esc(b.source || "")}</span></div>
+      ${pinned ? `<button class="ib-btn danger" data-bk-unlink="${b.id}">Отвязать</button>` : `<button class="ib-btn primary" data-bk-link="${b.id}">Привязать</button>`}</div>`;
+    let d;
+    try { d = await req(`/chats/${id}/bookings`); } catch (e) { toast(e.message); closeModal(); return; }
+    $("modal-card").innerHTML = `<h3>Бронь гостя</h3>
+      <p>Бронь из RealtyCalendar, к которой относится этот чат. Данные брони подтягиваются из календаря и обновляются сами. В карточке брони чат появится в списке «Чаты по этой брони».</p>
+      ${d.pinned.length ? `<div class="ib-sec">Привязано</div>${d.pinned.map((b) => row(b, true)).join("")}` : ""}
+      ${d.suggested.length ? `<div class="ib-sec">По номеру телефона</div>${d.suggested.map((b) => row(b, false)).join("")}` : ""}
+      <div class="ib-sec">Найти в календаре</div>
+      <input class="ib-field" id="bk-q" placeholder="Гость, телефон, квартира или дата (12.10)" autocomplete="off" />
+      <div id="bk-res"><p class="ib-muted">Введите имя гостя, номер или квартиру</p></div>
+      <div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    let t;
+    const search = async () => {
+      const q = $("bk-q").value.trim();
+      if (!q) { $("bk-res").innerHTML = ""; return; }
+      try {
+        const list = await req(`/bookings/search?q=${encodeURIComponent(q)}`);
+        const ids = new Set(d.pinned.map((b) => b.id));
+        $("bk-res").innerHTML = list.filter((b) => !ids.has(b.id)).map((b) => row(b, false)).join("") || "<p>Ничего не найдено</p>";
+      } catch (e) { toast(e.message); }
+    };
+    $("bk-q").addEventListener("input", () => { clearTimeout(t); t = setTimeout(search, 300); });
+    $("bk-q").focus();
+    $("modal-card").onclick = async (e) => {
+      const l = e.target.closest("[data-bk-link]"), u = e.target.closest("[data-bk-unlink]");
+      if (!l && !u) return;
+      try {
+        const c = l ? await req(`/chats/${id}/bookings`, { method: "POST", json: { booking_id: parseInt(l.dataset.bkLink, 10) } })
+          : await req(`/chats/${id}/bookings/${u.dataset.bkUnlink}`, { method: "DELETE" });
+        S.chats.set(c.id, c); if (S.open && S.open.id === c.id) S.open = c;
+        renderHead(); renderList(); toast(l ? "Бронь привязана" : "Бронь отвязана");
+        openBookingPick();
+      } catch (err) { toast(err.message); }
+    };
+  }
+
+  async function openNewChat() {
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let chans = [];
+    try { chans = await req("/new/channels"); } catch (e) { chans = [{ code: "wa", name: "WhatsApp", ready: true, check: true }]; }
+    const first = (chans.find((c) => c.ready) || chans[0] || {}).code;
     $("modal-card").innerHTML = `<h3>Новый чат</h3>
-      <p>Написать гостю первым. Номер — с кодом страны.</p>
-      <input class="ib-field" id="nc-phone" type="tel" placeholder="+998 90 123 45 67" />
+      <p>Написать гостю первым. Номер — с кодом страны. Выберите канал: гость может быть в WhatsApp, но не в Telegram, и наоборот — кнопка «Проверить» покажет, есть ли он там.</p>
+      <div class="ib-chans">${chans.map((c) => `<label class="ib-chan-opt ${c.ready ? "" : "off"}"><input type="radio" name="nc-ch" value="${c.code}" ${c.code === first ? "checked" : ""} ${c.ready ? "" : "disabled"} /><span class="ch-dot ch-${c.code === "wz" ? "wa" : c.code}"></span>${esc(c.name)}${c.hint ? `<small>${esc(c.hint)}</small>` : ""}</label>`).join("")}</div>
+      <div class="ib-check"><input class="ib-field" id="nc-phone" type="tel" placeholder="+998 90 123 45 67" style="margin:0" /><button class="ib-btn" id="nc-check">Проверить</button></div>
+      <div id="nc-res" class="ib-muted" style="font-size:13px;margin:4px 0 8px"></div>
       <input class="ib-field" id="nc-name" placeholder="Имя (необязательно)" maxlength="80" />
       <textarea class="ib-field" id="nc-text" placeholder="Сообщение (необязательно)"></textarea>
       <div class="ib-row"><button class="ib-btn" data-close>Отмена</button><button class="ib-btn primary" data-nc-go>Открыть чат</button></div>`;
+    const check = async () => {
+      const phone = $("nc-phone").value.trim(), ch = (document.querySelector("input[name=nc-ch]:checked") || {}).value;
+      if (!phone) { toast("Введите номер"); return; }
+      $("nc-res").textContent = "Проверяю…"; $("nc-res").className = "ib-muted";
+      try {
+        const r = await req(`/new/check?phone=${encodeURIComponent(phone)}&channel=${ch}`);
+        $("nc-res").textContent = (r.exists === true ? "✅ " : r.exists === false ? "❌ " : "ℹ️ ") + r.note;
+        $("nc-res").className = r.exists === true ? "ib-ok" : r.exists === false ? "ib-bad" : "ib-muted";
+        if (r.name && !$("nc-name").value) $("nc-name").value = r.name;
+      } catch (e) { $("nc-res").textContent = "✕ " + e.message; $("nc-res").className = "ib-bad"; }
+    };
+    $("nc-check").addEventListener("click", check);
+    $("nc-phone").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); check(); } });
+    document.querySelectorAll("input[name=nc-ch]").forEach((r) => r.addEventListener("change", () => { $("nc-res").textContent = ""; }));
     setTimeout(() => $("nc-phone").focus(), 50);
   }
 
@@ -619,6 +693,25 @@
         renderList();
         toast(c.assignee ? "Ответственный: " + c.assignee : "Ответственный снят");
       } catch (err) { toast(err.message); }
+    });
+    $("cl-status").addEventListener("change", async (e) => {
+      if (!S.open) return;
+      try {
+        const c = await req(`/chats/${S.open.id}/client`, { method: "PATCH", json: { status: e.target.value } });
+        S.chats.set(c.id, c); S.open = c; renderHead();
+        toast(c.client_status ? "Статус: " + c.client_status : "Статус снят");
+      } catch (err) { toast(err.message); }
+    });
+    $("conv-booking").addEventListener("click", (e) => {
+      if (e.target.id === "bk-pick") { openBookingPick(); return; }
+      const a = e.target.closest("[data-bk-open]");
+      if (a) {
+        e.preventDefault();
+        const id = parseInt(a.dataset.bkOpen, 10);
+        if (!id) return;
+        if (EMBED) { try { window.parent.postMessage({ nh: "booking", id }, location.origin); } catch (err) { /* ignore */ } }
+        else window.open(`/crm/#bookings/${id}`, "_blank");
+      }
     });
     $("rename").addEventListener("click", async () => {
       if (!S.open) return;
@@ -702,7 +795,8 @@
         if (!phone) { toast("Введите номер"); return; }
         e.target.disabled = true;
         try {
-          const c = await req("/new", { method: "POST", json: { phone, name: $("nc-name").value, text: $("nc-text").value } });
+          const channel = (document.querySelector("input[name=nc-ch]:checked") || {}).value || "wa";
+          const c = await req("/new", { method: "POST", json: { phone, name: $("nc-name").value, text: $("nc-text").value, channel } });
           S.chats.set(c.id, c);
           closeModal();
           openChat(c.id);

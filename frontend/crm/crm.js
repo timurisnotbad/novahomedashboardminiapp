@@ -35,7 +35,7 @@
     let data = null;
     try { data = await res.json(); } catch (e) { /* empty */ }
     if (res.status === 401 && S.me) { S.me = null; showAuth(false); }
-    if (!res.ok) { const err = new Error((data && data.detail) || "Ошибка " + res.status); err.status = res.status; throw err; }
+    if (!res.ok) { const err = new Error((data && data.detail) || (res.status === 502 || res.status === 504 ? "Сервер не ответил (ошибка " + res.status + "). Проверьте, что окно Nova Backend запущено, и попробуйте ещё раз" : "Ошибка " + res.status)); err.status = res.status; throw err; }
     return data;
   }
   const get = (p) => api(p);
@@ -138,6 +138,14 @@
     Promise.resolve(ROUTES[r](arg)).catch((err) => { main.innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
   }
   window.addEventListener("hashchange", navigate);
+  // the chats iframe asks to open a booking card
+  window.addEventListener("message", (e) => {
+    if (e.origin === location.origin && e.data && e.data.nh === "booking" && e.data.id) openBooking(parseInt(e.data.id, 10));
+  });
+  // client statuses («Без брони», «Постоянник»…), editable in «Поля карточек»
+  async function loadStatuses(force) { if (!S.statuses || force) S.statuses = (await get("/clients/statuses").catch(() => ({ items: [] }))).items || []; return S.statuses; }
+  function statusTag(name, extra) { if (!name) return ""; const s = (S.statuses || []).find((x) => x.name === name); const col = s ? s.color : "#6B7280"; return `<span class="tag st" style="background:${col}22;color:${col}" ${extra || ""}>${esc(name)}</span>`; }
+  function statusOptions(sel) { const names = (S.statuses || []).map((s) => s.name); if (sel && !names.includes(sel)) names.push(sel); return `<option value="">— без статуса —</option>` + names.map((n) => `<option value="${esc(n)}" ${n === sel ? "selected" : ""}>${esc(n)}</option>`).join(""); }
   $("burger").addEventListener("click", () => document.querySelector(".side").classList.toggle("open"));
   $("modal").addEventListener("click", (e) => { if (e.target.closest("[data-close]")) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal(); });
@@ -188,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=42&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=43&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -217,9 +225,9 @@
         const items = deals.filter((d) => d.stage_id === s.id);
         const sum = items.reduce((a, d) => a + (Number(d.amount) || 0), 0);
         return `<div class="kcol" data-stage="${s.id}"><div class="kcol__head"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><small>${items.length}${sum ? " · " + money(sum) : ""}</small></div>
-          ${items.map((d) => `<div class="kcard" draggable="true" data-deal="${d.id}"><b>${esc(d.title)}</b>
+          ${items.map((d) => `<div class="kcard ${d.unread ? "has-unread" : ""}" draggable="true" data-deal="${d.id}"><b>${esc(d.title)}${d.unread ? ` <span class="pill">${d.unread}</span>` : ""}</b>
             <div class="muted small">${esc(d.client_name || "")}${d.apartment ? " · " + esc(d.apartment) : ""}${d.checkin ? " · " + esc(dShort(d.checkin)) + (d.checkout ? "–" + esc(dShort(d.checkout)) : "") : ""}</div>
-            <div class="meta"><span>${esc(d.owner_name || "")}</span><span class="amt">${money(d.amount)}</span></div></div>`).join("")}</div>`;
+            <div class="meta"><span>${esc(d.owner_name || "")}${d.last_msg_at ? ` · ✉ ${esc(dtShort(d.last_msg_at))}` : ""}</span><span class="amt">${money(d.amount)}</span></div></div>`).join("")}</div>`;
       }).join("")}</div>`;
     keepFocus("deal-q");
     const sel = $("pipe-sel");
@@ -311,28 +319,34 @@
   ROUTES.clients = async (id) => {
     if (id) return openClient(parseInt(id, 10), true);
     const q = S.cache.clientQ || "";
-    const list = await get(`/clients?history=1&q=${encodeURIComponent(q)}`);
+    const stf = S.cache.clientSt === undefined ? null : S.cache.clientSt;
+    await loadStatuses();
+    const list = await get(`/clients?history=1&q=${encodeURIComponent(q)}${stf !== null ? "&status=" + encodeURIComponent(stf) : ""}`);
     S.cache.clients = list;
     $("main").innerHTML = `
       <div class="page-head"><h1>Клиенты</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn" href="${API}/clients/export.xlsx" download>⬇ Excel</a><button class="btn" id="c-import" title="Создать карточки для всех, кто есть в бронях и чатах">Подтянуть из броней и чатов</button><button class="btn primary" id="c-add">Добавить</button></div></div>
       <div class="toolbar"><input class="field grow" id="c-q" placeholder="Поиск: имя, телефон, email, комментарий" value="${esc(q)}" /><span class="muted small">${plural(list.length, "клиент", "клиента", "клиентов")}</span></div>
-      ${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Имя</th><th>Телефон</th><th>Визитов</th><th>Сумма</th><th>Последний выезд</th><th>Источник</th><th>Комментарий</th></tr></thead><tbody>
-        ${list.map((c) => `<tr class="click" data-id="${c.id}"><td><b>${esc(c.name)}</b></td><td>${c.phone ? "+" + esc(c.phone) : "—"}</td><td>${c.visits || 0}${c.nights ? ` <span class="muted small">· ${c.nights} н.</span>` : ""}</td><td>${c.amount ? money(c.amount) : ""}</td><td class="muted small">${esc(dShort(c.last_stay))}</td><td>${esc(c.source || "")}</td><td class="muted small" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.notes || "")}</td></tr>`).join("")}
+      <div class="chips"><button class="chip ${stf === null ? "is-on" : ""}" data-st="*">Все</button>${S.statuses.map((s) => `<button class="chip ${stf === s.name ? "is-on" : ""}" data-st="${esc(s.name)}" style="--c:${s.color}"><i></i>${esc(s.name)}</button>`).join("")}<button class="chip ${stf === "" ? "is-on" : ""}" data-st="">Без статуса</button>${S.me.role === "admin" ? `<a class="chip link" href="#fields">настроить</a>` : ""}</div>
+      ${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Имя</th><th>Статус</th><th>Телефон</th><th>Визитов</th><th>Сумма</th><th>Последний выезд</th><th>Источник</th><th>Комментарий</th></tr></thead><tbody>
+        ${list.map((c) => `<tr class="click" data-id="${c.id}"><td><b>${esc(c.name)}</b></td><td>${statusTag(c.status) || '<span class="muted small">—</span>'}</td><td>${c.phone ? "+" + esc(c.phone) : "—"}</td><td>${c.visits || 0}${c.nights ? ` <span class="muted small">· ${c.nights} н.</span>` : ""}</td><td>${c.amount ? money(c.amount) : ""}</td><td class="muted small">${esc(dShort(c.last_stay))}</td><td>${esc(c.source || "")}</td><td class="muted small" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.notes || "")}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="card empty">${q ? "Ничего не найдено" : "Клиентов пока нет. Нажмите «Подтянуть из броней и чатов» — карточки создадутся по номерам телефонов."}</div>`}`;
     keepFocus("c-q");
     let t;
     $("c-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { S.cache.clientQ = e.target.value.trim(); navigate(); }, 300); });
     $("c-add").addEventListener("click", () => clientForm(null));
     $("c-import").addEventListener("click", async (e) => { e.target.disabled = true; try { const r = await post("/clients/import"); toast(`Добавлено клиентов: ${r.added}`); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
-    onMain((e) => { const r = e.target.closest("tr[data-id]"); if (r) openClient(parseInt(r.dataset.id, 10)); });
+    onMain((e) => {
+      const ch = e.target.closest("[data-st]"); if (ch) { S.cache.clientSt = ch.dataset.st === "*" ? undefined : ch.dataset.st; navigate(); return; }
+      const r = e.target.closest("tr[data-id]"); if (r) openClient(parseInt(r.dataset.id, 10));
+    });
   };
 
   async function openClient(id, asPage) {
     const c = await get(`/clients/${id}`);
-    await loadFields();
+    await loadFields(); await loadStatuses();
     const fieldRowsHtml = fieldRows("client", c.fields);
     const html = `<h2>${esc(c.name)}</h2>
-      <div class="muted small" style="margin-bottom:12px">${c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : ""}${c.email ? " · " + esc(c.email) : ""}${c.source ? " · " + esc(c.source) : ""}</div>
+      <div class="muted small" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span>${c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : ""}${c.email ? " · " + esc(c.email) : ""}${c.source ? " · " + esc(c.source) : ""}</span><select class="field sm" id="c-status" style="width:auto" title="Статус клиента">${statusOptions(c.status)}</select></div>
       <div class="grid c2">
         <div><dl class="kv">${fieldRowsHtml}${c.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(c.notes)}</dd>` : ""}</dl>
           ${!fieldRowsHtml && !c.notes ? `<div class="muted small">Дополнительных полей нет — настраиваются в «Поля карточек»</div>` : ""}</div>
@@ -351,6 +365,7 @@
     if (asPage) { $("main").innerHTML = `<div class="card">${html}</div>`; } else modal(html, true);
     const root = asPage ? $("main") : $("modal-card");
     root.querySelector("#c-edit").addEventListener("click", () => clientForm(c));
+    root.querySelector("#c-status").addEventListener("change", async (e) => { try { await post(`/clients/${id}/status`, { status: e.target.value }); c.status = e.target.value; toast(c.status ? "Статус: " + c.status : "Статус снят"); } catch (err) { toast(err.message); } });
     root.querySelector("#c-task").addEventListener("click", () => taskForm({ client_id: c.id, title: "" }, () => openClient(id, asPage)));
     root.querySelector("#c-deal").addEventListener("click", async () => { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); dealForm(null, { client_id: c.id, title: "" }); });
     root.querySelector("#c-chat").addEventListener("click", () => openClientChat(c.id));
@@ -365,18 +380,19 @@
 
   async function clientForm(c) {
     c = c || { name: "", phone: "", email: "", source: "", notes: "", fields: {} };
-    await loadFields();
+    await loadFields(); await loadStatuses();
     const fieldInputsHtml = fieldInputs("client", c.fields);
     modal(`<h2>${c.id ? "Клиент" : "Новый клиент"}</h2>
       <div class="form-row"><div><label class="lbl">Имя</label><input class="field" id="cf-name" value="${esc(c.name)}" /></div>
         <div><label class="lbl">Телефон</label><input class="field" id="cf-phone" value="${c.phone ? "+" + esc(c.phone) : ""}" placeholder="+998 90 123 45 67" /></div></div>
       <div class="form-row"><div><label class="lbl">Email</label><input class="field" id="cf-email" value="${esc(c.email || "")}" /></div>
         <div><label class="lbl">Источник</label><input class="field" id="cf-source" value="${esc(c.source || "")}" placeholder="Booking.com, Airbnb, WhatsApp…" list="src-list" /><datalist id="src-list"><option>Booking.com</option><option>Airbnb</option><option>WhatsApp</option><option>Telegram</option><option>Instagram</option><option>Рекомендация</option></datalist></div></div>
+      <label class="lbl">Статус</label><select class="field" id="cf-status">${statusOptions(c.status)}</select>
       ${fieldInputsHtml ? `<div class="form-row">${fieldInputsHtml}</div>` : ""}
       <label class="lbl">Заметки</label><textarea class="field" id="cf-notes">${esc(c.notes || "")}</textarea>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="cf-go">Сохранить</button></div>`);
     $("cf-go").addEventListener("click", async () => {
-      const body = { name: val("cf-name"), phone: val("cf-phone"), email: val("cf-email"), source: val("cf-source"), notes: val("cf-notes"), fields: readFields($("modal-card")) };
+      const body = { name: val("cf-name"), phone: val("cf-phone"), email: val("cf-email"), source: val("cf-source"), notes: val("cf-notes"), fields: readFields($("modal-card")), status: val("cf-status") };
       try {
         const r = c.id ? await put(`/clients/${c.id}`, body) : await post("/clients", body);
         closeModal(); toast("Сохранено");
@@ -449,7 +465,8 @@
   }
 
   // ---- bookings ---------------------------------------------------------------
-  ROUTES.bookings = async () => {
+  ROUTES.bookings = async (id) => {
+    if (id) setTimeout(() => openBooking(parseInt(id, 10)), 50);
     const st = S.cache.bk || { view: "day", date: todayIso(), start: todayIso() };
     S.cache.bk = st;
     const head = `<div class="page-head"><h1>Брони</h1></div><div class="page-sub">Из RealtyCalendar. Создавать и менять брони — в RealtyCalendar, CRM обновится сама.</div>
@@ -601,6 +618,7 @@
         <div class="muted small" style="margin-top:10px">Запись в календарь: из карточки брони («Изменить бронь») уходят гость, телефон, сумма, даты, время, заметка. ${rc.push_log && rc.push_log.length ? `Последние записи:` : "Записей пока не было."}</div>
         ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Задачи из броней</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-auto" ${d.settings.auto_tasks ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать задачи «Заезд» и «Выезд» на день заезда/выезда (исполнитель — администратор)</label></div>
+      <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card"><h3>Чек-лист брони</h3>
         <div class="muted small">Шаблон задач, которые создаются по каждой брони (кнопка «Чек-лист» в карточке брони). Одна строка — одна задача: <span class="mono">Текст | заезд -1 10:00</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b> или <b>сегодня</b>; потом сдвиг в днях (−1 — за день до, +1 — на следующий день) и время. Без времени берётся время заезда/выезда из брони.</div>
         <textarea class="field mono" id="i-cl" rows="8" style="margin-top:8px" ${S.me.role !== "admin" ? "disabled" : ""}>${esc(d.settings.checklist || "")}</textarea>
@@ -610,6 +628,7 @@
       <div class="card"><h3>Healthchecks.io</h3><div class="small ${d.healthchecks.configured ? "ok" : "muted"}">${d.healthchecks.configured ? "Подключён" : "Не настроен — уведомления о выключенном компьютере не придут"}</div></div>`;
     $("i-sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); navigate(); } catch (err) { toast(err.message); navigate(); } });
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-cl-save").addEventListener("click", async () => { try { const r = await post("/integrations/settings", { checklist: $("i-cl").value }); toast(`Сохранено: ${r.items.length} задач в чек-листе`); } catch (err) { toast(err.message); } });
     $("i-cl-reset").addEventListener("click", async () => { try { const c = await get("/checklist"); $("i-cl").value = c.default; await post("/integrations/settings", { checklist: c.default }); toast("Стандартный шаблон восстановлен"); } catch (err) { toast(err.message); } });
@@ -658,12 +677,19 @@
   const TYPES = { text: "Текст", number: "Число", date: "Дата", select: "Список", checkbox: "Галочка" };
   ROUTES.fields = async () => {
     S.fields = await get("/fields");
+    const st = await get("/clients/statuses"); S.statuses = st.items;
     const group = (entity, title, hint) => `<div class="card__title" style="margin:${entity === "client" ? 0 : 18}px 0 8px">${title}</div><div class="list">${fieldsFor(entity).map((f, i) => `<div class="list__row"><span class="tag">${TYPES[f.type] || f.type}</span><div><b>${esc(f.name)}</b>${f.type === "select" ? `<small>${esc(f.options.join(", "))}</small>` : ""}</div>
         <div class="actions">${i > 0 ? `<button data-up="${f.id}">↑</button>` : ""}<button data-edit="${f.id}">Изменить</button><button data-del="${f.id}" class="muted">Удалить</button></div></div>`).join("") || `<div class="empty">${hint}</div>`}</div>`;
     $("main").innerHTML = `<div class="page-head"><h1>Поля карточек</h1><button class="btn primary" id="fl-add">Добавить поле</button></div>
       <div class="page-sub">Свои поля в карточке контакта и сделки — как в amoCRM. Стандартные (имя, телефон, источник, сумма, даты…) есть всегда.</div>
       ${group("client", "Контакт", "Полей контакта нет. Примеры: паспорт, язык, откуда узнал, предпочтения.")}
-      ${group("deal", "Сделка", "Полей сделки нет. Примеры: цель поездки, количество детей, откуда запрос, депозит внесён.")}`;
+      ${group("deal", "Сделка", "Полей сделки нет. Примеры: цель поездки, количество детей, откуда запрос, депозит внесён.")}
+      <div class="card" style="margin-top:18px"><div class="card__title">Статусы клиентов</div>
+        <div class="muted small">Кто этот человек для вас: без брони, тёплый, постоянник… Статус ставится в чате, в карточке клиента и в списке клиентов. Одна строка — один статус: <span class="mono">Название | #цвет</span>. Новому контакту из сообщений автоматически ставится первый статус в списке.</div>
+        <textarea class="field mono" id="st-text" rows="8" style="margin-top:8px">${esc(st.text)}</textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap"><button class="btn" id="st-save">Сохранить статусы</button><button class="btn link" id="st-reset">Вернуть стандартные</button><span class="muted small">Сейчас: ${st.items.map((s) => `${statusTag(s.name)} ${s.n}`).join(" ")}${st.none ? ` · без статуса ${st.none}` : ""}</span></div></div>`;
+    $("st-save").addEventListener("click", async () => { try { const r = await post("/clients/statuses", { text: $("st-text").value }); S.statuses = r.items; toast(`Сохранено: ${r.items.length} статусов`); navigate(); } catch (err) { toast(err.message); } });
+    $("st-reset").addEventListener("click", async () => { try { const r = await post("/clients/statuses", { text: st.default }); S.statuses = r.items; toast("Стандартные статусы восстановлены"); navigate(); } catch (err) { toast(err.message); } });
     $("fl-add").addEventListener("click", () => fieldForm(null));
     onMain(async (e) => {
       const ed = e.target.closest("[data-edit]"); if (ed) { fieldForm(S.fields.find((f) => f.id === parseInt(ed.dataset.edit, 10))); return; }
@@ -761,7 +787,7 @@
   // ---- booking hub: contacts, linked chats, quick message -------------------------
   async function openBooking(id) {
     let b;
-    try { b = await get(`/bookings/${id}/card`); } catch (err) { toast(err.message); return; }
+    try { b = await get(`/bookings/${id}/card`); await loadStatuses(); } catch (err) { toast(err.message); return; }
     const h = b.history;
     const chatPill = (c) => `<span class="chat-pill"><i class="ch ${esc(c.channel)}"></i><a href="#messages/${c.id}" data-close>${esc(c.title)}</a><span class="muted">${esc(c.channel_name)}${c.pinned ? "" : " · по номеру"}</span>${c.pinned ? `<button data-unlink="${c.id}" title="Отвязать">✕</button>` : `<button data-pin="${c.id}" title="Закрепить за бронью">📌</button>`}</span>`;
     modal(`<h2>${esc(b.apartment)} · ${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))}</h2>
@@ -770,7 +796,7 @@
       <div class="grid c2">
         <div>
           <div class="card__title">Гость</div>
-          <div><b>${esc(b.guest || "Гость")}</b>${b.phone ? ` · <a href="tel:+${esc(b.phone)}">+${esc(b.phone)}</a>` : ""}${b.client ? ` · <a href="#clients/${b.client.id}" data-close>карточка</a>` : ""}</div>
+          <div><b>${esc(b.guest || "Гость")}</b>${b.phone ? ` · <a href="tel:+${esc(b.phone)}">+${esc(b.phone)}</a>` : ""}${b.client ? ` · <a href="#clients/${b.client.id}" data-close>карточка</a> ${statusTag(b.client.status)}` : ""}</div>
           ${h ? `<div class="hist"><div><b>${h.visits}</b><span>визитов</span></div><div><b>${h.nights}</b><span>ночей</span></div><div><b>${money(h.amount)}</b><span>всего</span></div><div><b>${h.upcoming}</b><span>будущих</span></div></div><div class="muted small">Квартиры: ${esc(h.apartments.join(", "))}${h.first ? " · с " + esc(dShort(h.first)) : ""}</div>` : `<div class="muted small">Истории нет${b.phone ? "" : " — у брони нет телефона"}</div>`}
           <label class="lbl">Особенности гостя (видны в чате и в карточке)</label>
           <textarea class="field" id="bk-notes" rows="3" ${b.client ? "" : "disabled placeholder='Нет телефона — карточка не создана'"}>${esc(b.client ? b.client.notes || "" : "")}</textarea>
@@ -996,7 +1022,11 @@
       $("tab-unread").textContent = d.unread || ""; $("tab-unread").classList.toggle("hidden", !d.unread);
       $("tab-tasks").textContent = d.my_open_tasks || ""; $("tab-tasks").classList.toggle("hidden", !d.my_open_tasks);
       if (d.latest) {
-        if (lastSeenMsg !== null && d.latest.id > lastSeenMsg) { chime(); showPopup(d.latest); }
+        if (lastSeenMsg !== null && d.latest.id > lastSeenMsg) {
+          chime(); showPopup(d.latest);
+          // a new message moves deals: repaint the board / home / clients if nothing is being edited
+          if (["deals", "home", "clients"].includes(S.route) && $("modal").classList.contains("hidden") && !/^(deal-q|c-q)$/.test((document.activeElement || {}).id || "")) navigate();
+        }
         lastSeenMsg = Math.max(lastSeenMsg || 0, d.latest.id);
       } else if (lastSeenMsg === null) lastSeenMsg = 0;
     } catch (e) { /* ignore */ }

@@ -288,6 +288,36 @@ def user_send(payload: dict) -> dict:
         raise inbox.BridgeError(_err(exc)) from exc
 
 
+def user_lookup(phone: str) -> dict:
+    """Is this number on Telegram? Imports the contact for a moment (the only
+    way Telegram offers), returns {exists, id, name, phone}."""
+    if not _me:
+        raise inbox.BridgeError("Telegram-аккаунт не подключён — войдите в CRM → Каналы")
+    d = re.sub(r"\D", "", phone or "")
+
+    async def go():
+        from telethon.tl.functions.contacts import DeleteContactsRequest, ImportContactsRequest
+        from telethon.tl.types import InputPhoneContact
+        res = await _client(ImportContactsRequest([InputPhoneContact(client_id=0, phone="+" + d, first_name=d, last_name="")]))
+        users = list(res.users or [])
+        if not users:
+            return {"exists": False}
+        u = users[0]
+        try:
+            await _client(DeleteContactsRequest(id=[u]))  # we only wanted to know; don't keep the contact
+        except Exception:  # noqa: BLE001
+            pass
+        name = " ".join(x for x in (getattr(u, "first_name", None), getattr(u, "last_name", None)) if x and x != d) \
+            or (("@" + u.username) if getattr(u, "username", None) else "")
+        return {"exists": True, "id": u.id, "name": name, "phone": re.sub(r"\D", "", getattr(u, "phone", "") or "") or d}
+    try:
+        return _run(go(), 40)
+    except inbox.BridgeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise inbox.BridgeError(_err(exc)) from exc
+
+
 def user_read(jid: str) -> None:
     if not _me:
         return

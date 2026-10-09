@@ -242,8 +242,40 @@ def order_fields(payload: OrderIn, user: dict = Depends(admin_user)):  # noqa: B
 
 # ---- clients ------------------------------------------------------------------
 @router.get("/clients")
-def get_clients(q: str = "", history: int = 0, user: dict = Depends(current_user)):  # noqa: B008
-    return crm_ext.clients_with_history(q) if history else crm.clients(q)
+def get_clients(q: str = "", history: int = 0, status: str | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    rows = crm_ext.clients_with_history(q) if history else crm.clients(q)
+    if status is not None:
+        rows = [c for c in rows if (c.get("status") or "") == status]
+    return rows
+
+
+@router.get("/clients/statuses")
+def get_client_statuses(user: dict = Depends(current_user)):  # noqa: B008
+    with database.get_conn() as conn:
+        counts = {r[0] or "": r[1] for r in conn.execute("SELECT status, COUNT(*) FROM crm_clients GROUP BY status").fetchall()}
+    items = crm.client_statuses()
+    for it in items:
+        it["n"] = counts.get(it["name"], 0)
+    return {"items": items, "text": crm.get_setting("client_statuses", crm.DEFAULT_CLIENT_STATUSES),
+            "default": crm.DEFAULT_CLIENT_STATUSES, "none": counts.get("", 0)}
+
+
+class StatusesIn(BaseModel):
+    text: str
+
+
+@router.post("/clients/statuses")
+def set_client_statuses(payload: StatusesIn, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.set_setting("client_statuses", payload.text.strip())
+    return {"ok": True, "items": crm.client_statuses()}
+
+
+@router.post("/clients/{cid}/status")
+def set_client_status(cid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    if not crm.get_client(cid):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    crm.set_client_status(cid, payload.get("status") or "")
+    return {"ok": True}
 
 
 @router.get("/clients/export.xlsx")
@@ -301,9 +333,9 @@ def client_chat(cid: int, user: dict = Depends(current_user)):  # noqa: B008
     if not c.get("phone"):
         raise HTTPException(status_code=400, detail="У клиента нет телефона")
     try:
-        chat = inbox.start_chat(c["phone"], c.get("name") or "")
+        chat = inbox.start_chat(c["phone"], c.get("name") or "")  # QR bridge, or Wazzup when the bridge is offline
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=f"Не удалось открыть WhatsApp-чат: {exc}") from exc
     with database.get_conn() as conn:
         conn.execute("UPDATE crm_clients SET chat_id = ? WHERE id = ?", (chat["id"], cid))
     return {"chat_id": chat["id"]}
@@ -738,6 +770,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
+                     "auto_deal": crm.get_setting("auto_deal", "1") == "1",
                      "auto_checklist": crm.get_setting("auto_checklist", "0") == "1",
                      "checklist": crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)},
     }
@@ -747,6 +780,7 @@ class SettingsIn(BaseModel):
     auto_tasks: bool | None = None
     auto_checklist: bool | None = None
     checklist: str | None = None
+    auto_deal: bool | None = None
 
 
 @router.post("/integrations/settings")
@@ -755,6 +789,8 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         crm.set_setting("auto_tasks", "1" if payload.auto_tasks else "0")
     if payload.auto_checklist is not None:
         crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
+    if payload.auto_deal is not None:
+        crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
     if payload.checklist is not None:
         crm.set_setting("booking_checklist", payload.checklist.strip())
     return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}

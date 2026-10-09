@@ -136,7 +136,7 @@ def booking_card(bid: int) -> dict | None:
         checklist_done = bool(conn.execute("SELECT 1 FROM crm_booking_checklist WHERE booking_id = ?", (bid,)).fetchone())
     cid = crm.ensure_client(b["phone"] or "", b["guest"] or "", b["source"]) if b["phone"] else None
     client = crm.get_client(cid) if cid else None
-    b["client"] = client and {k: client[k] for k in ("id", "name", "phone", "email", "source", "notes", "fields")}
+    b["client"] = client and {k: client[k] for k in ("id", "name", "phone", "email", "source", "notes", "fields", "status")}
     b["history"] = client_history(b["phone"]) if b["phone"] else None
     b["chats"] = chats
     crm._contact_states([b])  # noqa: SLF001
@@ -145,6 +145,44 @@ def booking_card(bid: int) -> dict | None:
     b["tasks"] = crm.tasks(booking_id=bid)
     b["checklist_done"] = checklist_done
     return b
+
+
+def chat_bookings(chat_id: int) -> dict:
+    """What the chat header offers: pinned bookings + the guest's bookings by phone."""
+    chat = inbox.get_chat(chat_id)
+    if not chat:
+        raise ValueError("Чат не найден")
+    today = date.today().isoformat()
+    with database.get_conn() as conn:
+        pinned_ids = [r["booking_id"] for r in conn.execute(
+            "SELECT booking_id FROM crm_booking_chats WHERE chat_id = ? ORDER BY linked_at DESC", (chat_id,)).fetchall()]
+        pinned = [b for b in (_booking(conn, i) for i in pinned_ids) if b]
+    phone = chat.get("phone") or ""
+    suggested = [b for b in (crm.client_bookings(phone) if len(phone) >= 7 else []) if b["id"] not in pinned_ids]
+    suggested.sort(key=lambda b: (0 if b["checkout"] >= today else 1, b["checkin"] if b["checkout"] >= today else "0000"))
+    for b in pinned + suggested:
+        b["when"] = "now" if b["checkin"] <= today <= b["checkout"] else "next" if b["checkin"] > today else "past"
+    return {"pinned": pinned, "suggested": suggested[:10]}
+
+
+def bookings_search(q: str, limit: int = 20) -> list[dict]:
+    """Search bookings by guest, phone, apartment or date (DD.MM) — for «Привязать бронь» in a chat."""
+    q = (q or "").strip()
+    ql, qd = q.lower(), crm.digits(q)
+    today = date.today().isoformat()
+    with database.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND end_date >= ? ORDER BY begin_date LIMIT 2000",
+            ((date.today() - timedelta(days=90)).isoformat(),)).fetchall()]
+    out = []
+    for r in rows:
+        hay = f"{r.get('client_name') or ''} {r.get('apartment_name') or ''} {crm._dm(r['begin_date'])} {crm._dm(r['end_date'])}".lower()  # noqa: SLF001
+        if not q or ql in hay or (len(qd) >= 4 and qd in crm.digits(r.get("client_phone"))):
+            b = crm._booking_out(r)  # noqa: SLF001
+            b["when"] = "now" if b["checkin"] <= today <= b["checkout"] else "next" if b["checkin"] > today else "past"
+            out.append(b)
+    out.sort(key=lambda b: (0 if b["when"] == "now" else 1 if b["when"] == "next" else 2, b["checkin"] if b["when"] != "past" else "", -int(b["id"]) if b["when"] == "past" else 0))
+    return out[:limit]
 
 
 def link_chat(bid: int, chat_id: int, who: str) -> None:

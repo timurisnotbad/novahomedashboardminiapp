@@ -85,6 +85,34 @@ def accept(chat_id: int, uid: int, pipeline_id: int | None = None) -> dict:
     return deal_full(did)
 
 
+def on_incoming(chat_id: int) -> None:
+    """Incoming message → the chat lands in «Сделки» by itself: a new deal in the
+    first stage (setting «auto_deal», on by default), or a bump of the deal the
+    chat already belongs to, so the board shows who wrote last."""
+    with database.get_conn() as conn:
+        linked = [r[0] for r in conn.execute("SELECT deal_id FROM crm_deal_chats WHERE chat_id = ?", (chat_id,)).fetchall()]
+        if linked:
+            conn.execute(f"UPDATE crm_deals SET updated_at = ? WHERE id IN ({','.join('?' * len(linked))})", (crm._now(), *linked))
+            return
+        if conn.execute("SELECT 1 FROM crm_unsorted_rejected WHERE chat_id = ?", (chat_id,)).fetchone():
+            return
+    if crm.get_setting("auto_deal", "1") != "1":
+        return
+    if not inbox.get_chat(chat_id):
+        return
+    admins = [u for u in crm.list_users() if u["role"] == "admin" and u["active"]]
+    uid = admins[0]["id"] if admins else 0
+    d = accept(chat_id, uid)
+    # a brand-new contact gets the first status from the list («Новый»)
+    cid = d.get("client_id")
+    if cid:
+        c = crm.get_client(cid)
+        if c and not c.get("status"):
+            sts = crm.client_statuses()
+            if sts:
+                crm.set_client_status(cid, sts[0]["name"])
+
+
 def reject(chat_id: int) -> None:
     with database.get_conn() as conn:
         conn.execute("INSERT OR REPLACE INTO crm_unsorted_rejected (chat_id, at) VALUES (?, ?)", (chat_id, crm._now()))

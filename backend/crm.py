@@ -173,6 +173,8 @@ def init_db() -> None:
             conn.execute("UPDATE crm_tasks SET booking_id = CAST(substr(src_key, instr(src_key, ':') + 1) AS INTEGER) "
                          "WHERE booking_id IS NULL AND (src_key LIKE 'checkin:%' OR src_key LIKE 'checkout:%')")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_tasks_booking ON crm_tasks(booking_id)")
+        if "status" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_clients)").fetchall()]:
+            conn.execute("ALTER TABLE crm_clients ADD COLUMN status TEXT")
         if not conn.execute("SELECT 1 FROM crm_pipelines").fetchone():
             pid = conn.execute("INSERT INTO crm_pipelines (name, sort) VALUES ('Продажи', 0)").lastrowid
             for i, (nm, color, kind) in enumerate(DEFAULT_STAGES):
@@ -463,7 +465,40 @@ def _client_out(r) -> dict:
         c["fields"] = json.loads(c["fields"] or "{}")
     except ValueError:
         c["fields"] = {}
+    c["status"] = c.get("status") or ""
     return c
+
+
+# ---------------------------------------------------------------------------
+# Client statuses («Без брони», «Тёплый», «Постоянник»…): the owner edits the
+# list himself (Поля карточек). One line = «Название | #цвет».
+# ---------------------------------------------------------------------------
+DEFAULT_CLIENT_STATUSES = """Новый | #6B7280
+Без брони | #9CA3AF
+Тёплый | #F59E0B
+Забронировал | #2563EB
+Живёт сейчас | #10B981
+Постоянник | #8B5CF6
+VIP | #DB2777
+Не беспокоить | #EF4444"""
+
+
+def client_statuses() -> list[dict]:
+    out = []
+    for line in (get_setting("client_statuses", DEFAULT_CLIENT_STATUSES) or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, color = line.partition("|")
+        color = color.strip()
+        out.append({"name": name.strip(), "color": color if re.match(r"^#[0-9A-Fa-f]{6}$", color) else "#6B7280"})
+    return out
+
+
+def set_client_status(cid: int, status: str) -> None:
+    status = (status or "").strip()
+    with database.get_conn() as conn:
+        conn.execute("UPDATE crm_clients SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), cid))
 
 
 def _phone_match_sql(phone: str) -> tuple[str, tuple]:
@@ -471,10 +506,12 @@ def _phone_match_sql(phone: str) -> tuple[str, tuple]:
     return "phone LIKE ?", ("%" + phone[-9:],)
 
 
-def clients(q: str = "", limit: int = 500) -> list[dict]:
+def clients(q: str = "", limit: int = 500, status: str | None = None) -> list[dict]:
     with database.get_conn() as conn:
         rows = [_client_out(r) for r in conn.execute(
-            "SELECT * FROM crm_clients ORDER BY updated_at DESC, id DESC LIMIT ?", (5000 if q else limit,)).fetchall()]
+            "SELECT * FROM crm_clients ORDER BY updated_at DESC, id DESC LIMIT ?", (5000 if (q or status) else limit,)).fetchall()]
+    if status is not None:
+        rows = [c for c in rows if (c["status"] or "") == status][:limit]
     if q:
         ql, qd = q.lower().strip(), digits(q)
         rows = [c for c in rows if ql in (c["name"] or "").lower() or ql in (c["email"] or "").lower()
@@ -528,19 +565,21 @@ def save_client(cid: int | None, data: dict) -> dict:
     fld = data.get("fields") if isinstance(data.get("fields"), dict) else {}
     with database.get_conn() as conn:
         if cid:
+            cur = conn.execute("SELECT status FROM crm_clients WHERE id = ?", (cid,)).fetchone()
+            status = (data.get("status") if "status" in data else (cur["status"] if cur else "")) or ""
             conn.execute(
-                "UPDATE crm_clients SET name = ?, phone = ?, email = ?, source = ?, notes = ?, fields = ?, updated_at = ? WHERE id = ?",
+                "UPDATE crm_clients SET name = ?, phone = ?, email = ?, source = ?, notes = ?, fields = ?, status = ?, updated_at = ? WHERE id = ?",
                 (name, phone, (data.get("email") or "").strip(), (data.get("source") or "").strip(),
-                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), _now(), cid))
+                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), status.strip(), _now(), cid))
         else:
             if phone:
                 dup = conn.execute("SELECT id FROM crm_clients WHERE phone LIKE ?", ("%" + phone[-9:],)).fetchone()
                 if dup:
                     raise ValueError(f"Клиент с этим номером уже есть (#{dup['id']})")
             cid = conn.execute(
-                "INSERT INTO crm_clients (name, phone, email, source, notes, fields, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO crm_clients (name, phone, email, source, notes, fields, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (name or ("+" + phone), phone, (data.get("email") or "").strip(), (data.get("source") or "").strip(),
-                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), _now(), _now())).lastrowid
+                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), (data.get("status") or "").strip(), _now(), _now())).lastrowid
     return get_client(cid)
 
 
@@ -628,8 +667,19 @@ def deals(pipeline_id: int | None = None, client_id: int | None = None, q: str =
     with database.get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()
         cmap = {r["id"]: dict(r) for r in conn.execute("SELECT id, name, phone FROM crm_clients").fetchall()}
+        act: dict = {}
+        try:
+            for a in conn.execute("SELECT l.deal_id, COALESCE(SUM(c.unread), 0) AS unread, MAX(c.last_at) AS last_at, COUNT(c.id) AS chats "
+                                  "FROM crm_deal_chats l JOIN inbox_chats c ON c.id = l.chat_id GROUP BY l.deal_id").fetchall():
+                act[a["deal_id"]] = {"unread": a["unread"], "last_msg_at": a["last_at"], "chats": a["chats"]}
+        except Exception:  # noqa: BLE001 — amo tables not there yet
+            pass
     names = user_names()
-    out = [_deal_out(r, names, cmap) for r in rows]
+    out = []
+    for r in rows:
+        d = _deal_out(r, names, cmap)
+        d.update(act.get(d["id"]) or {"unread": 0, "last_msg_at": None, "chats": 0})
+        out.append(d)
     if q:
         ql, qd = q.lower(), digits(q)
         out = [d for d in out if ql in (d["title"] or "").lower() or ql in (d.get("client_name") or "").lower()

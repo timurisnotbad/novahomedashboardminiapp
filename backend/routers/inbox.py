@@ -55,6 +55,7 @@ class NewChatIn(BaseModel):
     phone: str
     name: str = ""
     text: str = ""
+    channel: str = "wa"
 
 
 class TemplateIn(BaseModel):
@@ -124,6 +125,65 @@ def patch_chat(chat_id: int, payload: ChatPatch, user: dict = Depends(inbox_user
     return c
 
 
+class BookingLinkIn(BaseModel):
+    booking_id: int
+
+
+class ClientPatch(BaseModel):
+    status: str | None = None
+
+
+@router.get("/chats/{chat_id}/bookings")
+def chat_bookings(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import crm_ext
+    try:
+        return crm_ext.chat_bookings(chat_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/chats/{chat_id}/bookings")
+def chat_link_booking(chat_id: int, payload: BookingLinkIn, user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import crm_ext
+    try:
+        crm_ext.link_chat(payload.booking_id, chat_id, user["name"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return inbox.get_chat(chat_id)
+
+
+@router.delete("/chats/{chat_id}/bookings/{booking_id}")
+def chat_unlink_booking(chat_id: int, booking_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import crm_ext
+    crm_ext.unlink_chat(booking_id, chat_id)
+    return inbox.get_chat(chat_id)
+
+
+@router.get("/bookings/search")
+def bookings_search(q: str = "", user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import crm_ext
+    return crm_ext.bookings_search(q)
+
+
+@router.get("/client-statuses")
+def client_statuses(user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import crm
+    return crm.client_statuses()
+
+
+@router.patch("/chats/{chat_id}/client")
+def patch_client(chat_id: int, payload: ClientPatch, user: dict = Depends(inbox_user)):  # noqa: B008
+    """Set the guest's status straight from the chat (creates the CRM card if needed)."""
+    from .. import crm, crm_amo
+    chat = inbox.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Чат не найден")
+    cid = chat.get("client_id") or crm_amo._client_for_chat(chat)  # noqa: SLF001
+    if payload.status is not None:
+        crm.set_client_status(cid, payload.status)
+    return inbox.get_chat(chat_id)
+
+
 @router.post("/chats/{chat_id}/send")
 def send(chat_id: int, payload: SendIn, user: dict = Depends(inbox_user)):  # noqa: B008
     try:
@@ -165,10 +225,23 @@ def retry(message_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
         _fail(exc)
 
 
+@router.get("/new/channels")
+def new_chat_channels(user: dict = Depends(inbox_user)):  # noqa: B008
+    return inbox.new_chat_channels()
+
+
+@router.get("/new/check")
+def new_chat_check(phone: str, channel: str = "wa", user: dict = Depends(inbox_user)):  # noqa: B008
+    try:
+        return inbox.check_contact(phone, channel)
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/new")
 def new_chat(payload: NewChatIn, user: dict = Depends(inbox_user)):  # noqa: B008
     try:
-        c = inbox.start_chat(payload.phone, payload.name)
+        c = inbox.start_chat(payload.phone, payload.name, payload.channel)
         if payload.text.strip():
             inbox.send(c["id"], user["name"], payload.text[:4000])
         return inbox.get_chat(c["id"])
