@@ -50,11 +50,12 @@
   function modal(html, wide) {
     $("modal-card").innerHTML = html;
     $("modal-card").classList.toggle("wide", !!wide);
+    $("modal-card").classList.remove("modal__card--deal");
     $("modal").classList.remove("hidden");
     const f = $("modal-card").querySelector("input, textarea, select");
     if (f) setTimeout(() => f.focus(), 50);
   }
-  function closeModal() { $("modal").classList.add("hidden"); }
+  function closeModal() { $("modal").classList.add("hidden"); $("modal-card").classList.remove("modal__card--deal"); }
   function val(id) { const el = $(id); return el ? el.value.trim() : ""; }
   function userOptions(selected) {
     return S.users.filter((u) => u.active || u.id === selected).map((u) => `<option value="${u.id}" ${u.id === selected ? "selected" : ""}>${esc(u.name)}</option>`).join("");
@@ -109,7 +110,12 @@
     const [name, arg] = h.split("/");
     const r = ROUTES[name] ? name : "home";
     S.route = r;
-    document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
+    const SETTINGS = ["auto", "channels", "integrations", "commands", "fields", "pipelines", "users"];
+    const navKey = SETTINGS.includes(r) ? "settings" : r;
+    document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === navKey));
+    const sub = $("subnav");
+    sub.classList.toggle("hidden", navKey !== "settings");
+    if (navKey === "settings") sub.querySelectorAll("a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
     document.querySelector(".side").classList.remove("open");
     const main = $("main");
     main.classList.remove("hidden");
@@ -123,42 +129,41 @@
   $("modal").addEventListener("click", (e) => { if (e.target.closest("[data-close]")) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal(); });
 
-  // ---- home -----------------------------------------------------------------
+  ROUTES.settings = () => { location.hash = "#auto"; };
+
+  // ---- Рабочий стол: what needs attention now ----------------------------------
   ROUTES.home = async () => {
     const d = await get("/home");
     const open = d.stages.filter((s) => s.kind === "open");
+    const now = new Date().toISOString().slice(0, 16);
+    const task = (t) => `<div class="task ${t.status}" data-id="${t.id}"><input type="checkbox" data-done="${t.id}" /><div class="task__body"><div class="task__title">${esc(t.title)}</div><div class="task__meta">${t.due ? `<span class="${t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}${t.deal_id ? `<a href="#" data-deal="${t.deal_id}">сделка</a>` : ""}${t.client_id ? `<a href="#clients/${t.client_id}">${esc(t.client_name || "контакт")}</a>` : ""}</div></div></div>`;
     $("main").innerHTML = `
-      <div class="page-head"><h1>Главная</h1><span class="muted">${esc(dLong(d.date))}</span></div>
+      <div class="page-head"><h1>Рабочий стол</h1><span class="muted">${esc(dLong(d.date))}</span></div>
       <div class="grid c4" style="margin-bottom:16px">
-        <div class="stat" onclick="location.hash='#bookings'"><b>${d.arrivals}</b><span>заездов сегодня</span></div>
-        <div class="stat" onclick="location.hash='#bookings'"><b>${d.departures}</b><span>выездов сегодня · живут ${d.staying}</span></div>
+        <div class="stat ${d.unsorted ? "warn" : ""}" onclick="location.hash='#deals'"><b>${d.unsorted}</b><span>неразобранных чатов</span></div>
         <div class="stat" onclick="location.hash='#messages'"><b>${d.unread}</b><span>непрочитанных сообщений</span></div>
-        <div class="stat ${d.overdue_tasks ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач${d.overdue_tasks ? " · просрочено " + d.overdue_tasks : ""}</span></div>
+        <div class="stat ${d.my_overdue ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач${d.my_overdue ? " · просрочено " + d.my_overdue : ""}</span></div>
+        <div class="stat" onclick="location.hash='#bookings'"><b>${d.arrivals} / ${d.departures}</b><span>заезды / выезды сегодня · живут ${d.staying}</span></div>
       </div>
       <div class="grid c2">
-        <div class="card"><div class="card__title">Воронка</div>
-          ${open.length ? open.map((s) => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--sep)">
-            <span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)} <small class="muted">${esc(s.pipeline)}</small></span>
-            <span><b>${s.n}</b> ${s.amount ? `<span class="muted small">· ${money(s.amount)}</span>` : ""}</span></div>`).join("") : `<div class="muted">Сделок пока нет</div>`}
-          <div style="margin-top:10px"><a href="#deals">Открыть сделки →</a></div>
-        </div>
-        <div class="card"><div class="card__title">Задачи на сегодня</div>
-          ${d.today_tasks.length ? d.today_tasks.map((t) => `<div style="padding:6px 0;border-bottom:1px solid var(--sep)">${esc(t.title)}<div class="muted small">${esc(dtShort(t.due))} · ${esc(t.assignee_name || "")}</div></div>`).join("") : `<div class="muted">На сегодня задач нет</div>`}
-          <div style="margin-top:10px"><a href="#tasks">Все задачи →</a></div>
-        </div>
-        <div class="card"><div class="card__title">Последние чаты</div>
-          ${d.recent_chats.length ? d.recent_chats.map((c) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--sep)">
-            <a href="#messages/${c.id}" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style="color:var(--label)">${esc(c.name || c.push_name || "+" + c.phone)}</b> <span class="muted small">${esc(c.last_text || "")}</span></a>
-            ${c.unread ? `<b class="pill">${c.unread}</b>` : ""}</div>`).join("") : `<div class="muted">WhatsApp ${d.wa === "connected" ? "подключён, сообщений пока нет" : "не подключён — раздел «Каналы»"}</div>`}
-        </div>
-        <div class="card"><div class="card__title">Система</div>
-          <dl class="kv"><dt>WhatsApp</dt><dd class="${d.wa === "connected" ? "ok" : "bad"}">${d.wa === "connected" ? "подключён" : d.wa === "offline" ? "мост не запущен" : d.wa || "—"}</dd>
-          <dt>RealtyCalendar</dt><dd>${d.last_sync ? "синхронизация " + esc(dtShort(d.last_sync)) : "ещё не синхронизировано"}</dd>
-          <dt>Клиентов</dt><dd>${d.clients}</dd></dl>
-          <div style="margin-top:10px"><a href="#revenue">Выручка по каналам →</a> · <a href="#auto">Автосообщения →</a></div>
+        <div class="card"><div class="card__title">Мои задачи</div>${d.my_tasks.length ? d.my_tasks.map(task).join("") : `<div class="muted">Задач нет</div>`}<div style="margin-top:10px"><a href="#tasks">Все задачи →</a></div></div>
+        <div>
+          <div class="card"><div class="card__title">Ждут ответа</div>${d.unanswered.length ? d.unanswered.map((c) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--sep)"><a href="#messages/${c.id}" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><i class="ch chat-pill" style="padding:0;background:none"><span class="ch ${esc(c.channel)}"></span></i> <b style="color:var(--label)">${esc(c.title)}</b> <span class="muted small">${esc(c.last_text || "")}</span></a><span class="muted small" style="flex:none">${esc(shortAgo(c.last_at))}</span></div>`).join("") : `<div class="muted">Все чаты отвечены 👍</div>`}</div>
+          <div class="card"><div class="card__title">Воронка</div>${open.map((s) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--sep)"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><span><b>${s.n}</b>${s.amount ? ` <span class="muted small">· ${money(s.amount)}</span>` : ""}</span></div>`).join("")}${d.no_task_deals ? `<div class="small warn" style="margin-top:8px">⚠ Сделок без задачи: ${d.no_task_deals} — по каждой открытой сделке должен быть следующий шаг</div>` : ""}<div style="margin-top:10px"><a href="#deals">Открыть сделки →</a></div></div>
+          <div class="card small muted">WhatsApp: <span class="${d.wa === "connected" ? "ok" : "bad"}">${d.wa === "connected" ? "подключён" : d.wa === "offline" ? "мост не запущен" : d.wa || "—"}</span> · RealtyCalendar: ${d.last_sync ? esc(dtShort(d.last_sync)) : "—"} · <a href="#revenue">выручка</a> · <a href="#settings">настройки</a></div>
         </div>
       </div>`;
+    onMain(async (e) => {
+      const dn = e.target.closest("[data-done]"); if (dn) { try { await patch(`/tasks/${dn.dataset.done}`, { status: "done" }); toast("Выполнено"); navigate(); } catch (err) { toast(err.message); } return; }
+      const dl = e.target.closest("[data-deal]"); if (dl) { e.preventDefault(); openDeal(parseInt(dl.dataset.deal, 10)); }
+    });
   };
+  function shortAgo(iso) {
+    if (!iso) return "";
+    const m = Math.round((Date.now() - new Date(iso)) / 60000);
+    return m < 1 ? "сейчас" : m < 60 ? m + " мин" : m < 1440 ? Math.round(m / 60) + " ч" : Math.round(m / 1440) + " дн";
+  }
+
 
   // ---- messages (embedded inbox) ----------------------------------------
   // the chats iframe is created once and kept alive (no reload, no lost
@@ -169,7 +174,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=36&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=37&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -179,28 +184,35 @@
     inboxFrame.classList.remove("hidden");
   };
 
-  // ---- deals ------------------------------------------------------------------
+  // ---- Сделки: kanban with «Неразобранное» (amoCRM style) ------------------------
+  const CH_DOT = (c) => `<span class="ch ${esc(c)}" title="${esc({ wa: "WhatsApp", wac: "WhatsApp", ig: "Instagram", tg: "Telegram", tgbot: "Telegram-бот" }[c] || c)}"></span>`;
   ROUTES.deals = async () => {
     S.pipelines = await get("/pipelines");
     const pid = parseInt(sessionStorage.getItem("crm_pipeline") || S.pipelines[0].id, 10);
     const p = S.pipelines.find((x) => x.id === pid) || S.pipelines[0];
     sessionStorage.setItem("crm_pipeline", p.id);
     const q = S.cache.dealQ || "";
-    const deals = await get(`/deals?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
+    const k = await get(`/kanban?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
+    const deals = k.deals;
+    const card = (d) => `<div class="kcard ${d.unread ? "has-unread" : ""}" draggable="true" data-deal="${d.id}">
+      <b>${esc(d.title)}</b>
+      <div class="muted small">${esc(d.client_name || "")}${d.apartment ? " · " + esc(d.apartment) : ""}${d.checkin ? " · " + esc(dShort(d.checkin)) + (d.checkout ? "–" + esc(dShort(d.checkout)) : "") : ""}</div>
+      ${d.last_message ? `<div class="kcard__msg">${d.channels.map(CH_DOT).join("")}${d.last_message.dir === "out" ? "↗ " : ""}${esc((d.last_message.text || "").slice(0, 60))}</div>` : ""}
+      <div class="meta"><span>${d.task_state ? `<i class="tdot ${d.task_state}" title="Задача: ${esc(dtShort(d.task_due))}"></i>` : `<i class="tdot none" title="Нет задачи"></i>`}${esc(d.owner_name || "")}${d.unread ? ` <b class="pill">${d.unread}</b>` : ""}</span><span class="amt">${money(d.amount)}</span></div></div>`;
+    const unsortedCol = q ? "" : `<div class="kcol kcol--unsorted"><div class="kcol__head"><span>Неразобранное</span><small>${k.unsorted.length}</small></div>
+      ${k.unsorted.map((c) => `<div class="kcard ucard" data-uchat="${c.id}"><b>${CH_DOT(c.channel)} ${esc(c.title)}</b><div class="muted small">${esc(c.channel_name)}${c.phone ? " · +" + esc(c.phone) : ""}${c.booking ? " · " + esc(c.booking.apartment) : ""}</div><div class="kcard__msg">${esc((c.last_text || "").slice(0, 70))}</div>
+        <div class="meta"><span class="muted">${esc(shortAgo(c.last_at))}</span><span><button class="btn sm" data-reject="${c.id}">✕</button> <button class="btn sm primary" data-accept="${c.id}">Принять</button></span></div></div>`).join("") || `<div class="muted small" style="padding:6px">Новых обращений нет</div>`}</div>`;
     $("main").innerHTML = `
-      <div class="page-head"><h1>Сделки</h1><button class="btn primary" id="deal-add">Новая сделка</button></div>
+      <div class="page-head"><h1>Сделки</h1><button class="btn primary" id="deal-add">+ Сделка</button></div>
       <div class="toolbar">
         ${S.pipelines.length > 1 ? `<select class="field" id="pipe-sel" style="width:auto">${S.pipelines.map((x) => `<option value="${x.id}" ${x.id === p.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : ""}
-        <input class="field grow" id="deal-q" placeholder="Поиск: название, клиент, объект" value="${esc(q)}" />
-        <span class="muted small">${plural(deals.length, "сделка", "сделки", "сделок")}</span>
+        <input class="field grow" id="deal-q" placeholder="Поиск: название, клиент, телефон, объект" value="${esc(q)}" />
+        <span class="muted small">${plural(deals.length, "сделка", "сделки", "сделок")} · ${money(deals.reduce((a, d) => a + (Number(d.amount) || 0), 0))}</span>
       </div>
-      <div class="kanban" id="kanban">${p.stages.map((s) => {
+      <div class="kanban" id="kanban">${unsortedCol}${p.stages.map((s) => {
         const items = deals.filter((d) => d.stage_id === s.id);
         const sum = items.reduce((a, d) => a + (Number(d.amount) || 0), 0);
-        return `<div class="kcol" data-stage="${s.id}"><div class="kcol__head"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><small>${items.length}${sum ? " · " + money(sum) : ""}</small></div>
-          ${items.map((d) => `<div class="kcard" draggable="true" data-deal="${d.id}"><b>${esc(d.title)}</b>
-            <div class="muted small">${esc(d.client_name || "")}${d.apartment ? " · " + esc(d.apartment) : ""}${d.checkin ? " · " + esc(dShort(d.checkin)) + (d.checkout ? "–" + esc(dShort(d.checkout)) : "") : ""}</div>
-            <div class="meta"><span>${esc(d.owner_name || "")}</span><span class="amt">${money(d.amount)}</span></div></div>`).join("")}</div>`;
+        return `<div class="kcol" data-stage="${s.id}"><div class="kcol__head"><span><i class="kcol__dot" style="background:${esc(s.color || "#999")}"></i>${esc(s.name)}</span><small>${items.length}${sum ? " · " + money(sum) : ""}</small></div>${items.map(card).join("")}</div>`;
       }).join("")}</div>`;
     keepFocus("deal-q");
     const sel = $("pipe-sel");
@@ -209,13 +221,21 @@
     $("deal-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { S.cache.dealQ = e.target.value.trim(); navigate(); }, 300); });
     $("deal-add").addEventListener("click", () => dealForm(null, { pipeline_id: p.id }));
     const kb = $("kanban");
-    kb.addEventListener("click", (e) => { const c = e.target.closest("[data-deal]"); if (c) openDeal(parseInt(c.dataset.deal, 10)); });
+    kb.addEventListener("click", async (e) => {
+      const ac = e.target.closest("[data-accept]");
+      if (ac) { ac.disabled = true; try { const d = await post(`/unsorted/${ac.dataset.accept}/accept`, { pipeline_id: p.id }); toast("Сделка создана"); navigate(); openDeal(d.id); } catch (err) { toast(err.message); ac.disabled = false; } return; }
+      const rj = e.target.closest("[data-reject]");
+      if (rj) { if (!confirm("Убрать из неразобранного? Чат останется в «Чатах».")) return; await post(`/unsorted/${rj.dataset.reject}/reject`); navigate(); return; }
+      const uc = e.target.closest("[data-uchat]");
+      if (uc) { location.hash = `#messages/${uc.dataset.uchat}`; return; }
+      const c = e.target.closest("[data-deal]"); if (c) openDeal(parseInt(c.dataset.deal, 10));
+    });
     let dragId = null;
     kb.addEventListener("dragstart", (e) => { const c = e.target.closest("[data-deal]"); if (c) { dragId = c.dataset.deal; e.dataTransfer.effectAllowed = "move"; } });
-    kb.addEventListener("dragover", (e) => { const col = e.target.closest(".kcol"); if (col && dragId) { e.preventDefault(); col.classList.add("over"); } });
+    kb.addEventListener("dragover", (e) => { const col = e.target.closest(".kcol[data-stage]"); if (col && dragId) { e.preventDefault(); col.classList.add("over"); } });
     kb.addEventListener("dragleave", (e) => { const col = e.target.closest(".kcol"); if (col) col.classList.remove("over"); });
     kb.addEventListener("drop", async (e) => {
-      const col = e.target.closest(".kcol");
+      const col = e.target.closest(".kcol[data-stage]");
       if (!col || !dragId) return;
       e.preventDefault();
       col.classList.remove("over");
@@ -224,33 +244,83 @@
     });
   };
 
+  // ---- Карточка сделки: fields left, timeline + composer right -----------------------
   async function openDeal(id) {
-    const d = await get(`/deals/${id}`);
+    let d;
+    try { d = await get(`/deals/${id}`); } catch (err) { toast(err.message); return; }
+    S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines");
     const p = S.pipelines.find((x) => x.id === d.pipeline_id) || S.pipelines[0];
-    modal(`<h2>${esc(d.title)}</h2>
-      <div class="muted small" style="margin-bottom:12px">${esc(d.owner_name || "")} · создана ${esc(dtShort(d.created_at))}</div>
-      <dl class="kv">
-        <dt>Этап</dt><dd><select class="field" id="d-stage" style="width:auto">${p.stages.map((s) => `<option value="${s.id}" ${s.id === d.stage_id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></dd>
-        <dt>Клиент</dt><dd>${d.client_id ? `<a href="#clients/${d.client_id}" data-close>${esc(d.client_name)}</a>${d.client_phone ? " · +" + esc(d.client_phone) : ""}` : "—"}</dd>
-        <dt>Объект</dt><dd>${esc(d.apartment || "—")}</dd>
-        <dt>Даты</dt><dd>${d.checkin ? esc(dShort(d.checkin)) + " – " + esc(dShort(d.checkout)) + (nights(d.checkin, d.checkout) ? " · " + plural(nights(d.checkin, d.checkout), "ночь", "ночи", "ночей") : "") : "—"}${d.guests ? " · гостей " + d.guests : ""}</dd>
-        <dt>Сумма</dt><dd>${money(d.amount) || "—"}</dd>
-        ${d.booking_id ? `<dt>Бронь</dt><dd>RealtyCalendar #${d.booking_id}</dd>` : ""}
-        ${d.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(d.notes)}</dd>` : ""}
-      </dl>
-      <div class="card" style="margin-top:14px;padding:12px 14px"><div class="card__title">Задачи</div>
-        ${d.tasks.length ? d.tasks.map((t) => `<div class="small ${t.status === "done" ? "muted" : ""}">${t.status === "done" ? "✓ " : "○ "}${esc(t.title)} <span class="muted">${esc(dtShort(t.due))}</span></div>`).join("") : `<div class="muted small">Нет задач</div>`}
-        <button class="btn sm" id="d-task" style="margin-top:8px">+ Задача</button></div>
-      <div class="row-actions"><button class="btn danger" id="d-del">Удалить</button><span style="flex:1"></span>
-        ${d.client_id ? `<button class="btn" id="d-chat">Написать в WhatsApp</button>` : ""}
-        <button class="btn" id="d-edit">Изменить</button><button class="btn primary" data-close>Закрыть</button></div>`);
-    $("d-stage").addEventListener("change", async (e) => { try { await patch(`/deals/${id}`, { stage_id: parseInt(e.target.value, 10) }); toast("Этап изменён"); if (S.route === "deals") navigate(); } catch (err) { toast(err.message); } });
+    const stage = p.stages.find((s) => s.id === d.stage_id);
+    const c = d.client;
+    const now = new Date().toISOString().slice(0, 16);
+    const item = (x) => {
+      if (x.type === "message") {
+        const out = x.direction === "out";
+        const body = x.media_url ? (x.kind === "image" ? `<img src="${esc(x.media_url)}" style="max-width:220px;border-radius:8px;display:block;margin-bottom:4px" />` : `<a href="${esc(x.media_url)}" target="_blank">📎 ${esc(x.file_name || x.kind)}</a> `) : "";
+        return `<div class="tl ${out ? "out" : "in"}"><div class="tl__b"><div class="tl__who">${CH_DOT(x.channel_code)} ${out ? esc(x.author || "") : esc(x.chat_title || "")}</div>${body}<div class="tl__t">${esc(x.text || (x.media_url ? "" : x.kind))}</div><div class="tl__meta">${esc(dtShort(x.at))}${out && x.status ? " · " + ({ pending: "⏳", sent: "✓", delivered: "✓✓", read: "✓✓ прочитано", failed: "✕ не отправлено" }[x.status] || "") : ""}</div></div></div>`;
+      }
+      if (x.type === "note") return `<div class="tl note"><div class="tl__b"><div class="tl__who">📝 ${esc(x.author || "")} <button class="tl__del" data-delnote="${x.id}" title="Удалить">✕</button></div><div class="tl__t">${esc(x.text)}</div><div class="tl__meta">${esc(dtShort(x.at))}</div></div></div>`;
+      if (x.type === "task") return `<div class="tl task ${x.status}"><div class="tl__b"><label class="tl__who"><input type="checkbox" data-tdone="${x.id}" ${x.status === "done" ? "checked" : ""} /> Задача · ${esc(x.assignee || "")}</label><div class="tl__t">${esc(x.text)}</div><div class="tl__meta ${x.status === "open" && x.due && x.due < now ? "bad" : ""}">${x.due ? "до " + esc(dtShort(x.due)) : ""}${x.status === "done" ? " · выполнена" : ""}</div></div></div>`;
+      return `<div class="tl ev"><span>${esc(dtShort(x.at))} · ${esc(x.text)}</span></div>`;
+    };
+    const openTasks = d.timeline.filter((x) => x.type === "task" && x.status === "open");
+    modal(`<div class="deal">
+      <div class="deal__side">
+        <h2 style="margin-bottom:6px">${esc(d.title)}</h2>
+        <select class="field" id="d-stage" style="margin-bottom:10px;border-left:4px solid ${esc(stage && stage.color || "#999")}">${p.stages.map((s) => `<option value="${s.id}" ${s.id === d.stage_id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+        <dl class="kv kv--tight">
+          <dt>Сумма</dt><dd><b>${money(d.amount) || "—"}</b></dd>
+          <dt>Объект</dt><dd>${esc(d.apartment || "—")}</dd>
+          <dt>Даты</dt><dd>${d.checkin ? esc(dShort(d.checkin)) + " – " + esc(dShort(d.checkout)) + (nights(d.checkin, d.checkout) ? " · " + plural(nights(d.checkin, d.checkout), "ночь", "ночи", "ночей") : "") : "—"}</dd>
+          ${d.guests ? `<dt>Гостей</dt><dd>${d.guests}</dd>` : ""}
+          <dt>Ответственный</dt><dd>${esc(d.owner_name || "—")}</dd>
+          ${d.booking ? `<dt>Бронь RC</dt><dd><a href="#" data-bopen="${d.booking.id}">${esc(d.booking.source)} · ${money(d.booking.amount)}${Number(d.booking.debt) > 0 ? ` · <span class="bad">долг ${money(d.booking.debt)}</span>` : ""}</a></dd>` : ""}
+        </dl>
+        <button class="btn sm" id="d-edit" style="margin-top:6px">Изменить поля</button>
+        <div class="card__title" style="margin-top:16px">Контакт</div>
+        ${c ? `<div><b>${esc(c.name)}</b></div>${c.phone ? `<div><a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a></div>` : ""}${c.email ? `<div class="small">${esc(c.email)}</div>` : ""}${c.source ? `<div class="muted small">${esc(c.source)}</div>` : ""}${c.notes ? `<div class="small" style="margin-top:4px;white-space:pre-wrap">📝 ${esc(c.notes)}</div>` : ""}<div style="margin-top:4px"><a href="#clients/${c.id}" data-close class="small">Открыть контакт →</a></div>` : `<div class="muted small">Контакт не указан</div>`}
+        <div class="card__title" style="margin-top:16px">Чаты</div>
+        <div id="d-chats">${d.chats.map((ch) => `<span class="chat-pill">${CH_DOT(ch.channel)}<a href="#messages/${ch.id}" data-close>${esc(ch.title)}</a><button data-unlinkchat="${ch.id}" title="Отвязать">✕</button></span>`).join("") || `<div class="muted small">Нет чатов</div>`}</div>
+        <div style="display:flex;gap:6px;margin-top:6px"><input class="field" id="d-find" placeholder="Привязать чат" /><button class="btn sm" id="d-find-go">Найти</button></div><div id="d-found"></div>
+        ${c && c.phone && !d.chats.length ? `<button class="btn sm" id="d-wa" style="margin-top:6px">Написать в WhatsApp</button>` : ""}
+        <div class="row-actions" style="justify-content:flex-start;margin-top:18px"><button class="btn sm danger" id="d-del">Удалить сделку</button></div>
+      </div>
+      <div class="deal__main">
+        <div class="deal__tl" id="d-tl">${d.timeline.length ? d.timeline.map(item).join("") : `<div class="muted" style="text-align:center;padding:30px">Пока пусто — напишите гостю, добавьте примечание или задачу</div>`}</div>
+        <div class="composer">
+          <div class="composer__tabs"><button class="is-on" data-ct="chat">Чат</button><button data-ct="note">Примечание</button><button data-ct="task">Задача</button>${openTasks.length ? "" : `<span class="warn small" style="margin-left:auto">нет открытой задачи</span>`}</div>
+          <div data-cp="chat"><div style="display:flex;gap:6px;margin-bottom:6px"><select class="field" id="d-to" style="width:auto">${d.chats.map((ch) => `<option value="${ch.id}">${esc(ch.channel_name)} · ${esc(ch.title)}</option>`).join("") || `<option value="">— привяжите чат —</option>`}</select><select class="field" id="d-tpl" style="width:auto"><option value="">Шаблон…</option></select></div>
+            <textarea class="field" id="d-msg" rows="2" placeholder="Сообщение гостю… ({имя} {объект} {заезд} {выезд})"></textarea><div class="composer__row"><button class="btn primary sm" id="d-send">Отправить</button></div></div>
+          <div data-cp="note" class="hidden"><textarea class="field" id="d-note" rows="2" placeholder="Примечание для команды (гость не видит)"></textarea><div class="composer__row"><button class="btn primary sm" id="d-note-go">Добавить</button></div></div>
+          <div data-cp="task" class="hidden"><input class="field" id="d-task" placeholder="Что сделать, например «Отправить адрес и код»" /><div class="composer__row"><input class="field" id="d-task-due" type="datetime-local" style="width:auto" /><select class="field" id="d-task-who" style="width:auto">${userOptions(S.me.id)}</select><button class="btn primary sm" id="d-task-go">Поставить</button></div></div>
+        </div>
+      </div></div>`, true);
+    $("modal-card").classList.add("modal__card--deal");
+    const tl = $("d-tl"); tl.scrollTop = tl.scrollHeight;
+    const refresh = () => openDeal(id);
+    $("d-stage").addEventListener("change", async (e) => { try { await patch(`/deals/${id}`, { stage_id: parseInt(e.target.value, 10) }); toast("Этап изменён"); if (S.route === "deals") navigate(); refresh(); } catch (err) { toast(err.message); } });
     $("d-edit").addEventListener("click", () => dealForm(d));
-    $("d-task").addEventListener("click", () => taskForm({ deal_id: d.id, client_id: d.client_id, title: "" }, () => openDeal(id)));
     $("d-del").addEventListener("click", async () => { if (!confirm("Удалить сделку?")) return; await del(`/deals/${id}`); closeModal(); navigate(); });
-    const ch = $("d-chat");
-    if (ch) ch.addEventListener("click", () => openClientChat(d.client_id));
+    const wa = $("d-wa"); if (wa) wa.addEventListener("click", async () => { try { const r = await post(`/clients/${c.id}/chat`); await post(`/deals/${id}/chats`, { chat_id: r.chat_id }); refresh(); } catch (err) { toast(err.message); } });
+    const fillVars = (t) => { const dd = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = ((c && c.name) || "").replace(/^\+?\d+$/, "").split(" ")[0]; return t.replace(/\{(имя|объект|заезд|выезд)\}/g, (m, k) => ({ "имя": nm, "объект": d.apartment || "", "заезд": dd(d.checkin), "выезд": dd(d.checkout) }[k] || m)); };
+    get("/commands").then((list) => { $("d-tpl").innerHTML += list.map((t) => `<option value="${t.id}">${esc(t.command ? "/" + t.command + " " : "")}${esc(t.title)}</option>`).join(""); $("d-tpl").dataset.list = JSON.stringify(list); }).catch(() => {});
+    $("d-tpl").addEventListener("change", (e) => { const t = JSON.parse(e.target.dataset.list || "[]").find((x) => String(x.id) === e.target.value); if (t) { $("d-msg").value = fillVars(t.text); $("d-msg").focus(); } });
+    $("modal-card").querySelectorAll("[data-ct]").forEach((b) => b.addEventListener("click", () => { $("modal-card").querySelectorAll("[data-ct]").forEach((x) => x.classList.toggle("is-on", x === b)); $("modal-card").querySelectorAll("[data-cp]").forEach((x) => x.classList.toggle("hidden", x.dataset.cp !== b.dataset.ct)); const f = $("modal-card").querySelector(`[data-cp="${b.dataset.ct}"] .field`); if (f) f.focus(); }));
+    $("d-send").addEventListener("click", async (e) => { const to = $("d-to").value, text = $("d-msg").value.trim(); if (!to) { toast("Сначала привяжите чат"); return; } if (!text) return; e.target.disabled = true; try { await post(`/deals/${id}/send`, { chat_id: parseInt(to, 10), text }); refresh(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+    $("d-msg").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("d-send").click(); } });
+    $("d-note-go").addEventListener("click", async () => { const text = $("d-note").value.trim(); if (!text) return; try { await post(`/deals/${id}/notes`, { text }); refresh(); } catch (err) { toast(err.message); } });
+    $("d-task-go").addEventListener("click", async () => { const title = $("d-task").value.trim(); if (!title) { toast("Введите задачу"); return; } try { await post("/tasks", { title, due: $("d-task-due").value || null, assignee_uid: parseInt($("d-task-who").value, 10), deal_id: id, client_id: d.client_id }); refresh(); } catch (err) { toast(err.message); } });
+    const find = async () => { const q = $("d-find").value.trim(); if (!q) return; const list = await get(`/chats/search?q=${encodeURIComponent(q)}`); $("d-found").innerHTML = list.filter((x) => !d.chats.some((y) => y.id === x.id)).map((x) => `<div class="small" style="padding:3px 0">${CH_DOT(x.channel)} ${esc(x.title)} <span class="muted">${esc((x.last_text || "").slice(0, 30))}</span> <button class="btn sm" data-linkchat="${x.id}">Привязать</button></div>`).join("") || `<div class="muted small">Не найдено</div>`; };
+    $("d-find-go").addEventListener("click", find); $("d-find").addEventListener("keydown", (e) => { if (e.key === "Enter") find(); });
+    $("modal-card").addEventListener("click", async (e) => {
+      const l = e.target.closest("[data-linkchat]"); if (l) { await post(`/deals/${id}/chats`, { chat_id: parseInt(l.dataset.linkchat, 10) }); refresh(); return; }
+      const u = e.target.closest("[data-unlinkchat]"); if (u) { await del(`/deals/${id}/chats/${u.dataset.unlinkchat}`); refresh(); return; }
+      const dn = e.target.closest("[data-delnote]"); if (dn && confirm("Удалить примечание?")) { await del(`/notes/${dn.dataset.delnote}`); refresh(); return; }
+      const td = e.target.closest("[data-tdone]"); if (td) { await patch(`/tasks/${td.dataset.tdone}`, { status: td.checked ? "done" : "open" }); refresh(); return; }
+      const bo = e.target.closest("[data-bopen]"); if (bo) { e.preventDefault(); openBooking(parseInt(bo.dataset.bopen, 10)); }
+    });
   }
+
 
   async function dealForm(d, defaults) {
     d = d || Object.assign({ title: "", amount: "", apartment: "", checkin: "", checkout: "", guests: "", notes: "", client_id: null }, defaults || {});
@@ -276,7 +346,8 @@
       try {
         const r = d.id ? await patch(`/deals/${d.id}`, body) : await post("/deals", body);
         closeModal(); toast("Сохранено");
-        if (S.route === "deals") navigate(); else openDeal(r.id);
+        if (S.route === "deals") navigate();
+        openDeal(r.id);
       } catch (err) { toast(err.message); }
     });
   }

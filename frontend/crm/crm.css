@@ -42,7 +42,41 @@ h3 { font-size:16px; font-weight:700; }
 .side__me-mail { margin-bottom:6px; word-break:break-all; }
 .side__burger { display:none; }
 body:not(.is-admin) .admin-only { display:none !important; }
+.mainwrap { flex:1; min-width:0; display:flex; flex-direction:column; }
 .main { flex:1; min-width:0; padding:28px 36px 60px; }
+.subnav { display:flex; gap:4px; padding:12px 36px 0; flex-wrap:wrap; border-bottom:1px solid var(--sep); background:var(--card); }
+.subnav a { padding:8px 12px; color:var(--label-2); font-weight:500; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.subnav a.is-on { color:var(--blue-text); border-bottom-color:var(--blue); }
+.kcol--unsorted { background:#FFF4E5; }
+.kcard.has-unread { border-color:var(--blue); }
+.kcard__msg { font-size:12px; color:var(--label-2); margin:3px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; gap:4px; align-items:center; }
+.kcard .ch, .tl__who .ch, .chat-pill .ch { display:inline-block; width:9px; height:9px; border-radius:50%; background:#25D366; flex:none; }
+.ch.ig { background:linear-gradient(45deg,#F77737,#D62976,#962FBF) !important; } .ch.tg, .ch.tgbot { background:#2AABEE !important; }
+.tdot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:-1px; }
+.tdot.overdue { background:var(--red); } .tdot.today { background:var(--green); } .tdot.later { background:#D1D5DB; } .tdot.none { background:transparent; border:1px solid #D1D5DB; }
+.ucard .meta { margin-top:6px; }
+.modal__card--deal { width:min(1100px, 100%); padding:0; overflow:hidden; }
+.deal { display:grid; grid-template-columns:320px 1fr; height:min(760px, calc(100vh - 40px)); }
+.deal__side { padding:20px; border-right:1px solid var(--sep); overflow-y:auto; background:#FAFAFB; }
+.deal__main { display:flex; flex-direction:column; min-width:0; }
+.deal__tl { flex:1; overflow-y:auto; padding:16px 20px; background:#F3F4F6; display:flex; flex-direction:column; gap:8px; }
+.kv--tight { grid-template-columns:120px 1fr; font-size:14px; }
+.tl { max-width:80%; align-self:flex-start; }
+.tl.out { align-self:flex-end; } .tl.out .tl__b { background:#DCFCE7; }
+.tl.note { align-self:stretch; max-width:none; } .tl.note .tl__b { background:#FEF9C3; }
+.tl.task { align-self:stretch; max-width:none; } .tl.task .tl__b { background:#fff; border:1px dashed #CBD5E1; } .tl.task.done .tl__t { text-decoration:line-through; color:var(--label-2); }
+.tl.ev { align-self:center; font-size:12px; color:var(--label-2); }
+.tl__b { background:#fff; border-radius:10px; padding:8px 12px; box-shadow:0 1px 1px rgba(0,0,0,.06); }
+.tl__who { font-size:12px; color:var(--label-2); margin-bottom:2px; display:flex; align-items:center; gap:6px; }
+.tl__del { margin-left:auto; color:var(--label-3); }
+.tl__t { white-space:pre-wrap; overflow-wrap:anywhere; }
+.tl__meta { font-size:11px; color:var(--label-2); margin-top:2px; }
+.composer { border-top:1px solid var(--sep); padding:10px 16px 14px; background:#fff; }
+.composer__tabs { display:flex; gap:4px; margin-bottom:8px; align-items:center; }
+.composer__tabs button { padding:5px 12px; border-radius:8px; font-weight:600; color:var(--label-2); }
+.composer__tabs button.is-on { background:var(--blue-soft); color:var(--blue-text); }
+.composer__row { display:flex; gap:6px; justify-content:flex-end; margin-top:6px; align-items:center; }
+@media (max-width: 900px) { .deal { grid-template-columns:1fr; height:auto; } .deal__side { border-right:none; border-bottom:1px solid var(--sep); } .deal__tl { max-height:50vh; } .subnav { padding:10px 16px 0; } }
 .page-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
 .page-sub { color:var(--label-2); margin-bottom:18px; }
 .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }

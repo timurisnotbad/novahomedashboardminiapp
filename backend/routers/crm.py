@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, crm_ext, database, inbox, meta_api, rc_sync, tg_channels
+from .. import config, crm, crm_amo, crm_ext, database, inbox, meta_api, rc_sync, tg_channels
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -138,7 +138,7 @@ def my_password(payload: PasswordIn, response: Response, user: dict = Depends(cu
 # ---- home ---------------------------------------------------------------------
 @router.get("/home")
 def home(user: dict = Depends(current_user)):  # noqa: B008
-    d = crm.home(user["id"])
+    d = crm_amo.home(user["id"])
     d["wa"] = inbox.bridge_status().get("status")
     return d
 
@@ -309,25 +309,120 @@ def client_chat(cid: int, user: dict = Depends(current_user)):  # noqa: B008
 
 
 # ---- deals --------------------------------------------------------------------
+class LinkIn(BaseModel):
+    chat_id: int
+
+
 @router.get("/deals")
 def get_deals(pipeline: int | None = None, q: str = "", user: dict = Depends(current_user)):  # noqa: B008
     return crm.deals(pipeline, q=q)
 
 
+@router.get("/kanban")
+def kanban(pipeline: int, q: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return crm_amo.kanban(pipeline, q)
+
+
 @router.post("/deals")
 def add_deal(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
     try:
-        return crm.save_deal(None, payload, user["id"])
+        d = crm.save_deal(None, payload, user["id"])
     except ValueError as exc:
         _bad(exc)
+    crm_amo.autolink(d["id"])
+    return d
 
 
 @router.get("/deals/{did}")
 def get_deal(did: int, user: dict = Depends(current_user)):  # noqa: B008
-    d = crm.get_deal(did)
+    d = crm_amo.deal_full(did)
     if not d:
         raise HTTPException(status_code=404, detail="Сделка не найдена")
+    for ch in d["chats"]:  # reading the timeline = reading the chats
+        if ch.get("unread"):
+            inbox.mark_read(ch["id"])
     return d
+
+
+class NoteIn(BaseModel):
+    text: str
+
+
+@router.post("/deals/{did}/notes")
+def deal_note(did: int, payload: NoteIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm_amo.add_note(payload.text, user["name"], deal_id=did)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/notes/{nid}")
+def del_note(nid: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.delete_note(nid)
+    return {"ok": True}
+
+
+@router.post("/clients/{cid}/notes")
+def client_note(cid: int, payload: NoteIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm_amo.add_note(payload.text, user["name"], client_id=cid)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/deals/{did}/chats")
+def deal_link_chat(did: int, payload: LinkIn, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.link_chat(did, payload.chat_id)
+    return {"ok": True}
+
+
+@router.delete("/deals/{did}/chats/{chat_id}")
+def deal_unlink_chat(did: int, chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.unlink_chat(did, chat_id)
+    return {"ok": True}
+
+
+class DealSendIn(BaseModel):
+    chat_id: int
+    text: str
+
+
+@router.post("/deals/{did}/send")
+def deal_send(did: int, payload: DealSendIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        m = inbox.send(payload.chat_id, user["name"], payload.text[:4000])
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    crm_amo.link_chat(did, payload.chat_id)
+    return m
+
+
+@router.get("/unsorted")
+def get_unsorted(user: dict = Depends(current_user)):  # noqa: B008
+    return crm_amo.unsorted()
+
+
+class AcceptIn(BaseModel):
+    pipeline_id: int | None = None
+
+
+@router.post("/unsorted/{chat_id}/accept")
+def accept_unsorted(chat_id: int, payload: AcceptIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm_amo.accept(chat_id, user["id"], payload.pipeline_id)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/unsorted/{chat_id}/reject")
+def reject_unsorted(chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.reject(chat_id)
+    return {"ok": True}
+
+
+@router.get("/chats/{chat_id}/deal")
+def chat_deal(chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    return {"deal_id": crm_amo.deal_for_chat(chat_id)}
 
 
 @router.patch("/deals/{did}")
@@ -347,9 +442,11 @@ def del_deal(did: int, user: dict = Depends(current_user)):  # noqa: B008
 @router.post("/bookings/{bid}/deal")
 def booking_deal(bid: int, user: dict = Depends(current_user)):  # noqa: B008
     try:
-        return crm.deal_for_booking(bid, user["id"])
+        d = crm.deal_for_booking(bid, user["id"])
     except ValueError as exc:
         _bad(exc)
+    crm_amo.autolink(d["id"])
+    return d
 
 
 # ---- tasks --------------------------------------------------------------------
@@ -387,10 +484,6 @@ def booking_card(bid: int, user: dict = Depends(current_user)):  # noqa: B008
     if not b:
         raise HTTPException(status_code=404, detail="Бронь не найдена")
     return b
-
-
-class LinkIn(BaseModel):
-    chat_id: int
 
 
 @router.post("/bookings/{bid}/chats")
