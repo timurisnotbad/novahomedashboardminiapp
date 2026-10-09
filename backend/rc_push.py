@@ -120,38 +120,79 @@ def _guess_value(name: str, raw: dict, cur: dict):
     return ""
 
 
-def _full_event(raw: dict, cur: dict, changes: dict) -> dict:
-    """The calendar's own event + our changes (+ the names its write schema is known to want)."""
-    ev = dict(raw)
-    ev.pop("id", None)
-    client = dict(raw.get("client") or {})
-    ev["client"] = client
+# fields RealtyCalendar returns but does not accept back (from its own schema errors)
+READ_ONLY = {"id", "is_external", "is_delete", "days_count", "price", "prepayment_progress", "base_arrival_time", "base_departure_time",
+             "prepayment", "debt", "short_notes", "file_names", "client_notes", "oki_doki_contract", "updated_at", "created_at",
+             "client_attributes", "prepaid_amount", "send_link_prepaid", "send_confirm_email", "destroy_attachments_ids",
+             "email", "additional_phone", "apartment_name", "client_name", "client_phone", "client_email", "client_phone2"}
+CLIENT_KEYS = ("fio", "phone", "email", "additional_phone")
+
+
+def _schema_body(raw: dict, cur: dict, changes: dict) -> dict:
+    ev = {k: v for k, v in raw.items() if k not in READ_ONLY}
+    client = {k: (raw.get("client") or {}).get(k) or "" for k in CLIENT_KEYS}
+    if not client["fio"]:
+        client["fio"] = cur.get("client_name") or ""
+    if not client["phone"]:
+        client["phone"] = cur.get("client_phone") or ""
     payload = _payload(changes)
     for k, v in payload.items():
         if k == "client":
-            client.update(v)
+            client.update({kk: vv for kk, vv in v.items() if kk in CLIENT_KEYS})
         elif k == "client_attributes":
             continue
+        elif k == "short_notes":
+            ev["notes"] = v
         else:
             ev[k] = v
-    if "fio" not in client and cur.get("client_name"):
-        client["fio"] = cur["client_name"]
-    if "phone" not in client and cur.get("client_phone"):
-        client["phone"] = cur["client_phone"]
-    ev["client_attributes"] = dict(client)
-    # names the write schema asked for before: send them from the start
-    for name in ("prepaid_amount", "begin_date", "end_date", "apartment_id", "status", "amount", "notes"):
-        if name not in ev:
-            ev[name] = _guess_value(name, raw, cur)
+    ev["client"] = client
+    ev.setdefault("notes", raw.get("short_notes") or cur.get("short_notes") or "")
+    ev.setdefault("apartment_id", raw.get("apartment_id", cur.get("apartment_id")))
+    ev.setdefault("status", raw.get("status") or cur.get("status") or "booked")
+    ev.setdefault("amount", raw.get("amount", cur.get("amount")) or 0)
+    ev.setdefault("begin_date", cur["begin_date"])
+    ev.setdefault("end_date", cur["end_date"])
     for k in ("begin_date", "end_date"):  # the calendar reads ISO but writes DD.MM.YYYY
         v = ev.get(k)
         if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}", v):
             ev[k] = _dmy(v)
-    if "prepayment" in payload:
-        ev["prepaid_amount"] = payload["prepayment"]
-    if "short_notes" in payload:
-        ev["notes"] = payload["short_notes"]
-    return ev
+    if not isinstance(ev.get("attachments"), list):
+        ev["attachments"] = []
+    prepaid = payload.get("prepayment", raw.get("prepayment", cur.get("prepayment")))
+    return {"prepaid_amount": float(prepaid or 0), "send_link_prepaid": False, "send_confirm_email": False,
+            "destroy_attachments_ids": [], "event_calendar": ev}
+
+
+def _apply_schema_errors(body: dict, text: str, raw: dict, cur: dict) -> bool:
+    """Read RC's schema complaints and fix the body: add required, drop extra, fix types."""
+    changed = False
+    def node(path: str):
+        obj = body
+        for part in path.strip("#/").split("/"):
+            if part:
+                obj = obj.setdefault(part, {}) if isinstance(obj, dict) else None
+                if obj is None:
+                    return None
+        return obj
+    for path, name in re.findall(r"property '([^']*)' did not contain a required property of '([A-Za-z0-9_]+)'", text):
+        obj = node(path)
+        if isinstance(obj, dict) and name not in obj:
+            obj[name] = [] if name.endswith("_ids") or name == "attachments" else (False if name.startswith("send_") else _guess_value(name, raw, cur))
+            changed = True
+    for path, names in re.findall(r"property '([^']*)' contains additional properties \[(.*?)\] outside", text):
+        obj = node(path)
+        if isinstance(obj, dict):
+            for name in re.findall(r"\\?\"([A-Za-z0-9_]+)\\?\"", names):
+                if name in obj:
+                    obj.pop(name)
+                    changed = True
+    for path, typ in re.findall(r"property '([^']*)' of type \w+ did not match the following type: (\w+)", text):
+        parent, _, leaf = path.rpartition("/")
+        obj = node(parent)
+        if isinstance(obj, dict) and leaf:
+            obj[leaf] = [] if typ == "array" else {} if typ == "object" else 0 if typ in ("number", "integer") else "" if typ == "string" else False
+            changed = True
+    return changed
 
 
 def _log(bid: int, changes: dict, status: str, http: int | None, response: str, who: str) -> None:
@@ -251,20 +292,20 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
         co = changes.get("checkout") or cur["end_date"]
         if co <= ci:
             raise RCError("Дата выезда должна быть позже заезда")
-    # RC validates the whole object on PUT («required property …»): send its own
-    # full event with our changes merged in, and fill whatever it still asks for.
+    # RC validates the request against a JSON schema: root = {prepaid_amount,
+    # send_link_prepaid, send_confirm_email, destroy_attachments_ids, event_calendar},
+    # event_calendar = the calendar's own fields minus read-only ones, client =
+    # {fio, phone, email, additional_phone}. Whatever it still complains about
+    # (missing / extra / wrong type) is fixed from its answer and retried.
     try:
         raw = rc_sync.fetch_raw_event(bid) or {}
     except Exception:  # noqa: BLE001
         raw = {}
-    ev = _full_event(raw, dict(cur), changes)
+    body = _schema_body(raw, dict(cur), changes)
     url = f"{config.RC_BASE_URL}/v2/event_calendars/{bid}"
     headers = {**rc_sync._headers(), "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"}  # noqa: SLF001
     resp = None
-    for attempt in range(4):
-        # RC's schema error names the root ('#/'): the fields go at the top level
-        # of the body; the nested form is kept for builds that read it there.
-        body = {**ev, "event_calendar": ev}
+    for attempt in range(5):
         try:
             resp = requests.put(url, json=body, headers=headers, timeout=25)
             if resp.status_code in (404, 405):  # some RC builds take PATCH
@@ -272,17 +313,7 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
         except requests.RequestException as exc:
             _log(bid, changes, "error", None, str(exc), who)
             raise RCError(f"RealtyCalendar недоступен: {exc}") from exc
-        if resp.status_code < 400:
-            break
-        missing = re.findall(r"required property of '([A-Za-z0-9_]+)'", resp.text or "")
-        if not missing or attempt == 3:
-            break
-        added = False
-        for name in missing:
-            if name not in ev:
-                ev[name] = _guess_value(name, raw, dict(cur))
-                added = True
-        if not added:
+        if resp.status_code < 400 or attempt == 4 or not _apply_schema_errors(body, resp.text or "", raw, dict(cur)):
             break
     text = resp.text or ""
     if resp.status_code >= 400:
