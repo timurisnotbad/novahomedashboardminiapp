@@ -187,9 +187,9 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
     url = f"{config.RC_BASE_URL}/v2/event_calendars/{bid}"
     headers = {**rc_sync._headers(), "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"}  # noqa: SLF001
     try:
-        resp = requests.put(url, json=body, headers=headers, timeout=30)
+        resp = requests.put(url, json=body, headers=headers, timeout=25)
         if resp.status_code in (404, 405):  # some RC builds take PATCH
-            resp = requests.patch(url, json=body, headers=headers, timeout=30)
+            resp = requests.patch(url, json=body, headers=headers, timeout=25)
     except requests.RequestException as exc:
         _log(bid, changes, "error", None, str(exc), who)
         raise RCError(f"RealtyCalendar недоступен: {exc}") from exc
@@ -205,9 +205,9 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
             pass
         _log(bid, changes, "rejected", resp.status_code, text, who)
         raise RCError(f"RealtyCalendar не принял изменение ({resp.status_code}): {msg}")
-    # confirm: re-read the calendar and compare what RC now returns
+    # confirm: re-read this apartment from the calendar and compare what RC now returns
     try:
-        rc_sync.sync_to_db()
+        rc_sync.refresh_booking(bid)
     except Exception as exc:  # noqa: BLE001
         _log(bid, changes, "ok", resp.status_code, f"saved; resync failed: {exc}", who)
         raise RCError(f"Отправлено, но перечитать календарь не удалось: {exc}") from exc

@@ -314,6 +314,14 @@ def booking_for(phone: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Serialisation
 # ---------------------------------------------------------------------------
+def _default_times() -> list:
+    try:
+        from . import crm
+        return list(crm.default_times())
+    except Exception:  # noqa: BLE001
+        return ["14:00", "11:00"]
+
+
 def _chat_out(r) -> dict:
     c = dict(r)
     c["channel"] = c.get("channel") or "wa"
@@ -323,7 +331,7 @@ def _chat_out(r) -> dict:
     b = pb or booking_for(c.get("phone") or "")
     c["booking"] = ({"id": b["id"], "apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
                      "guest": b["client_name"], "when": b["when"], "pinned": bool(pb),
-                     "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5],
+                     "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5], "default_times": _default_times(),
                      "nights": b.get("days_count"), "amount": b.get("amount")} if b else None)
     return c
 

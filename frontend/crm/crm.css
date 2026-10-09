@@ -226,10 +226,17 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .main { padding:18px 16px 50px; }
 }
 @media (max-width: 760px) {
-  body { padding-bottom:calc(64px + env(safe-area-inset-bottom, 0px)); }
-  .app { flex-direction:column; }
-  /* top bar: brand + burger; the full menu opens as a sheet */
-  .side { width:100%; height:auto; position:sticky; top:0; z-index:30; padding:10px 14px; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; border-right:none; border-bottom:1px solid var(--sep); }
+  /* the shell is fixed: header on top, tab bar at the bottom, only the content scrolls */
+  html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
+  body { padding-bottom:0; }
+  .app { display:block; height:100%; min-height:0; }
+  .side { width:100%; height:52px; position:fixed; top:0; left:0; right:0; z-index:30; padding:8px 14px; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; border-right:none; border-bottom:1px solid var(--sep); overflow:hidden; }
+  .side.open { height:auto; max-height:100dvh; overflow-y:auto; box-shadow:0 12px 30px rgba(0,0,0,.15); }
+  .main, .inbox-frame { position:fixed; top:52px; bottom:calc(58px + env(safe-area-inset-bottom, 0px)); left:0; right:0; width:100%; min-height:0; }
+  .main { height:auto; }
+  .inbox-frame { height:calc(100dvh - 52px - 58px - env(safe-area-inset-bottom, 0px)); }  /* an iframe does not stretch between top and bottom */
+  .main { overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; padding:12px 14px 24px; }
+  .main > * { max-width:100%; }
   .side__brand { padding:0; flex:1; font-size:16px; }
   .side__burger { display:block; font-size:22px; padding:4px 8px; order:1; }
   .side__nav { order:2; } .side__me { order:3; }
@@ -238,13 +245,13 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .side.open .side__nav a { padding:10px 12px; }
   .side.open .side__me { display:block; margin-top:8px; }
   /* bottom tab bar with the five everyday sections */
-  .tabbar { position:fixed; left:0; right:0; bottom:0; z-index:40; display:flex; background:var(--card); border-top:1px solid var(--sep); padding-bottom:env(safe-area-inset-bottom, 0px); }
-  .tabbar a { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 0 6px; font-size:11px; color:var(--label-2); position:relative; }
+  .tabbar { position:fixed; left:0; right:0; bottom:0; z-index:40; display:flex; height:calc(58px + env(safe-area-inset-bottom, 0px)); background:var(--card); border-top:1px solid var(--sep); padding-bottom:env(safe-area-inset-bottom, 0px); }
+  .tabbar a { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:4px 0; font-size:11px; color:var(--label-2); position:relative; }
   .tabbar a svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
   .tabbar a.is-on { color:var(--blue-text); }
   .tabbar .pill { position:absolute; top:4px; left:calc(50% + 6px); font-size:10px; padding:0 5px; }
-  .main { padding:14px 14px 40px; }
   .page-head h1 { font-size:22px; }
+  .page-head > div { width:100%; display:flex; gap:8px; } .page-head > div .btn { flex:1; justify-content:center; padding:9px 10px; }
   .page-head { gap:8px; }
   .page-head .btn { padding:8px 12px; }
   .toolbar { gap:6px; }
@@ -255,17 +262,26 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .stat { padding:12px 14px; } .stat b { font-size:22px; }
   .card { padding:14px 14px; }
   /* kanban: one column per screen, swipe between stages */
-  .kanban { scroll-snap-type:x mandatory; gap:10px; margin:0 -14px; padding:0 14px 12px; }
-  .kcol { width:86vw; scroll-snap-align:start; }
+  .kanban { scroll-snap-type:x mandatory; gap:10px; margin:0 -14px; padding:0 14px 12px; overscroll-behavior-x:contain; }
+  .kcol { width:84vw; scroll-snap-align:center; min-height:140px; }
   /* sheets instead of centered dialogs */
-  .modal { padding:0; align-items:end; }
-  .modal__card, .modal__card.wide { width:100%; max-height:92vh; border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); }
+  .modal { padding:0; align-items:end; position:fixed; }
+  .modal__card, .modal__card.wide { width:100%; max-height:92dvh; border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); overscroll-behavior:contain; }
   .row-actions { position:sticky; bottom:-18px; background:var(--card); padding:10px 0 0; margin-top:12px; }
   .row-actions .btn { flex:1; justify-content:center; }
   .bk-tasks__add { padding-bottom:6px; } .bk-tasks__add #bkt-add { flex:1; } .bk-tasks__add #bkt-due, .bk-tasks__add #bkt-who { max-width:none; flex:1 1 45%; }
   .kv { grid-template-columns:110px 1fr; }
   .hist { grid-template-columns:repeat(2, 1fr); }
-  .inbox-frame { height:calc(100vh - 56px - 64px - env(safe-area-inset-bottom, 0px)); }
+  .table-wrap { margin:0 -14px; padding:0 14px; }
+  .bk__top { flex-wrap:wrap; } .bk__time { margin-left:0; }
+  .plan__row { gap:6px; }
+  .chips { overflow-x:auto; flex-wrap:nowrap; margin:-6px -14px 12px; padding:0 14px 4px; scrollbar-width:none; } .chip { white-space:nowrap; flex:none; }
+  .toolbar .seg { display:flex; } .toolbar .seg button { flex:1; }
+  .doc-row { gap:6px; } .doc-row .btn.sm { padding:4px 8px; }
+  .bk-tasks__head, .bkt__head { flex-direction:column; align-items:stretch; } .bk-tasks__prog, .bkt__prog { min-width:0; }
+  .side__brand { font-size:17px; }
+  .page-sub { display:none; }
+  .toolbar { gap:6px; } .toolbar .btn { padding:8px 10px; } .toolbar .field.pick { padding:6px 10px; min-height:36px; }
   .list__row { grid-template-columns:1fr; gap:4px; }
   .list__row .actions button { margin:6px 14px 0 0; }
   .rule { grid-template-columns:42px 1fr; } .rule .actions { grid-column:2; }

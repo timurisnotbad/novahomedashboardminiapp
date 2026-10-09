@@ -97,13 +97,26 @@ def _headers() -> dict:
     }
 
 
-def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
+def refresh_booking(bid: int) -> None:
+    """Re-read one booking's apartment for its dates (seconds, not a full sync)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    rows = fetch_bookings(d0, d1, [cur["apartment_id"]])
+    if rows:
+        database.upsert_bookings(rows)
+
+
+def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = None) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 
     Dates are sent as DD.MM.YYYY and apartment_ids as a comma-separated string,
     exactly as the RC API expects.
     """
-    apt_ids = ",".join(str(i) for i in config.APARTMENTS.keys())
+    apt_ids = ",".join(str(i) for i in (apartment_ids or config.APARTMENTS.keys()))
     params = {
         "apartment_ids": apt_ids,
         "begin_date": date_from.strftime("%d.%m.%Y"),

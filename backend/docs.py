@@ -283,6 +283,8 @@ def render_pdf(doc: dict) -> bytes:
     due = max(0.0, total - paid)
     per = total / nights if nights else 0
     brand = comp.get("brand") or "NOVA HOME"
+    from . import crm as _crm
+    dci, dco = _crm.default_times()
     contacts = " · ".join(x for x in (comp.get("website"), comp.get("phone")) if x)
     def grid(rows, widths, style):
         tb = Table(rows, colWidths=widths)
@@ -309,8 +311,8 @@ def render_pdf(doc: dict) -> bytes:
                                         ("BOTTOMPADDING", (0, 0), (-1, 0), 4)])
         el += [parties, Spacer(1, 9 * mm), Paragraph(_sp(t["stay"]), st["label"]), Spacer(1, 2 * mm)]
         desc = f"<b>{d.get('apartment') or ''}</b><br/><font size=8 color='#6B7280'>{t['accom']} · {_money(per, cur)}{t['per_night']}</font>"
-        ci = f"{_long_date(d.get('checkin'), lang)}<br/><font size=7.5 color='#6B7280'>{t['from']} {d.get('arrival_time') or '14:00'}</font>"
-        co = f"{_long_date(d.get('checkout'), lang)}<br/><font size=7.5 color='#6B7280'>{t['until']} {d.get('departure_time') or '11:00'}</font>"
+        ci = f"{_long_date(d.get('checkin'), lang)}<br/><font size=7.5 color='#6B7280'>{t['from']} {d.get('arrival_time') or dci}</font>"
+        co = f"{_long_date(d.get('checkout'), lang)}<br/><font size=7.5 color='#6B7280'>{t['until']} {d.get('departure_time') or dco}</font>"
         rows = [[Paragraph(_sp(t["desc"]), st["label"]), Paragraph(_sp(t["checkin"]), st["label"]), Paragraph(_sp(t["checkout"]), st["label"]),
                  Paragraph(_sp(t["nights"]), P("lc", fontName=F["b"], fontSize=7, textColor=grey, alignment=1)), Paragraph(_sp(t["amount"]), P("lr", fontName=F["b"], fontSize=7, textColor=grey, alignment=TA_RIGHT))],
                 [Paragraph(desc, st["p"]), Paragraph(ci, st["p"]), Paragraph(co, st["p"]), Paragraph(f"<b>{nights}</b>", P("c", alignment=1)), Paragraph(f"<b>{_money(total, cur)}</b>", st["rb"])]]
@@ -358,8 +360,8 @@ def render_pdf(doc: dict) -> bytes:
                                                      ("TOPPADDING", (0, 0), (-1, 0), 7), ("BOTTOMPADDING", (0, 1), (-1, 1), 8), ("LEFTPADDING", (0, 0), (-1, -1), 9)])
         el += [top, Spacer(1, 8 * mm), Paragraph(_sp(t["stay"]), st["label"]), Spacer(1, 2 * mm)]
         rows = [[t["property"], comp.get("property") or comp.get("name") or ""], [t["unit"], d.get("apartment") or ""], [t["address"], comp.get("address") or ""],
-                [t["ci"], f"{_long_date(d.get('checkin'), lang)}, {d.get('arrival_time') or '14:00'}"],
-                [t["co"], f"{_long_date(d.get('checkout'), lang)}, {d.get('departure_time') or '11:00'}"],
+                [t["ci"], f"{_long_date(d.get('checkin'), lang)}, {d.get('arrival_time') or dci}"],
+                [t["co"], f"{_long_date(d.get('checkout'), lang)}, {d.get('departure_time') or dco}"],
                 [t["len"], f"{nights} {t['night1'] if nights == 1 else t['nightn']}"]]
         el.append(grid([[Paragraph(a, st["p"]), Paragraph(f"<b>{b}</b>", st["rb"])] for a, b in rows], [W * 0.3, W * 0.7],
                        [("BOX", (0, 0), (-1, -1), 0.6, line), ("LINEBELOW", (0, 0), (-1, -2), 0.6, line), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),

@@ -165,15 +165,32 @@ textarea.ib-field { resize:vertical; min-height:80px; }
 
 /* ---------- phones: one pane at a time ---------- */
 @media (max-width: 760px) {
-  .ib-side { width:100%; border-right:none; }
-  .ib-main { display:none; }
+  html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
+  .ib { height:100%; }
+  .ib-side { width:100%; border-right:none; min-height:0; }
+  .ib-side__head { padding:10px 14px 6px; } .ib-brand h1 { font-size:22px; }
+  .ib-list { overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
+  .ib-main { display:none; min-height:0; }
   .ib.show-conv .ib-side { display:none; }
   .ib.show-conv .ib-main { display:flex; }
-  .ib-back { display:grid; }
-  .ib-msgs { padding:10px 10px 14px; }
+  .ib-conv { min-height:0; height:100%; }
+  .ib-back { display:grid; width:32px; height:32px; }
+  /* header: row 1 — back, name + channel/phone, pencil; row 2 — status, assignee */
+  .ib-conv__head { display:grid; grid-template-columns:32px 1fr 1fr 32px; grid-template-areas:"back who who pen" "status status who2 who2"; gap:6px 8px; padding:8px 10px; align-items:center; }
+  .ib-back { grid-area:back; } .ib-conv__who { grid-area:who; min-width:0; } #rename { grid-area:pen; width:32px; height:32px; }
+  #cl-status { grid-area:status; } #assignee { grid-area:who2; }
+  #cl-status, #assignee { max-width:none; min-width:0; width:100%; font-size:13px; padding:5px 8px; }
+  .ib-conv__title { font-size:15px; }
+  .ib-conv__sub { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
+  .ib-conv__sub .ib-chan { font-size:11px; padding:0 6px; }
+  .ib .ib-booking { padding:6px 12px; font-size:12px; }
+  .ib .ib-booking__row { flex-wrap:nowrap; } .ib .ib-booking__row > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .ib .ib-link { flex:none; font-size:12px; }
+  .ib-msgs { padding:10px 10px 14px; min-height:0; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   .ib-m { max-width:86%; }
   .ib-m__act { display:none; }
-  .ib-assignee { max-width:110px; }
+  .ib-compose { flex:none; }
+  .ib-modal__card { max-height:calc(100% - 24px); }
 }
 
 /* booking link + client status in the chat header */

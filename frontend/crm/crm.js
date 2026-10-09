@@ -3,7 +3,7 @@
   "use strict";
   const API = (window.NH_API_BASE || "") + "/api/crm";
   const $ = (id) => document.getElementById(id);
-  const S = { me: null, users: [], pipelines: [], fields: [], route: "home", cache: {} };
+  const S = { times: ["14:00", "11:00"], me: null, users: [], pipelines: [], fields: [], route: "home", cache: {} };
 
   // ---- helpers --------------------------------------------------------------
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=49&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=50&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -416,13 +416,13 @@
     const fieldInputsHtml = fieldInputs("client", c.fields);
     modal(`<h2>${c.id ? "Клиент" : "Новый клиент"}</h2>
       <div class="form-row"><div><label class="lbl">Имя</label><input class="field" id="cf-name" value="${esc(c.name)}" /></div>
-        <div><label class="lbl">Телефон</label><input class="field" id="cf-phone" value="${c.phone ? "+" + esc(c.phone) : ""}" placeholder="+998 90 123 45 67" /></div></div>
+        <div><label class="lbl">Телефон</label><input class="field" id="cf-phone" type="tel" value="${c.phone ? "+" + esc(c.phone) : ""}" placeholder="+998 90 123 45 67" /></div></div>
       <div class="form-row"><div><label class="lbl">Email</label><input class="field" id="cf-email" value="${esc(c.email || "")}" /></div>
         <div><label class="lbl">Источник</label><input class="field" id="cf-source" value="${esc(c.source || "")}" placeholder="Booking.com, Airbnb, WhatsApp…" list="src-list" /><datalist id="src-list"><option>Booking.com</option><option>Airbnb</option><option>WhatsApp</option><option>Telegram</option><option>Instagram</option><option>Рекомендация</option></datalist></div></div>
       <label class="lbl">Статус</label><select class="field" id="cf-status">${statusOptions(c.status)}</select>
       <div class="form-row"><div><label class="lbl">Instagram</label><input class="field" id="cf-instagram" value="${esc(c.instagram || "")}" placeholder="@username" /></div>
         <div><label class="lbl">Telegram</label><input class="field" id="cf-telegram" value="${esc(c.telegram || "")}" placeholder="@username или номер" /></div></div>
-      <div class="form-row c3"><div><label class="lbl">Доп. телефон</label><input class="field" id="cf-phone2" value="${esc(c.phone2 || "")}" /></div>
+      <div class="form-row c3"><div><label class="lbl">Доп. телефон</label><input class="field" id="cf-phone2" type="tel" value="${esc(c.phone2 || "")}" /></div>
         <div><label class="lbl">Дата рождения</label><input class="field" id="cf-birthday" type="date" value="${esc(c.birthday || "")}" /></div>
         <div><label class="lbl">Язык общения</label><input class="field" id="cf-lang" value="${esc(c.lang || "")}" placeholder="RU / EN / UZ" list="lang-list" /><datalist id="lang-list"><option>Русский</option><option>English</option><option>O'zbek</option></datalist></div></div>
       <div class="form-row"><div><label class="lbl">Паспорт</label><input class="field" id="cf-passport" value="${esc(c.passport || "")}" placeholder="серия, номер" /></div>
@@ -519,7 +519,7 @@
     const payTag = (b) => { const p = PAY[b.pay] || PAY.unpaid; const part = b.pay === "prepaid" && Number(b.amount) ? ` ${money(b.paid)} из ${money(b.amount)}` : ""; return `<span class="tag ${p[1]}">${p[0]}${part}</span>`; };
     const contactTag = (b) => { const c = CONTACT[b.contact] || CONTACT.none; return `<span class="tag ${c[1]}" style="font-weight:500">${c[0]}</span>`; };
     const taskTag = (b) => { const t = b.tasks; if (!t) return `<span class="tag" style="font-weight:500">☐ без задач</span>`; const total = t.open + t.done; return `<span class="tag ${t.overdue ? "red" : t.open ? "blue" : "green"}" style="font-weight:500" title="Задачи по брони">${t.open ? "☐" : "☑"} ${t.done}/${total}${t.overdue ? " · просрочено " + t.overdue : ""}</span>`; };
-    const timeBadge = (b, kind) => { const t = kind === "in" ? b.arrival_time : b.departure_time; return `<button class="bk__time ${t ? "" : "unset"}" data-time="${b.id}" data-kind="${kind}" title="${t ? "Изменить время" : "Время не указано — нажмите, чтобы задать (уйдёт в календарь)"}">${kind === "in" ? "⏰ заезд" : "⏰ выезд"} ${esc((t || (kind === "in" ? "14:00" : "11:00")).slice(0, 5))}${t ? "" : "?"}</button>`; };
+    const timeBadge = (b, kind) => { const t = kind === "in" ? b.arrival_time : b.departure_time; return `<button class="bk__time ${t ? "" : "unset"}" data-time="${b.id}" data-kind="${kind}" title="${t ? "Изменить время" : "Время не указано — нажмите, чтобы задать (уйдёт в календарь)"}">${kind === "in" ? "⏰ заезд" : "⏰ выезд"} ${esc((t || (kind === "in" ? S.times[0] : S.times[1])).slice(0, 5))}${t ? "" : "?"}</button>`; };
     const bkCard = (b, kind) => `<div class="bk pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}"><div class="bk__top"><span class="bk__apt">${esc(b.apartment)}</span>${kind ? timeBadge(b, kind) : ""}<span class="bk__amt">${money(b.amount)}</span></div>
       <div class="bk__sub">${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))} · ${plural(b.nights || nights(b.checkin, b.checkout) || 0, "ночь", "ночи", "ночей")}${b.arrival_time || b.departure_time ? ` · ${esc(b.arrival_time || "")}${b.arrival_time && b.departure_time ? "/" : ""}${esc(b.departure_time || "")}` : ""}</div>
       <div class="bk__guest">${b.client_id ? `<a href="#clients/${b.client_id}">${esc(b.guest || "Гость")}</a>` : `<b>${esc(b.guest || "Гость")}</b>`}${b.phone ? ` · +${esc(b.phone)}` : ""} <span class="muted small">· ${esc(b.source)}</span></div>
@@ -586,7 +586,7 @@
       const cur = kind === "in" ? b.arrival_time : b.departure_time;
       modal(`<h2>${kind === "in" ? "Время заезда" : "Время выезда"} · ${esc(b.apartment || "")}</h2>
         <p class="muted small">${esc(b.guest || "Гость")} · ${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))}. Время уйдёт в RealtyCalendar и обновит план подготовки.</p>
-        <input class="field" id="qt-time" type="time" value="${esc((cur || (kind === "in" ? "14:00" : "11:00")).slice(0, 5))}" />
+        <input class="field" id="qt-time" type="time" value="${esc((cur || (kind === "in" ? S.times[0] : S.times[1])).slice(0, 5))}" />
         <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="qt-go">Сохранить в календарь</button></div>`);
       $("qt-go").addEventListener("click", async (e) => {
         e.target.disabled = true;
@@ -695,6 +695,8 @@
         <div class="muted small" style="margin-top:4px">Письма с PDF-счётом, квитанцией или подтверждением уходят из карточки брони и из карточки клиента.</div>
         ${d.email.configured ? `<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input class="field" id="em-test" type="email" placeholder="Адрес для тестового письма" style="flex:1;min-width:200px" /><button class="btn" id="em-test-go">Отправить тест</button></div>` : ""}
         ${d.email.log && d.email.log.length ? `<table class="table" style="margin-top:8px"><thead><tr><th>Когда</th><th>Кому</th><th>Тема</th><th>Статус</th></tr></thead><tbody>${d.email.log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td class="small">${esc(l.to_addr)}</td><td class="small">${esc(l.subject || "")}</td><td class="${l.status === "sent" ? "ok" : "bad"} small">${l.status === "sent" ? "отправлено" : esc((l.error || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
+      <div class="card"><h3>Время заезда и выезда</h3><div class="muted small">Стандартное время дома. Подставляется везде, где в брони время не указано: план подготовки, чек-листы, напоминания гостю, документы.</div>
+        <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Заезд с</label><input class="field" id="i-ci" type="time" value="${esc(d.settings.checkin_time || "14:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><div><label class="lbl">Выезд до</label><input class="field" id="i-co" type="time" value="${esc(d.settings.checkout_time || "11:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><button class="btn" id="i-times" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div></div>
       <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card"><h3>Чек-лист брони</h3>
@@ -708,6 +710,7 @@
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("co-save").addEventListener("click", async () => { try { await post("/company", { brand: val("co-brand"), tagline: val("co-tagline"), accent: val("co-accent"), legal: val("co-legal"), property: val("co-property"), signer: val("co-signer"), signer_title: val("co-signer_title"), name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); } catch (err) { toast(err.message); } });
     const et = $("em-test-go"); if (et) et.addEventListener("click", async (e) => { e.target.disabled = true; try { await post("/email", { to: val("em-test"), subject: "Nova Home CRM — тест", text: "Письмо из CRM работает." }); toast("Тестовое письмо отправлено"); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+    $("i-times").addEventListener("click", async () => { try { await post("/integrations/settings", { checkin_time: val("i-ci"), checkout_time: val("i-co") }); S.times = [val("i-ci"), val("i-co")]; toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-rcc").addEventListener("change", async (e) => { try { await post("/integrations/settings", { rc_sync_clients: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
@@ -911,7 +914,7 @@
       <div class="row-actions"><button class="btn primary" data-close>Закрыть</button></div>`, true);
     renderBookingTasks(b);
     renderBookingDocs(b);
-    const fillVars = (t) => { const d = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = (b.guest || "").split(" ")[0]; const tIn = (b.arrival_time || "14:00").slice(0, 5), tOut = (b.departure_time || "11:00").slice(0, 5);
+    const fillVars = (t) => { const d = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = (b.guest || "").split(" ")[0]; const tIn = (b.arrival_time || S.times[0]).slice(0, 5), tOut = (b.departure_time || S.times[1]).slice(0, 5);
       const map = { "имя": nm, "объект": b.apartment || "", "заезд": d(b.checkin), "выезд": d(b.checkout), "дата заезда": d(b.checkin), "дата выезда": d(b.checkout), "время заезда": tIn, "время выезда": tOut, "заезд время": `${d(b.checkin)} в ${tIn}`, "выезд время": `${d(b.checkout)} до ${tOut}`, "ночей": String(b.nights || ""), "сумма": String(b.amount ?? ""), "долг": String(b.debt ?? ""), "оплачено": String(b.paid ?? ""), "телефон": b.phone ? "+" + b.phone : "" };
       return t.replace(/\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}/g, (m, k) => map[k] || m); };
     get("/commands").then((list) => { $("bk-tpl").innerHTML += list.map((t) => `<option value="${t.id}">${esc(t.command ? "/" + t.command + " " : "")}${esc(t.title)}</option>`).join(""); $("bk-tpl").dataset.list = JSON.stringify(list); }).catch(() => {});
@@ -1000,14 +1003,14 @@
     modal(`<h2>Изменить бронь · ${esc(b.apartment)}</h2>
       <p class="muted small">Изменения отправляются в RealtyCalendar и после подтверждения появляются везде: в CRM, дашборде и у горничных.</p>
       <div class="form-row"><div><label class="lbl">Гость</label><input class="field" id="be-guest" value="${esc(b.guest || "")}" /></div>
-        <div><label class="lbl">Телефон</label><input class="field" id="be-phone" value="${b.phone ? "+" + esc(b.phone) : ""}" /></div></div>
+        <div><label class="lbl">Телефон</label><input class="field" id="be-phone" type="tel" value="${b.phone ? "+" + esc(b.phone) : ""}" /></div></div>
       <div class="form-row c3"><div><label class="lbl">Заезд</label><input class="field" id="be-in" type="date" value="${esc(b.checkin)}" /></div>
         <div><label class="lbl">Выезд</label><input class="field" id="be-out" type="date" value="${esc(b.checkout)}" /></div>
         <div><label class="lbl">Сумма, $</label><input class="field" id="be-amt" type="number" step="any" value="${esc(b.amount ?? "")}" /></div></div>
       <div class="form-row"><div><label class="lbl">Статус оплаты (как в календаре)</label><select class="field" id="be-status">${[["booked", "Бронь, не оплачена"], ["prepaid", "Предоплата внесена"], ["paid", "Оплачено"], ["confirmed", "Подтверждена"], ["not_confirmed", "Не подтверждена"]].map(([k, v]) => `<option value="${k}" ${b.status === k ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         <div><label class="lbl">Предоплата, $</label><input class="field" id="be-prep" type="number" step="any" value="${esc(b.prepayment ?? "")}" /></div></div>
-      <div class="form-row"><div><label class="lbl">Время заезда</label><input class="field" id="be-at" value="${esc(b.arrival_time || "")}" placeholder="15:00" /></div>
-        <div><label class="lbl">Время выезда</label><input class="field" id="be-dt" value="${esc(b.departure_time || "")}" placeholder="12:00" /></div></div>
+      <div class="form-row"><div><label class="lbl">Время заезда</label><input class="field" id="be-at" value="${esc(b.arrival_time || "")}" placeholder="${esc(S.times[0])}" /></div>
+        <div><label class="lbl">Время выезда</label><input class="field" id="be-dt" value="${esc(b.departure_time || "")}" placeholder="${esc(S.times[1])}" /></div></div>
       <label class="lbl">Заметка брони (видна в RealtyCalendar)</label><textarea class="field" id="be-notes" rows="3">${esc(b.notes || "")}</textarea>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="be-go">Сохранить в календарь</button></div>`);
     $("be-go").addEventListener("click", async (e) => {
@@ -1159,6 +1162,7 @@
     $("me-name").textContent = S.me.name;
     $("me-mail").textContent = S.me.email;
     S.users = await get("/users").catch(() => []);
+    try { const ss = await get("/session"); if (ss && ss.times) S.times = ss.times; } catch (e) { /* defaults stay */ }
     navigate();
     badges();
   }
@@ -1167,7 +1171,7 @@
       const s = await get("/session");
       if (s.setup_needed) return showAuth(true);
       if (!s.user) return showAuth(false);
-      S.me = s.user;
+      S.me = s.user; S.times = s.times || ["14:00", "11:00"];
       await boot();
     } catch (e) {
       $("auth").classList.remove("hidden");

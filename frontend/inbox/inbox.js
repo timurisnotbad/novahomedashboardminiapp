@@ -386,7 +386,7 @@
     const b = c.booking || {};
     const fmt = (iso) => { if (!iso) return ""; const d = new Date(iso); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`; };
     const name = (b.guest || c.title || "").replace(/^\+\d+$/, "").split(" ")[0];
-    const tIn = b.arrival_time || "14:00", tOut = b.departure_time || "11:00";
+    const dt = b.default_times || ["14:00", "11:00"]; const tIn = b.arrival_time || dt[0], tOut = b.departure_time || dt[1];
     const map = { "имя": name, "объект": b.apartment || "", "заезд": fmt(b.begin), "выезд": fmt(b.end), "дата заезда": fmt(b.begin), "дата выезда": fmt(b.end),
       "время заезда": b.begin ? tIn : "", "время выезда": b.end ? tOut : "", "заезд время": b.begin ? `${fmt(b.begin)} в ${tIn}` : "", "выезд время": b.end ? `${fmt(b.end)} до ${tOut}` : "",
       "ночей": b.nights ? String(b.nights) : "", "сумма": b.amount != null ? String(b.amount) : "", "телефон": c.phone ? "+" + c.phone : "" };

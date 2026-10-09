@@ -346,6 +346,13 @@ def get_setting(key: str, default: str = "") -> str:
     return r[0] if r else default
 
 
+def default_times() -> tuple[str, str]:
+    """House check-in / check-out time (Интеграции → Время заезда и выезда)."""
+    ci = get_setting("checkin_time", "14:00") or "14:00"
+    co = get_setting("checkout_time", "11:00") or "11:00"
+    return ci[:5], co[:5]
+
+
 def set_setting(key: str, value: str) -> None:
     with database.get_conn() as conn:
         conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES (?, ?)", (key, value))
@@ -1050,10 +1057,10 @@ def auto_tasks(day: date | None = None) -> int:
         items = []
         if b["end_date"] == day.isoformat():
             items.append(("checkout", f"Выезд: принять квартиру, вернуть депозит — {b.get('client_name') or 'гость'} — {b['apartment_name']}",
-                          f"{day.isoformat()}T{(b.get('departure_time') or '12:00')[:5]}"))
+                          f"{day.isoformat()}T{(b.get('departure_time') or default_times()[1])[:5]}"))
         if b["begin_date"] == day.isoformat():
             items.append(("checkin", f"Заезд: отправить адрес и код, встретить — {b.get('client_name') or 'гость'} — {b['apartment_name']}",
-                          f"{day.isoformat()}T{(b.get('arrival_time') or '15:00')[:5]}"))
+                          f"{day.isoformat()}T{(b.get('arrival_time') or default_times()[0])[:5]}"))
         cid = ensure_client(b.get("client_phone") or "", b.get("client_name") or "")
         with database.get_conn() as conn:
             for kind, title, due in items:
@@ -1122,7 +1129,8 @@ def _cl_due(item: dict, b: dict) -> str:
         return datetime.now().strftime("%Y-%m-%dT%H:%M")
     base = date.today() if item["anchor"] == "today" else date.fromisoformat((b["end_date"] if item["anchor"] == "checkout" else b["begin_date"])[:10])
     d = base + timedelta(days=item["offset"])
-    t = item["time"] or ((b.get("departure_time") if item["anchor"] == "checkout" else b.get("arrival_time")) or "10:00")[:5]
+    ci, co = default_times()
+    t = item["time"] or ((b.get("departure_time") if item["anchor"] == "checkout" else b.get("arrival_time")) or (co if item["anchor"] == "checkout" else ci))[:5]
     hh, mm = t.split(":")
     return f"{d.isoformat()}T{int(hh):02d}:{int(mm):02d}"
 
@@ -1271,8 +1279,9 @@ def bookings_day(day: str) -> dict:
         b["client_id"] = cm.get((b["phone"] or "")[-9:]) if b["phone"] else None
         b["tasks"] = tc.get(b["id"])
     _contact_states(rows)
-    t_in = lambda b: (b.get("arrival_time") or "14:00")[:5]  # noqa: E731
-    t_out = lambda b: (b.get("departure_time") or "11:00")[:5]  # noqa: E731
+    dci, dco = default_times()
+    t_in = lambda b: (b.get("arrival_time") or dci)[:5]  # noqa: E731
+    t_out = lambda b: (b.get("departure_time") or dco)[:5]  # noqa: E731
     arrivals = sorted([b for b in rows if b["checkin"] == day], key=lambda b: (t_in(b), b["apartment"] or ""))
     departures = sorted([b for b in rows if b["checkout"] == day], key=lambda b: (t_out(b), b["apartment"] or ""))
     # preparation plan: which apartments to get ready first — by arrival time, with the

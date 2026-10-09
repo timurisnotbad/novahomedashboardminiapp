@@ -612,8 +612,9 @@ def fill(text: str, booking: dict | None, chat: dict | None) -> str:
         name = chat.get("name") or chat.get("push_name") or ""
     name = re.sub(r"^\+?\d+$", "", name).split(" ")[0]
     b = booking or {}
-    t_in = (b.get("arrival_time") or "14:00")[:5]
-    t_out = (b.get("departure_time") or "11:00")[:5]
+    dci, dco = crm.default_times()
+    t_in = (b.get("arrival_time") or dci)[:5]
+    t_out = (b.get("departure_time") or dco)[:5]
     vals = {"имя": name, "объект": b.get("apartment") or "", "заезд": d(b.get("checkin")), "выезд": d(b.get("checkout")),
             "дата заезда": d(b.get("checkin")), "дата выезда": d(b.get("checkout")),
             "время заезда": t_in, "время выезда": t_out, "заезд время": f"{d(b.get('checkin'))} в {t_in}" if b.get("checkin") else "",
