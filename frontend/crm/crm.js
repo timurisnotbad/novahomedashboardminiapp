@@ -187,7 +187,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=38&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=39&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -581,7 +581,9 @@
       <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
         <div><h3>RealtyCalendar</h3><div class="small ${rc.configured ? "ok" : "warn"}">${rc.configured ? "Подключён" : "RC_TOKEN не задан — демо-данные"}</div>
           <div class="muted small">Броней: ${rc.bookings} · объектов: ${rc.apartments} · каждые ${rc.interval_min} мин · последняя синхронизация: ${rc.last_sync ? esc(dtShort(rc.last_sync)) : "—"}</div></div>
-        <button class="btn" id="i-sync">Синхронизировать сейчас</button></div></div>
+        <button class="btn" id="i-sync">Синхронизировать сейчас</button></div>
+        <div class="muted small" style="margin-top:10px">Запись в календарь: из карточки брони («Изменить бронь») уходят гость, телефон, сумма, даты, время, заметка. ${rc.push_log && rc.push_log.length ? `Последние записи:` : "Записей пока не было."}</div>
+        ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Задачи из броней</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-auto" ${d.settings.auto_tasks ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать задачи «Заезд» и «Выезд» на день заезда/выезда (исполнитель — администратор)</label></div>
       <div class="card"><h3>Telegram Mini App</h3><div class="small ${d.telegram.configured ? "ok" : "bad"}">${d.telegram.configured ? "Бот настроен" : "BOT_TOKEN не задан"}</div><div class="muted small">${esc(d.telegram.webapp_url || "")}</div></div>
       <div class="card"><h3>Healthchecks.io</h3><div class="small ${d.healthchecks.configured ? "ok" : "muted"}">${d.healthchecks.configured ? "Подключён" : "Не настроен — уведомления о выключенном компьютере не придут"}</div></div>`;
@@ -747,7 +749,8 @@
           ${h ? `<div class="hist"><div><b>${h.visits}</b><span>визитов</span></div><div><b>${h.nights}</b><span>ночей</span></div><div><b>${money(h.amount)}</b><span>всего</span></div><div><b>${h.upcoming}</b><span>будущих</span></div></div><div class="muted small">Квартиры: ${esc(h.apartments.join(", "))}${h.first ? " · с " + esc(dShort(h.first)) : ""}</div>` : `<div class="muted small">Истории нет${b.phone ? "" : " — у брони нет телефона"}</div>`}
           <label class="lbl">Особенности гостя (видны в чате и в карточке)</label>
           <textarea class="field" id="bk-notes" rows="3" ${b.client ? "" : "disabled placeholder='Нет телефона — карточка не создана'"}>${esc(b.client ? b.client.notes || "" : "")}</textarea>
-          <div style="margin-top:6px"><button class="btn sm" id="bk-notes-save" ${b.client ? "" : "disabled"}>Сохранить</button> ${b.deal ? `<button class="btn sm" data-dealopen="${b.deal.id}">Сделка: ${esc(b.deal.title)}</button>` : `<button class="btn sm" id="bk-deal">+ Сделка</button>`}</div>
+          <div style="margin-top:6px"><button class="btn sm" id="bk-notes-save" ${b.client ? "" : "disabled"}>Сохранить</button> <button class="btn sm" id="bk-edit">Изменить бронь</button> ${b.deal ? `<button class="btn sm" data-dealopen="${b.deal.id}">Сделка: ${esc(b.deal.title)}</button>` : `<button class="btn sm" id="bk-deal">+ Сделка</button>`}</div>
+          <div class="muted small" style="margin-top:4px">«Изменить бронь» — гость, телефон, сумма, даты, время, заметка уходят в RealtyCalendar. Особенности гостя и свои поля хранятся только в CRM.</div>
         </div>
         <div>
           <div class="card__title">Чаты по этой брони</div>
@@ -773,6 +776,7 @@
       try { await api(`/../inbox/chats/${to}/send`, { method: "POST", json: { text } }); toast("Отправлено"); $("bk-msg").value = ""; } catch (err) { toast(err.message); } finally { e.target.disabled = false; }
     });
     $("bk-notes-save").addEventListener("click", async () => { try { await put(`/clients/${b.client.id}`, { name: b.client.name, phone: b.client.phone, email: b.client.email, source: b.client.source, fields: b.client.fields, notes: $("bk-notes").value }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("bk-edit").addEventListener("click", () => bookingForm(b));
     const bd = $("bk-deal"); if (bd) bd.addEventListener("click", async () => { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); try { const d = await post(`/bookings/${id}/deal`); openDeal(d.id); } catch (err) { toast(err.message); } });
     const wa = $("bk-wa"); if (wa) wa.addEventListener("click", async () => { if (!b.client) return; await openClientChat(b.client.id); });
     const find = async () => {
@@ -786,6 +790,30 @@
       const pin = e.target.closest("[data-pin]"); if (pin) { try { await post(`/bookings/${id}/chats`, { chat_id: parseInt(pin.dataset.pin, 10) }); toast("Чат закреплён"); openBooking(id); } catch (err) { toast(err.message); } return; }
       const un = e.target.closest("[data-unlink]"); if (un) { await del(`/bookings/${id}/chats/${un.dataset.unlink}`); openBooking(id); return; }
       const dl = e.target.closest("[data-dealopen]"); if (dl) { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(dl.dataset.dealopen, 10)); }
+    });
+  }
+
+  function bookingForm(b) {
+    modal(`<h2>Изменить бронь · ${esc(b.apartment)}</h2>
+      <p class="muted small">Изменения отправляются в RealtyCalendar и после подтверждения появляются везде: в CRM, дашборде и у горничных.</p>
+      <div class="form-row"><div><label class="lbl">Гость</label><input class="field" id="be-guest" value="${esc(b.guest || "")}" /></div>
+        <div><label class="lbl">Телефон</label><input class="field" id="be-phone" value="${b.phone ? "+" + esc(b.phone) : ""}" /></div></div>
+      <div class="form-row c3"><div><label class="lbl">Заезд</label><input class="field" id="be-in" type="date" value="${esc(b.checkin)}" /></div>
+        <div><label class="lbl">Выезд</label><input class="field" id="be-out" type="date" value="${esc(b.checkout)}" /></div>
+        <div><label class="lbl">Сумма, $</label><input class="field" id="be-amt" type="number" step="any" value="${esc(b.amount ?? "")}" /></div></div>
+      <div class="form-row"><div><label class="lbl">Время заезда</label><input class="field" id="be-at" value="${esc(b.arrival_time || "")}" placeholder="15:00" /></div>
+        <div><label class="lbl">Время выезда</label><input class="field" id="be-dt" value="${esc(b.departure_time || "")}" placeholder="12:00" /></div></div>
+      <label class="lbl">Заметка брони (видна в RealtyCalendar)</label><textarea class="field" id="be-notes" rows="3">${esc(b.notes || "")}</textarea>
+      <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="be-go">Сохранить в календарь</button></div>`);
+    $("be-go").addEventListener("click", async (e) => {
+      const cur = { guest: b.guest || "", phone: b.phone || "", checkin: b.checkin, checkout: b.checkout, amount: b.amount == null ? "" : String(b.amount), arrival_time: b.arrival_time || "", departure_time: b.departure_time || "", notes: b.notes || "" };
+      const now = { guest: val("be-guest"), phone: val("be-phone").replace(/\D/g, ""), checkin: val("be-in"), checkout: val("be-out"), amount: val("be-amt"), arrival_time: val("be-at"), departure_time: val("be-dt"), notes: val("be-notes") };
+      const changes = {};
+      Object.keys(now).forEach((k) => { if (String(now[k]) !== String(cur[k])) changes[k] = now[k]; });
+      if (!Object.keys(changes).length) { toast("Ничего не изменилось"); return; }
+      e.target.disabled = true; e.target.textContent = "Отправляю в RealtyCalendar…";
+      try { await patch(`/bookings/${b.id}`, changes); toast("Календарь обновлён"); closeModal(); if (S.route === "bookings") navigate(); openBooking(b.id); }
+      catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Сохранить в календарь"; }
     });
   }
 

@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, crm_amo, crm_ext, database, inbox, meta_api, rc_sync, tg_channels, wazzup
+from .. import config, crm, crm_amo, crm_ext, database, inbox, meta_api, rc_push, rc_sync, tg_channels, wazzup
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -488,6 +488,16 @@ def booking_card(bid: int, user: dict = Depends(current_user)):  # noqa: B008
     return b
 
 
+@router.patch("/bookings/{bid}")
+def edit_booking(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    """Edit a booking: the RC fields go to RealtyCalendar (and the booking is
+    re-read to confirm); everything else stays in the CRM."""
+    try:
+        return rc_push.update_booking(bid, payload, user["name"])
+    except rc_push.RCError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.post("/bookings/{bid}/chats")
 def link_chat(bid: int, payload: LinkIn, user: dict = Depends(current_user)):  # noqa: B008
     try:
@@ -684,7 +694,8 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         n = conn.execute("SELECT COUNT(*) FROM bookings WHERE COALESCE(is_delete, 0) = 0").fetchone()[0]
     return {
         "realtycalendar": {"configured": bool(config.RC_TOKEN), "demo": config.DEMO_MODE, "last_sync": database.last_sync(),
-                           "bookings": n, "interval_min": config.SYNC_INTERVAL_MINUTES, "apartments": len(config.APARTMENTS)},
+                           "bookings": n, "interval_min": config.SYNC_INTERVAL_MINUTES, "apartments": len(config.APARTMENTS),
+                           "push_log": rc_push.recent_log(10)},
         "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1"},
