@@ -268,6 +268,8 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .table td.actions button { margin-left:10px; }
   .bar-row { grid-template-columns:110px 1fr 90px; }
   .trend__col b { display:none; }
+  .modal__card [style*="display:flex"] { flex-wrap:wrap; }   /* inline button rows wrap instead of overflowing */
+  .modal__card select.field, .modal__card input.field { min-width:0; max-width:100%; }
   .popup { left:12px; right:12px; width:auto; bottom:calc(72px + env(safe-area-inset-bottom, 0px)); }
   .toast { bottom:calc(80px + env(safe-area-inset-bottom, 0px)); }
   .stage-row { grid-template-columns:22px 1fr 100px 36px 28px; }
