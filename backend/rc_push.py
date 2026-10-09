@@ -262,7 +262,9 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
     headers = {**rc_sync._headers(), "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"}  # noqa: SLF001
     resp = None
     for attempt in range(4):
-        body = {"event_calendar": ev}
+        # RC's schema error names the root ('#/'): the fields go at the top level
+        # of the body; the nested form is kept for builds that read it there.
+        body = {**ev, "event_calendar": ev}
         try:
             resp = requests.put(url, json=body, headers=headers, timeout=25)
             if resp.status_code in (404, 405):  # some RC builds take PATCH
