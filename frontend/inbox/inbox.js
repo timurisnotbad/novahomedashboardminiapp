@@ -386,8 +386,11 @@
     const b = c.booking || {};
     const fmt = (iso) => { if (!iso) return ""; const d = new Date(iso); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`; };
     const name = (b.guest || c.title || "").replace(/^\+\d+$/, "").split(" ")[0];
-    const map = { "имя": name, "объект": b.apartment || "", "заезд": fmt(b.begin), "выезд": fmt(b.end) };
-    return text.replace(/\{(имя|объект|заезд|выезд)\}/g, (m, k) => map[k] || m);
+    const tIn = b.arrival_time || "14:00", tOut = b.departure_time || "11:00";
+    const map = { "имя": name, "объект": b.apartment || "", "заезд": fmt(b.begin), "выезд": fmt(b.end), "дата заезда": fmt(b.begin), "дата выезда": fmt(b.end),
+      "время заезда": b.begin ? tIn : "", "время выезда": b.end ? tOut : "", "заезд время": b.begin ? `${fmt(b.begin)} в ${tIn}` : "", "выезд время": b.end ? `${fmt(b.end)} до ${tOut}` : "",
+      "ночей": b.nights ? String(b.nights) : "", "сумма": b.amount != null ? String(b.amount) : "", "телефон": c.phone ? "+" + c.phone : "" };
+    return text.replace(/\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}/g, (m, k) => map[k] || m);
   }
   let tpls = [];
   let cmdSel = 0;

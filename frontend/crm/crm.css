@@ -347,3 +347,17 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .btn .ch.tg { background:#2AABEE; }
 .seg.sm button { padding:3px 8px; font-size:12px; }
 .warn { color:#B45309; }
+
+/* day plan + time badges */
+.bk__time { font-size:12px; font-weight:700; color:var(--blue-text); background:var(--blue-soft); border-radius:6px; padding:1px 7px; margin-left:6px; cursor:pointer; white-space:nowrap; }
+.bk__time.unset { background:#F3F4F6; color:var(--label-2); font-weight:600; }
+.bk__top { display:flex; align-items:center; gap:4px; } .bk__top .bk__amt { margin-left:auto; }
+.plan { border-left:3px solid var(--blue); }
+.plan__row { display:flex; gap:10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--sep); flex-wrap:wrap; }
+.plan__row:last-child { border-bottom:none; }
+.plan__n { width:22px; height:22px; border-radius:50%; background:#F3F4F6; display:grid; place-items:center; font-size:12px; color:var(--label-2); flex:none; }
+.plan__t { font-size:15px; min-width:52px; } .plan__apt { font-weight:600; min-width:70px; }
+.plan__note { margin-left:auto; font-size:12px; color:var(--label-2); }
+.plan__row.turn .plan__note { color:#B45309; font-weight:600; } .plan__row.turn .plan__n { background:#FEF3C7; color:#B45309; }
+.plan__row.tight .plan__note { color:#B91C1C; font-weight:600; } .plan__row.tight .plan__n { background:#FEE2E2; color:#B91C1C; }
+@media (max-width: 760px) { .plan__note { margin-left:32px; width:100%; } }

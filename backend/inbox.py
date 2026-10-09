@@ -322,7 +322,9 @@ def _chat_out(r) -> dict:
     pb = _pinned_booking(c["id"])
     b = pb or booking_for(c.get("phone") or "")
     c["booking"] = ({"id": b["id"], "apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
-                     "guest": b["client_name"], "when": b["when"], "pinned": bool(pb)} if b else None)
+                     "guest": b["client_name"], "when": b["when"], "pinned": bool(pb),
+                     "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5],
+                     "nights": b.get("days_count"), "amount": b.get("amount")} if b else None)
     return c
 
 

@@ -140,6 +140,8 @@ DEFAULT_STAGES = [
     ("Забронировано", "#2A9DA8", "open"), ("Заселён", "#2EAD6B", "won"), ("Отказ", "#D9534F", "lost"),
 ]
 DEFAULT_COMMANDS = [
+    ("заезд", "Напоминание о заезде", "{имя}, напоминаем: ваш заезд {заезд время}, апартаменты {объект}. Напишите, если приедете в другое время — подстроимся."),
+    ("выезд", "Напоминание о выезде", "{имя}, напоминаем: выезд {выезд время}. Если нужно задержаться — напишите заранее, посмотрим, что можно сделать."),
     ("привет", "Приветствие",
      "Здравствуйте, {имя}! Это Nova Home. Подскажите, пожалуйста, даты заезда и выезда и количество гостей — подберём апартаменты."),
     ("правила", "Правила проживания",
@@ -186,6 +188,10 @@ def init_db() -> None:
             for cmd, title, text in DEFAULT_COMMANDS:
                 conn.execute("INSERT INTO inbox_templates (title, text, created_at, command) VALUES (?, ?, ?, ?)",
                              (title, text, _now(), cmd or None))
+        elif cols is not None:  # existing installs get the new reminder commands once
+            for cmd, title, text in DEFAULT_COMMANDS:
+                if cmd in ("заезд", "выезд") and not conn.execute("SELECT 1 FROM inbox_templates WHERE command = ?", (cmd,)).fetchone():
+                    conn.execute("INSERT INTO inbox_templates (title, text, created_at, command) VALUES (?, ?, ?, ?)", (title, text, _now(), cmd))
     # first admin from .env (otherwise the setup page in the browser asks for one)
     if not has_users() and config.CRM_ADMIN_EMAIL and config.CRM_ADMIN_PASSWORD:
         create_user("Администратор", config.CRM_ADMIN_EMAIL, config.CRM_ADMIN_PASSWORD, "admin")
@@ -1195,11 +1201,30 @@ def bookings_day(day: str) -> dict:
         b["client_id"] = cm.get((b["phone"] or "")[-9:]) if b["phone"] else None
         b["tasks"] = tc.get(b["id"])
     _contact_states(rows)
+    t_in = lambda b: (b.get("arrival_time") or "14:00")[:5]  # noqa: E731
+    t_out = lambda b: (b.get("departure_time") or "11:00")[:5]  # noqa: E731
+    arrivals = sorted([b for b in rows if b["checkin"] == day], key=lambda b: (t_in(b), b["apartment"] or ""))
+    departures = sorted([b for b in rows if b["checkout"] == day], key=lambda b: (t_out(b), b["apartment"] or ""))
+    # preparation plan: which apartments to get ready first — by arrival time, with the
+    # same-day departure (turnover) that must be cleaned before the guest comes
+    out_by_apt = {b["apartment"]: b for b in departures}
+    plan = []
+    for b in arrivals:
+        dep = out_by_apt.get(b["apartment"])
+        gap = None
+        if dep:
+            h1, m1 = map(int, t_out(dep).split(":")[:2])
+            h2, m2 = map(int, t_in(b).split(":")[:2])
+            gap = (h2 * 60 + m2) - (h1 * 60 + m1)
+        plan.append({"booking_id": b["id"], "apartment": b["apartment"], "arrival_time": t_in(b), "time_set": bool(b.get("arrival_time")),
+                     "guest": b["guest"], "nights": b.get("nights"), "turnover": bool(dep), "departure_time": t_out(dep) if dep else None,
+                     "gap_min": gap, "tight": gap is not None and gap < 180, "pay": b.get("pay"), "contact": b.get("contact")})
     return {
         "date": day,
-        "arrivals": [b for b in rows if b["checkin"] == day],
-        "departures": [b for b in rows if b["checkout"] == day],
+        "arrivals": arrivals,
+        "departures": departures,
         "staying": [b for b in rows if b["checkin"] < day < b["checkout"]],
+        "plan": plan,
     }
 
 

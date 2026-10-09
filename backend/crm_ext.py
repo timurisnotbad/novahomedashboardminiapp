@@ -574,10 +574,16 @@ def fill(text: str, booking: dict | None, chat: dict | None) -> str:
     elif chat:
         name = chat.get("name") or chat.get("push_name") or ""
     name = re.sub(r"^\+?\d+$", "", name).split(" ")[0]
-    vals = {"имя": name, "объект": (booking or {}).get("apartment") or "", "заезд": d((booking or {}).get("checkin")),
-            "выезд": d((booking or {}).get("checkout")), "ночей": str((booking or {}).get("nights") or ""),
-            "сумма": f"{(booking or {}).get('amount') or 0:g}", "долг": f"{(booking or {}).get('debt') or 0:g}"}
-    return re.sub(r"\{(имя|объект|заезд|выезд|ночей|сумма|долг)\}", lambda m: vals.get(m.group(1), m.group(0)), text)
+    b = booking or {}
+    t_in = (b.get("arrival_time") or "14:00")[:5]
+    t_out = (b.get("departure_time") or "11:00")[:5]
+    vals = {"имя": name, "объект": b.get("apartment") or "", "заезд": d(b.get("checkin")), "выезд": d(b.get("checkout")),
+            "дата заезда": d(b.get("checkin")), "дата выезда": d(b.get("checkout")),
+            "время заезда": t_in, "время выезда": t_out, "заезд время": f"{d(b.get('checkin'))} в {t_in}" if b.get("checkin") else "",
+            "выезд время": f"{d(b.get('checkout'))} до {t_out}" if b.get("checkout") else "",
+            "ночей": str(b.get("nights") or ""), "сумма": f"{b.get('amount') or 0:g}", "долг": f"{b.get('debt') or 0:g}",
+            "оплачено": f"{b.get('paid') or 0:g}", "телефон": ("+" + b["phone"]) if b.get("phone") else ""}
+    return re.sub(r"\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}", lambda m: vals.get(m.group(1), m.group(0)), text)
 
 
 def _log(conn, rule, booking_id, chat, text, status, error, dedupe) -> bool:
