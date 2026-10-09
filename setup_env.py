@@ -23,11 +23,53 @@ def keys_of(text: str) -> set[str]:
     return out
 
 
+ADD = BASE / "env.add"
+
+
+def apply_add() -> None:
+    """env.add (KEY=value lines, shipped inside a personal update archive):
+    fills keys that are missing or empty in .env, never overwrites a value
+    the owner already set. Removed after it is applied."""
+    if not ADD.exists():
+        return
+    values = {}
+    for line in ADD.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            values[k.strip()] = v.strip()
+    if not values:
+        return
+    lines = ENV.read_text(encoding="utf-8-sig").splitlines() if ENV.exists() else []
+    done = set()
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("#") or "=" not in s:
+            continue
+        k, _, rest = s.partition("=")
+        k = k.strip()
+        if k in values:
+            cur = re.split(r"\s+#", rest, maxsplit=1)[0].strip().strip("\"'")
+            if not cur:
+                lines[i] = f"{k}={values[k]}"
+                print(f"  {k}: заполнено из env.add")
+            else:
+                print(f"  {k}: уже задано, оставлено как есть")
+            done.add(k)
+    for k, v in values.items():
+        if k not in done:
+            lines.append(f"{k}={v}")
+            print(f"  {k}: добавлено из env.add")
+    ENV.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ADD.unlink()
+
+
 def main() -> int:
     example = EXAMPLE.read_text(encoding="utf-8-sig")
     if not ENV.exists():
         ENV.write_text(example, encoding="utf-8")
         print("Создан .env из .env.example — впишите в него токены (см. ПРОЧТИ-МЕНЯ.txt)")
+        apply_add()
         return 0
     current = ENV.read_text(encoding="utf-8-sig")
     have = keys_of(current)
@@ -51,6 +93,7 @@ def main() -> int:
         missing_block.append(line)
     if not missing_block:
         print(".env уже содержит все настройки этой версии")
+        apply_add()
         return 0
     with ENV.open("a", encoding="utf-8") as fh:
         fh.write("\n\n# ---- Добавлено обновлением (новые настройки, значения по умолчанию) ----\n")
@@ -58,6 +101,7 @@ def main() -> int:
     added = [l.split("=", 1)[0] for l in missing_block if l and not l.lstrip().startswith("#") and "=" in l]
     print(f"В .env добавлены новые настройки ({len(added)}): " + ", ".join(added))
     print("Пустые значения = функция выключена. Заполните то, что нужно, и перезапустите restart_all.bat")
+    apply_add()
     return 0
 
 
