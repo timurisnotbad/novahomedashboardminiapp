@@ -94,7 +94,16 @@ CREATE TABLE IF NOT EXISTS crm_tasks (
     created_by INTEGER,
     created_at TEXT,
     done_at TEXT,
-    src_key TEXT UNIQUE              -- auto tasks (checkout:<booking id>) are created once
+    src_key TEXT UNIQUE,             -- auto tasks (checkout:<booking id>) are created once
+    booking_id INTEGER               -- task belongs to a booking (card «Задачи по брони»)
+);
+
+-- bookings that already got their checklist (so a deleted item does not come back)
+CREATE TABLE IF NOT EXISTS crm_booking_checklist (
+    booking_id INTEGER PRIMARY KEY,
+    created_by INTEGER,
+    created_at TEXT,
+    n INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS crm_fields (
@@ -158,6 +167,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE crm_fields ADD COLUMN entity TEXT DEFAULT 'client'")
         if "fields" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
+        if "booking_id" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_tasks)").fetchall()]:
+            conn.execute("ALTER TABLE crm_tasks ADD COLUMN booking_id INTEGER")
+            # tasks «Заезд/Выезд» created before this version: attach them to their booking
+            conn.execute("UPDATE crm_tasks SET booking_id = CAST(substr(src_key, instr(src_key, ':') + 1) AS INTEGER) "
+                         "WHERE booking_id IS NULL AND (src_key LIKE 'checkin:%' OR src_key LIKE 'checkout:%')")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_tasks_booking ON crm_tasks(booking_id)")
         if not conn.execute("SELECT 1 FROM crm_pipelines").fetchone():
             pid = conn.execute("INSERT INTO crm_pipelines (name, sort) VALUES ('Продажи', 0)").lastrowid
             for i, (nm, color, kind) in enumerate(DEFAULT_STAGES):
@@ -728,16 +743,38 @@ def deal_for_booking(booking_id: int, uid: int) -> dict:
 # ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
-def _task_out(r, names, cmap) -> dict:
+def _booking_label(b: dict | None) -> str | None:
+    if not b:
+        return None
+    return f"{b.get('apartment_name') or ''} · {_dm(b.get('begin_date'))}–{_dm(b.get('end_date'))} · {b.get('client_name') or 'гость'}"
+
+
+def _task_out(r, names, cmap, bmap=None) -> dict:
     t = dict(r)
     t["assignee_name"] = names.get(t["assignee_uid"])
     c = cmap.get(t["client_id"]) if t["client_id"] else None
     t["client_name"] = c["name"] if c else None
+    b = (bmap or {}).get(t.get("booking_id")) if t.get("booking_id") else None
+    t["booking"] = {"id": b["id"], "apartment": b.get("apartment_name"), "checkin": b.get("begin_date"), "checkout": b.get("end_date"),
+                    "guest": b.get("client_name"), "label": _booking_label(b)} if b else None
     return t
 
 
+def _bookings_map(conn, ids) -> dict:
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return {}
+    out = {}
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        for r in conn.execute("SELECT id, apartment_name, begin_date, end_date, client_name, client_phone, arrival_time, departure_time, status "
+                              f"FROM bookings WHERE id IN ({','.join('?' * len(chunk))})", chunk).fetchall():
+            out[r["id"]] = dict(r)
+    return out
+
+
 def tasks(assignee_uid: int | None = None, status: str | None = None, client_id: int | None = None,
-          deal_id: int | None = None) -> list[dict]:
+          deal_id: int | None = None, booking_id: int | None = None) -> list[dict]:
     where, args = [], []
     if assignee_uid:
         where.append("assignee_uid = ?"); args.append(assignee_uid)
@@ -747,13 +784,54 @@ def tasks(assignee_uid: int | None = None, status: str | None = None, client_id:
         where.append("client_id = ?"); args.append(client_id)
     if deal_id:
         where.append("deal_id = ?"); args.append(deal_id)
+    if booking_id:
+        where.append("booking_id = ?"); args.append(booking_id)
     sql = "SELECT * FROM crm_tasks" + (" WHERE " + " AND ".join(where) if where else "")
     sql += " ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, COALESCE(due, '9999') , id DESC LIMIT 500"
     with database.get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()
         cmap = {r["id"]: dict(r) for r in conn.execute("SELECT id, name FROM crm_clients").fetchall()}
+        bmap = _bookings_map(conn, [r["booking_id"] for r in rows])
     names = user_names()
-    return [_task_out(r, names, cmap) for r in rows]
+    return [_task_out(r, names, cmap, bmap) for r in rows]
+
+
+def tasks_by_booking(assignee_uid: int | None = None, status: str = "open") -> list[dict]:
+    """Tasks page → «По броням»: one group per booking (nearest check-in first),
+    with progress, so nothing about a stay is forgotten."""
+    rows = [t for t in tasks(assignee_uid) if t.get("booking_id")]  # all statuses: progress counts the whole list
+    groups: dict[int, dict] = {}
+    now = _now()
+    for t in rows:
+        g = groups.get(t["booking_id"])
+        if not g:
+            b = t["booking"] or {"id": t["booking_id"], "label": f"Бронь #{t['booking_id']}", "checkin": "9999"}
+            g = groups[t["booking_id"]] = {"booking": b, "tasks": [], "open": 0, "done": 0, "overdue": 0}
+        if status == "all" or t["status"] == status:
+            g["tasks"].append(t)
+        if t["status"] == "done":
+            g["done"] += 1
+        else:
+            g["open"] += 1
+            if t["due"] and t["due"] < now:
+                g["overdue"] += 1
+    return sorted([g for g in groups.values() if g["tasks"]], key=lambda g: (g["booking"].get("checkin") or "9999", g["booking"]["id"]))
+
+
+def task_counts(conn, ids) -> dict:
+    """{booking_id: {"open", "done", "overdue"}} for the day view / chess board."""
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return {}
+    now = _now()
+    out: dict[int, dict] = {}
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        for r in conn.execute("SELECT booking_id, SUM(status = 'open') AS o, SUM(status = 'done') AS d, "
+                              "SUM(status = 'open' AND due IS NOT NULL AND due < ?) AS late FROM crm_tasks "
+                              f"WHERE booking_id IN ({','.join('?' * len(chunk))}) GROUP BY booking_id", (now, *chunk)).fetchall():
+            out[r["booking_id"]] = {"open": r["o"] or 0, "done": r["d"] or 0, "overdue": r["late"] or 0}
+    return out
 
 
 def save_task(tid: int | None, data: dict, uid: int) -> dict:
@@ -767,20 +845,31 @@ def save_task(tid: int | None, data: dict, uid: int) -> dict:
         due = data.get("due") if "due" in data else (cur and cur["due"])
         due = (due or "")[:16] or None
         status = data.get("status") if data.get("status") in ("open", "done") else (cur["status"] if cur else "open")
+        booking_id = data.get("booking_id") if "booking_id" in data else (cur and cur["booking_id"])
+        booking_id = int(booking_id) if booking_id else None
+        client_id = data.get("client_id") if "client_id" in data else (cur and cur["client_id"])
+        if booking_id and not client_id:  # a booking task is also the guest's task
+            b = conn.execute("SELECT client_name, client_phone FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+            if not b:
+                raise ValueError("Бронь не найдена")
+            if b["client_phone"]:
+                client_id = ensure_client(b["client_phone"], b["client_name"] or "")
         vals = (title, due,
                 data.get("assignee_uid") if "assignee_uid" in data else ((cur and cur["assignee_uid"]) or uid),
-                data.get("client_id") if "client_id" in data else (cur and cur["client_id"]),
+                client_id,
                 data.get("deal_id") if "deal_id" in data else (cur and cur["deal_id"]),
-                status, (_now() if status == "done" else None) if (not cur or cur["status"] != status) else (cur and cur["done_at"]))
+                status, (_now() if status == "done" else None) if (not cur or cur["status"] != status) else (cur and cur["done_at"]),
+                booking_id)
         if tid:
-            conn.execute("UPDATE crm_tasks SET title=?, due=?, assignee_uid=?, client_id=?, deal_id=?, status=?, done_at=? WHERE id=?",
+            conn.execute("UPDATE crm_tasks SET title=?, due=?, assignee_uid=?, client_id=?, deal_id=?, status=?, done_at=?, booking_id=? WHERE id=?",
                          (*vals, tid))
         else:
-            tid = conn.execute("INSERT INTO crm_tasks (title, due, assignee_uid, client_id, deal_id, status, done_at, created_by, created_at) "
-                               "VALUES (?,?,?,?,?,?,?,?,?)", (*vals, uid, _now())).lastrowid
+            tid = conn.execute("INSERT INTO crm_tasks (title, due, assignee_uid, client_id, deal_id, status, done_at, booking_id, created_by, created_at) "
+                               "VALUES (?,?,?,?,?,?,?,?,?,?)", (*vals, uid, _now())).lastrowid
         r = conn.execute("SELECT * FROM crm_tasks WHERE id = ?", (tid,)).fetchone()
         cmap = {x["id"]: dict(x) for x in conn.execute("SELECT id, name FROM crm_clients").fetchall()}
-    return _task_out(r, user_names(), cmap)
+        bmap = _bookings_map(conn, [r["booking_id"]])
+    return _task_out(r, user_names(), cmap, bmap)
 
 
 def delete_task(tid: int) -> None:
@@ -813,9 +902,103 @@ def auto_tasks(day: date | None = None) -> int:
         with database.get_conn() as conn:
             for kind, title, due in items:
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key) "
-                    "VALUES (?, ?, ?, ?, 'open', 0, ?, ?)", (title, due, uid, cid, _now(), f"{kind}:{b['id']}"))
+                    "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id) "
+                    "VALUES (?, ?, ?, ?, 'open', 0, ?, ?, ?)", (title, due, uid, cid, _now(), f"{kind}:{b['id']}", b["id"]))
                 n += cur.rowcount
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Booking checklist («Задачи по брони»): a template the owner edits himself.
+# One line = one task:  Текст задачи | заезд -1 10:00
+#   anchor: заезд / выезд / сегодня, then day offset (+1, -2, 0), then time.
+# ---------------------------------------------------------------------------
+DEFAULT_CHECKLIST = """Подтвердить бронь и предоплату | сегодня 0 10:00
+Отправить адрес, код домофона и правила | заезд -1 10:00
+Проверить уборку и готовность квартиры | заезд 0 12:00
+Встретить гостя / передать ключи | заезд 0 15:00
+Напомнить о времени выезда | выезд -1 18:00
+Принять квартиру, вернуть депозит | выезд 0 12:00
+Попросить отзыв | выезд +1 11:00"""
+
+_CL_RE = re.compile(r"^(?P<title>.+?)\s*\|\s*(?P<anchor>заезд|выезд|сегодня|checkin|checkout|today)\s*(?P<off>[+-]?\d+)?\s*(?P<time>\d{1,2}:\d{2})?\s*$", re.I)
+
+
+def parse_checklist(text: str) -> list[dict]:
+    items = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _CL_RE.match(line)
+        if m:
+            a = m.group("anchor").lower()
+            anchor = "checkin" if a in ("заезд", "checkin") else "checkout" if a in ("выезд", "checkout") else "today"
+            items.append({"title": m.group("title").strip(), "anchor": anchor, "offset": int(m.group("off") or 0),
+                          "time": m.group("time") or ""})
+        else:
+            items.append({"title": line.split("|")[0].strip(), "anchor": "checkin", "offset": 0, "time": ""})
+    return items
+
+
+def checklist_preview(text: str | None = None) -> list[dict]:
+    return parse_checklist(get_setting("booking_checklist", DEFAULT_CHECKLIST) if text is None else text)
+
+
+def _cl_due(item: dict, b: dict) -> str:
+    base = date.today() if item["anchor"] == "today" else date.fromisoformat((b["end_date"] if item["anchor"] == "checkout" else b["begin_date"])[:10])
+    d = base + timedelta(days=item["offset"])
+    t = item["time"] or ((b.get("departure_time") if item["anchor"] == "checkout" else b.get("arrival_time")) or "10:00")[:5]
+    hh, mm = t.split(":")
+    return f"{d.isoformat()}T{int(hh):02d}:{int(mm):02d}"
+
+
+def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force: bool = False) -> dict:
+    """Create the template tasks for a booking (once; existing items are kept,
+    missing ones are added when called again by hand)."""
+    items = checklist_preview()
+    with database.get_conn() as conn:
+        b = conn.execute("SELECT * FROM bookings WHERE id = ?", (bid,)).fetchone()
+        if not b:
+            raise ValueError("Бронь не найдена")
+        b = dict(b)
+        if b.get("status") in ("cancelled", "canceled"):
+            raise ValueError("Бронь отменена")
+        done = conn.execute("SELECT 1 FROM crm_booking_checklist WHERE booking_id = ?", (bid,)).fetchone()
+        if done and not force:
+            return {"created": 0, "already": True}
+        cid = ensure_client(b.get("client_phone") or "", b.get("client_name") or "") if b.get("client_phone") else None
+        n = 0
+        for it in items:
+            key = f"cl:{bid}:{hashlib.sha1(it['title'].lower().encode()).hexdigest()[:10]}"
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id) "
+                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)", (it["title"], _cl_due(it, b), assignee_uid or uid, cid, uid, _now(), key, bid))
+            n += cur.rowcount
+        conn.execute("INSERT OR REPLACE INTO crm_booking_checklist (booking_id, created_by, created_at, n) VALUES (?, ?, ?, ?)",
+                     (bid, uid, _now(), n))
+    return {"created": n, "already": False}
+
+
+def auto_checklists(days_ahead: int = 30) -> int:
+    """Setting «auto_checklist»: every new booking (check-in within N days)
+    gets the checklist automatically, assigned to the first admin."""
+    if get_setting("auto_checklist", "0") != "1":
+        return 0
+    admins = [u for u in list_users() if u["role"] == "admin" and u["active"]]
+    if not admins:
+        return 0
+    today = date.today()
+    n = 0
+    with database.get_conn() as conn:
+        done = {r[0] for r in conn.execute("SELECT booking_id FROM crm_booking_checklist").fetchall()}
+    for b in database.get_bookings(today.isoformat(), (today + timedelta(days=days_ahead)).isoformat()):
+        if b["id"] in done or b.get("status") in ("cancelled", "canceled") or b["begin_date"] < today.isoformat():
+            continue
+        try:
+            n += create_checklist(b["id"], 0, admins[0]["id"])["created"]
+        except ValueError:
+            continue
     return n
 
 
@@ -881,9 +1064,11 @@ def bookings_day(day: str) -> dict:
         cm = {}
         for r in conn.execute("SELECT id, phone FROM crm_clients WHERE phone != ''").fetchall():
             cm[r["phone"][-9:]] = r["id"]
+        tc = task_counts(conn, [b["id"] for b in rows])
     for b in rows:
         b["deal_id"] = deals_map.get(b["id"])
         b["client_id"] = cm.get((b["phone"] or "")[-9:]) if b["phone"] else None
+        b["tasks"] = tc.get(b["id"])
     _contact_states(rows)
     return {
         "date": day,
@@ -901,8 +1086,10 @@ def bookings_grid(start: str, days: int = 30) -> dict:
     with database.get_conn() as conn:
         deals_map = {r["booking_id"]: r["id"] for r in conn.execute(
             "SELECT id, booking_id FROM crm_deals WHERE booking_id IS NOT NULL").fetchall()}
+        tc = task_counts(conn, [b["id"] for b in rows])
     for b in rows:
         b["deal_id"] = deals_map.get(b["id"])
+        b["tasks"] = tc.get(b["id"])
     _contact_states(rows)
     apts = services.apartment_names()
     return {"start": d0.isoformat(), "days": days, "apartments": apts, "bookings": rows}

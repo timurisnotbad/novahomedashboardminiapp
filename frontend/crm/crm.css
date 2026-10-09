@@ -262,6 +262,7 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .modal__card, .modal__card.wide { width:100%; max-height:92vh; border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); }
   .row-actions { position:sticky; bottom:-18px; background:var(--card); padding:10px 0 0; margin-top:12px; }
   .row-actions .btn { flex:1; justify-content:center; }
+  .bk-tasks__add { padding-bottom:6px; } .bk-tasks__add #bkt-add { flex:1; } .bk-tasks__add #bkt-due, .bk-tasks__add #bkt-who { max-width:none; flex:1 1 45%; }
   .kv { grid-template-columns:110px 1fr; }
   .hist { grid-template-columns:repeat(2, 1fr); }
   .inbox-frame { height:calc(100vh - 56px - 64px - env(safe-area-inset-bottom, 0px)); }
@@ -282,3 +283,22 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .chess th, .chess td { min-width:30px; height:30px; } .chess th.apt, .chess td.apt { min-width:70px; font-size:12px; padding:0 6px; }
   .chess .bar { font-size:10px; line-height:20px; padding:0 5px; }
 }
+
+/* tasks per booking */
+.prog { height:6px; border-radius:4px; background:#E5E7EB; overflow:hidden; min-width:90px; flex:1; }
+.prog i { display:block; height:100%; background:var(--blue); border-radius:4px; transition:width .2s; }
+.bkt { padding-top:12px; }
+.bkt.late { border-left:3px solid var(--red); }
+.bkt__head { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; padding-bottom:6px; border-bottom:1px solid var(--sep); }
+.bkt__title { font-weight:600; }
+.bkt__prog { display:flex; gap:8px; align-items:center; min-width:180px; font-size:13px; }
+.bkt__prog .ok { color:#15803D; } .bkt__prog .bad { color:var(--red); font-weight:600; }
+.bk-tasks { margin-top:14px; padding-top:10px; border-top:1px solid var(--sep); }
+.bk-tasks__head { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+.bk-tasks__prog { display:flex; gap:8px; align-items:center; min-width:200px; }
+.bk-tasks__list .task { padding:7px 0; }
+.bk-tasks__list details summary { cursor:pointer; padding:6px 0; }
+.bk-tasks__add { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+.bk-tasks__add #bkt-title { flex:1 1 220px; min-width:0; }
+.bk-tasks__add #bkt-due, .bk-tasks__add #bkt-who { width:auto; max-width:48%; }
+.field.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }

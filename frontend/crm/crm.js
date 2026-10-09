@@ -188,7 +188,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=41&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=42&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -387,27 +387,35 @@
 
   // ---- tasks ------------------------------------------------------------------
   ROUTES.tasks = async () => {
-    const f = S.cache.taskF || { mine: 1, status: "open" };
+    const f = S.cache.taskF || { mine: 1, status: "open", view: "list" };
     S.cache.taskF = f;
-    const list = await get(`/tasks?mine=${f.mine}&status=${f.status}`);
+    const byBooking = f.view === "booking";
+    const data = await get(`/tasks?mine=${f.mine}&status=${f.status}${byBooking ? "&group=booking" : ""}`);
+    const list = byBooking ? data.flatMap((g) => g.tasks) : data;
     const now = new Date().toISOString().slice(0, 16);
     const today = todayIso();
     const groups = [["Просрочено", (t) => t.due && t.due < now && t.status === "open"], ["Сегодня", (t) => t.due && t.due.slice(0, 10) === today && !(t.due < now)],
       ["В работе", (t) => t.status === "open" && (!t.due || t.due.slice(0, 10) > today)], ["Выполнено", (t) => t.status === "done"]];
     const row = (t) => `<div class="task ${t.status}" data-id="${t.id}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-done="${t.id}" />
       <div class="task__body"><div class="task__title">${esc(t.title)}</div>
-        <div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.client_id ? `<a href="#clients/${t.client_id}">${esc(t.client_name || "клиент")}</a>` : ""}${t.deal_id ? `<a href="#" data-deal="${t.deal_id}">сделка</a>` : ""}</div></div>
+        <div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.client_id ? `<a href="#clients/${t.client_id}">${esc(t.client_name || "клиент")}</a>` : ""}${t.deal_id ? `<a href="#" data-deal="${t.deal_id}">сделка</a>` : ""}${t.booking_id && !byBooking ? `<a href="#" data-bopen="${t.booking_id}" title="Открыть бронь">🏠 ${esc(t.booking ? t.booking.label : "бронь #" + t.booking_id)}</a>` : ""}</div></div>
       <button class="task__del" data-edit="${t.id}" title="Изменить">✎</button><button class="task__del" data-del="${t.id}" title="Удалить">✕</button></div>`;
     $("main").innerHTML = `
       <div class="page-head"><h1>Задачи</h1></div>
-      <div class="toolbar"><div class="seg"><button data-mine="1" class="${f.mine ? "is-on" : ""}">Мои</button><button data-mine="0" class="${!f.mine ? "is-on" : ""}">Все</button></div>
-        <div class="seg"><button data-status="open" class="${f.status === "open" ? "is-on" : ""}">Открытые</button><button data-status="done" class="${f.status === "done" ? "is-on" : ""}">Выполненные</button></div></div>
-      <div class="card"><div class="card__title">Новая задача</div>
+      <div class="toolbar"><div class="seg"><button data-tview="list" class="${!byBooking ? "is-on" : ""}">Список</button><button data-tview="booking" class="${byBooking ? "is-on" : ""}">По броням</button></div>
+        <div class="seg"><button data-mine="1" class="${f.mine ? "is-on" : ""}">Мои</button><button data-mine="0" class="${!f.mine ? "is-on" : ""}">Все</button></div>
+        <div class="seg"><button data-status="open" class="${f.status === "open" ? "is-on" : ""}">Открытые</button><button data-status="done" class="${f.status === "done" ? "is-on" : ""}">Выполненные</button>${byBooking ? `<button data-status="all" class="${f.status === "all" ? "is-on" : ""}">Все</button>` : ""}</div></div>
+      ${byBooking ? `<div class="page-sub">Задачи по каждой брони: чек-лист создаётся в карточке брони (кнопка «Чек-лист») или автоматически — Интеграции → Чек-лист брони.</div>` : ""}
+      ${byBooking ? (data.map((g) => { const b = g.booking; const total = g.open + g.done; return `<div class="card bkt ${g.overdue ? "late" : ""}"><div class="bkt__head"><div><a href="#" data-bopen="${b.id}" class="bkt__title">${esc(b.apartment || "Бронь")} · ${esc(dShort(b.checkin))}${b.checkout ? " – " + esc(dShort(b.checkout)) : ""}</a> <span class="muted">${esc(b.guest || "")}</span></div>
+          <div class="bkt__prog"><span class="${g.overdue ? "bad" : g.open ? "" : "ok"}">${g.done}/${total}</span>${g.overdue ? `<span class="tag red">просрочено ${g.overdue}</span>` : ""}<div class="prog"><i style="width:${total ? Math.round(100 * g.done / total) : 0}%"></i></div></div></div>${g.tasks.map(row).join("")}</div>`; }).join("") || `<div class="card empty">Задач по броням нет. Откройте бронь и нажмите «Чек-лист».</div>`) : ""}
+      <div class="card ${byBooking ? "hidden" : ""}"><div class="card__title">Новая задача</div>
         <input class="field" id="t-title" placeholder="Новая задача, например «Отправить адрес и код домофона»" />
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input class="field" id="t-due" type="datetime-local" style="width:auto" />
           <select class="field" id="t-who" style="width:auto">${userOptions(S.me.id)}</select><button class="btn" id="t-add">Добавить</button></div></div>
-      ${groups.map(([name, fn]) => { const items = list.filter(fn); return items.length ? `<div class="card"><div class="card__title">${name} · ${items.length}</div>${items.map(row).join("")}</div>` : ""; }).join("") || `<div class="card empty">Задач нет</div>`}`;
+      ${byBooking ? "" : groups.map(([name, fn]) => { const items = list.filter(fn); return items.length ? `<div class="card"><div class="card__title">${name} · ${items.length}</div>${items.map(row).join("")}</div>` : ""; }).join("") || `<div class="card empty">Задач нет</div>`}`;
     onMain(async (e) => {
+      const tv = e.target.closest("[data-tview]"); if (tv) { f.view = tv.dataset.tview; if (f.view !== "booking" && f.status === "all") f.status = "open"; navigate(); return; }
+      const bo = e.target.closest("[data-bopen]"); if (bo) { e.preventDefault(); openBooking(parseInt(bo.dataset.bopen, 10)); return; }
       const m = e.target.closest("[data-mine]"); if (m) { f.mine = parseInt(m.dataset.mine, 10); navigate(); return; }
       const st = e.target.closest("[data-status]"); if (st) { f.status = st.dataset.status; navigate(); return; }
       if (e.target.id === "t-add") { addTask(); return; }
@@ -416,7 +424,7 @@
       const ed = e.target.closest("[data-edit]"); if (ed) { taskForm(list.find((t) => t.id === parseInt(ed.dataset.edit, 10)), navigate); return; }
       const dd = e.target.closest("[data-deal]"); if (dd) { e.preventDefault(); S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(dd.dataset.deal, 10)); }
     });
-    $("t-title").addEventListener("keydown", (e) => { if (e.key === "Enter") addTask(); });
+    if ($("t-title")) $("t-title").addEventListener("keydown", (e) => { if (e.key === "Enter") addTask(); });
     async function addTask() {
       const title = val("t-title");
       if (!title) { toast("Введите текст задачи"); return; }
@@ -431,10 +439,11 @@
       <div class="form-row"><div><label class="lbl">Срок</label><input class="field" id="tf-due" type="datetime-local" value="${esc((t.due || "").slice(0, 16))}" /></div>
         <div><label class="lbl">Исполнитель</label><select class="field" id="tf-who">${userOptions(t.assignee_uid || S.me.id)}</select></div></div>
       <label class="lbl">Клиент</label><select class="field" id="tf-client">${clientOptions(t.client_id)}</select>
+      ${t.booking_id ? `<div class="muted small" style="margin-top:8px">🏠 Бронь: ${esc(t.booking ? t.booking.label : "#" + t.booking_id)}</div>` : ""}
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="tf-go">Сохранить</button></div>`);
     $("tf-go").addEventListener("click", async () => {
       const body = { title: val("tf-title"), due: val("tf-due") || null, assignee_uid: parseInt(val("tf-who"), 10),
-        client_id: val("tf-client") ? parseInt(val("tf-client"), 10) : null, deal_id: t.deal_id || null };
+        client_id: val("tf-client") ? parseInt(val("tf-client"), 10) : null, deal_id: t.deal_id || null, booking_id: t.booking_id || null };
       try { if (t.id) await patch(`/tasks/${t.id}`, body); else await post("/tasks", body); closeModal(); toast("Сохранено"); if (after) after(); } catch (err) { toast(err.message); }
     });
   }
@@ -451,10 +460,11 @@
     const CONTACT = { contacted: ["✓ связь есть", "green"], incoming: ["✉ гость писал, без ответа", "orange"], none: ["○ связи не было", "red"] };
     const payTag = (b) => { const p = PAY[b.pay] || PAY.unpaid; return `<span class="tag ${p[1]}">${p[0]}</span>`; };
     const contactTag = (b) => { const c = CONTACT[b.contact] || CONTACT.none; return `<span class="tag ${c[1]}" style="font-weight:500">${c[0]}</span>`; };
+    const taskTag = (b) => { const t = b.tasks; if (!t) return `<span class="tag" style="font-weight:500">☐ без задач</span>`; const total = t.open + t.done; return `<span class="tag ${t.overdue ? "red" : t.open ? "blue" : "green"}" style="font-weight:500" title="Задачи по брони">${t.open ? "☐" : "☑"} ${t.done}/${total}${t.overdue ? " · просрочено " + t.overdue : ""}</span>`; };
     const bkCard = (b) => `<div class="bk pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}"><div class="bk__top"><span class="bk__apt">${esc(b.apartment)}</span><span class="bk__amt">${money(b.amount)}</span></div>
       <div class="bk__sub">${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))} · ${plural(b.nights || nights(b.checkin, b.checkout) || 0, "ночь", "ночи", "ночей")}${b.arrival_time || b.departure_time ? ` · ${esc(b.arrival_time || "")}${b.arrival_time && b.departure_time ? "/" : ""}${esc(b.departure_time || "")}` : ""}</div>
       <div class="bk__guest">${b.client_id ? `<a href="#clients/${b.client_id}">${esc(b.guest || "Гость")}</a>` : `<b>${esc(b.guest || "Гость")}</b>`}${b.phone ? ` · +${esc(b.phone)}` : ""} <span class="muted small">· ${esc(b.source)}</span></div>
-      <div class="bk__tags">${payTag(b)}${Number(b.debt) > 0 ? `<span class="tag red">долг ${money(b.debt)}</span>` : ""}${contactTag(b)}</div>
+      <div class="bk__tags">${payTag(b)}${Number(b.debt) > 0 ? `<span class="tag red">долг ${money(b.debt)}</span>` : ""}${contactTag(b)}${taskTag(b)}</div>
       ${b.notes ? `<div class="bk__notes">${esc(b.notes)}</div>` : ""}
       <div class="bk__links"><a href="#" data-bopen="${b.id}">Открыть бронь</a><a href="#" data-bdeal="${b.id}">${b.deal_id ? "Сделка" : "+ Сделка"}</a></div></div>`;
     if (st.view === "day") {
@@ -481,7 +491,7 @@
             const span = Math.max(1, endIdx - startIdx) - (startIdx === i ? 0 : 0);
             const w = `calc(${span * 100}% - 4px)`;
             const left = startIdx === i ? "50%" : "2px";
-            bar = `<span class="bar pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}" style="left:${left};width:${w}" data-bk="${b.id}" title="${esc(b.guest || "")} · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${money(b.amount)} · ${esc(b.source)} · ${(PAY[b.pay] || PAY.unpaid)[0]} · ${(CONTACT[b.contact] || CONTACT.none)[0]}">${b.contact === "none" ? "○ " : b.contact === "incoming" ? "✉ " : ""}${esc(b.guest || "Гость")}</span>`;
+            bar = `<span class="bar pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}" style="left:${left};width:${w}" data-bk="${b.id}" title="${esc(b.guest || "")} · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${money(b.amount)} · ${esc(b.source)} · ${(PAY[b.pay] || PAY.unpaid)[0]} · ${(CONTACT[b.contact] || CONTACT.none)[0]}${b.tasks ? ` · задачи ${b.tasks.done}/${b.tasks.open + b.tasks.done}${b.tasks.overdue ? " (просрочено " + b.tasks.overdue + ")" : ""}` : " · задач нет"}">${b.contact === "none" ? "○ " : b.contact === "incoming" ? "✉ " : ""}${b.tasks && b.tasks.overdue ? "⚠ " : ""}${esc(b.guest || "Гость")}</span>`;
           }
           return `<td class="${d.getDay() % 6 === 0 ? "we" : ""} ${di === today ? "today" : ""}">${bar}</td>`;
         }).join("");
@@ -591,10 +601,18 @@
         <div class="muted small" style="margin-top:10px">Запись в календарь: из карточки брони («Изменить бронь») уходят гость, телефон, сумма, даты, время, заметка. ${rc.push_log && rc.push_log.length ? `Последние записи:` : "Записей пока не было."}</div>
         ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Задачи из броней</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-auto" ${d.settings.auto_tasks ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать задачи «Заезд» и «Выезд» на день заезда/выезда (исполнитель — администратор)</label></div>
+      <div class="card"><h3>Чек-лист брони</h3>
+        <div class="muted small">Шаблон задач, которые создаются по каждой брони (кнопка «Чек-лист» в карточке брони). Одна строка — одна задача: <span class="mono">Текст | заезд -1 10:00</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b> или <b>сегодня</b>; потом сдвиг в днях (−1 — за день до, +1 — на следующий день) и время. Без времени берётся время заезда/выезда из брони.</div>
+        <textarea class="field mono" id="i-cl" rows="8" style="margin-top:8px" ${S.me.role !== "admin" ? "disabled" : ""}>${esc(d.settings.checklist || "")}</textarea>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><button class="btn" id="i-cl-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить шаблон</button><button class="btn link" id="i-cl-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартный</button>
+          <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать чек-лист автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
       <div class="card"><h3>Telegram Mini App</h3><div class="small ${d.telegram.configured ? "ok" : "bad"}">${d.telegram.configured ? "Бот настроен" : "BOT_TOKEN не задан"}</div><div class="muted small">${esc(d.telegram.webapp_url || "")}</div></div>
       <div class="card"><h3>Healthchecks.io</h3><div class="small ${d.healthchecks.configured ? "ok" : "muted"}">${d.healthchecks.configured ? "Подключён" : "Не настроен — уведомления о выключенном компьютере не придут"}</div></div>`;
     $("i-sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); navigate(); } catch (err) { toast(err.message); navigate(); } });
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("i-cl-save").addEventListener("click", async () => { try { const r = await post("/integrations/settings", { checklist: $("i-cl").value }); toast(`Сохранено: ${r.items.length} задач в чек-листе`); } catch (err) { toast(err.message); } });
+    $("i-cl-reset").addEventListener("click", async () => { try { const c = await get("/checklist"); $("i-cl").value = c.default; await post("/integrations/settings", { checklist: c.default }); toast("Стандартный шаблон восстановлен"); } catch (err) { toast(err.message); } });
   };
 
   // ---- quick commands ------------------------------------------------------------
@@ -772,7 +790,9 @@
           ${b.auto_log.length ? `<div class="card__title" style="margin-top:14px">Автосообщения</div>${b.auto_log.map((l) => `<div class="small"><span class="${l.status === "sent" ? "ok" : l.status === "failed" ? "bad" : "muted"}">${l.status === "sent" ? "✓" : l.status === "failed" ? "✕" : "–"}</span> ${esc(l.rule_name)} · ${esc(dtShort(l.at))}${l.error ? ` <span class="muted">${esc(l.error)}</span>` : ""}</div>`).join("")}` : ""}
         </div>
       </div>
+      <div class="bk-tasks" id="bk-tasks"></div>
       <div class="row-actions"><button class="btn primary" data-close>Закрыть</button></div>`, true);
+    renderBookingTasks(b);
     const fillVars = (t) => { const d = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = (b.guest || "").split(" ")[0]; return t.replace(/\{(имя|объект|заезд|выезд)\}/g, (m, k) => ({ "имя": nm, "объект": b.apartment || "", "заезд": d(b.checkin), "выезд": d(b.checkout) }[k] || m)); };
     get("/commands").then((list) => { $("bk-tpl").innerHTML += list.map((t) => `<option value="${t.id}">${esc(t.command ? "/" + t.command + " " : "")}${esc(t.title)}</option>`).join(""); $("bk-tpl").dataset.list = JSON.stringify(list); }).catch(() => {});
     $("bk-tpl").addEventListener("change", (e) => { const t = JSON.parse(e.target.dataset.list || "[]").find((x) => String(x.id) === e.target.value); if (t) $("bk-msg").value = fillVars(t.text); });
@@ -798,6 +818,39 @@
       const un = e.target.closest("[data-unlink]"); if (un) { await del(`/bookings/${id}/chats/${un.dataset.unlink}`); openBooking(id); return; }
       const dl = e.target.closest("[data-dealopen]"); if (dl) { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(dl.dataset.dealopen, 10)); }
     });
+  }
+
+  // «Задачи по брони»: the island inside the booking card — checklist + own tasks
+  function renderBookingTasks(b) {
+    const box = $("bk-tasks"); if (!box) return;
+    const list = b.tasks || [];
+    const now = new Date().toISOString().slice(0, 16);
+    const open = list.filter((t) => t.status === "open"), done = list.filter((t) => t.status === "done");
+    const late = open.filter((t) => t.due && t.due < now).length;
+    const row = (t) => `<div class="task ${t.status}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-tdone="${t.id}" />
+      <div class="task__body"><div class="task__title">${esc(t.title)}</div><div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.status === "done" && t.done_at ? `<span class="muted">✓ ${esc(dtShort(t.done_at))}</span>` : ""}</div></div>
+      <button class="task__del" data-tedit="${t.id}" title="Изменить">✎</button><button class="task__del" data-tdel="${t.id}" title="Удалить">✕</button></div>`;
+    box.innerHTML = `<div class="bk-tasks__head"><div class="card__title" style="margin:0">Задачи по брони ${list.length ? `<span class="tag ${late ? "red" : open.length ? "blue" : "green"}">${done.length}/${list.length}${late ? " · просрочено " + late : ""}</span>` : ""}</div>
+        <div class="bk-tasks__prog"><div class="prog"><i style="width:${list.length ? Math.round(100 * done.length / list.length) : 0}%"></i></div><button class="btn sm" id="bkt-checklist" title="Создать задачи по шаблону (Интеграции → Чек-лист брони)">${b.checklist_done ? "Дополнить чек-лист" : "✚ Чек-лист"}</button></div></div>
+      <div class="bk-tasks__list">${open.map(row).join("")}${done.length ? `<details ${open.length ? "" : "open"}><summary class="muted small">Выполнено · ${done.length}</summary>${done.map(row).join("")}</details>` : ""}${list.length ? "" : `<div class="muted small">Пока нет задач. Нажмите «Чек-лист», чтобы создать стандартный список по этой брони, или добавьте свою.</div>`}</div>
+      <div class="bk-tasks__add"><input class="field" id="bkt-title" placeholder="Своя задача по этой брони, например «Докупить полотенца»" /><input class="field" id="bkt-due" type="datetime-local" value="${esc((b.checkin || todayIso()) + "T10:00")}" /><select class="field" id="bkt-who">${userOptions(S.me.id)}</select><button class="btn sm" id="bkt-add">Добавить</button></div>`;
+    const reload = async () => { try { b.tasks = await get(`/bookings/${b.id}/tasks`); } catch (err) { toast(err.message); } renderBookingTasks(b); };
+    const add = async () => {
+      const title = $("bkt-title").value.trim(); if (!title) { toast("Введите текст задачи"); return; }
+      try { await post("/tasks", { title, due: $("bkt-due").value || null, assignee_uid: parseInt($("bkt-who").value, 10), booking_id: b.id }); toast("Задача добавлена"); reload(); } catch (err) { toast(err.message); }
+    };
+    $("bkt-add").addEventListener("click", add);
+    $("bkt-title").addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
+    $("bkt-checklist").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try { const r = await post(`/bookings/${b.id}/checklist`, {}); toast(r.created ? `Создано задач: ${r.created}` : "Все задачи чек-листа уже есть"); b.checklist_done = true; await reload(); }
+      catch (err) { toast(err.message); e.target.disabled = false; }
+    });
+    box.onclick = async (e) => {
+      const dn = e.target.closest("[data-tdone]"); if (dn) { try { await patch(`/tasks/${dn.dataset.tdone}`, { status: dn.checked ? "done" : "open" }); } catch (err) { toast(err.message); } reload(); return; }
+      const dl = e.target.closest("[data-tdel]"); if (dl) { if (confirm("Удалить задачу?")) { await del(`/tasks/${dl.dataset.tdel}`); reload(); } return; }
+      const ed = e.target.closest("[data-tedit]"); if (ed) { const t = list.find((x) => x.id === parseInt(ed.dataset.tedit, 10)); if (t) taskForm(t, () => openBooking(b.id)); }
+    };
   }
 
   function bookingForm(b) {

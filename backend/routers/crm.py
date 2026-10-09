@@ -453,8 +453,10 @@ def booking_deal(bid: int, user: dict = Depends(current_user)):  # noqa: B008
 
 # ---- tasks --------------------------------------------------------------------
 @router.get("/tasks")
-def get_tasks(mine: int = 0, status: str = "open", user: dict = Depends(current_user)):  # noqa: B008
-    return crm.tasks(user["id"] if mine else None, status if status != "all" else None)
+def get_tasks(mine: int = 0, status: str = "open", booking: int = 0, group: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    if group == "booking":
+        return crm.tasks_by_booking(user["id"] if mine else None, status)
+    return crm.tasks(user["id"] if mine else None, status if status != "all" else None, booking_id=booking or None)
 
 
 @router.post("/tasks")
@@ -486,6 +488,43 @@ def booking_card(bid: int, user: dict = Depends(current_user)):  # noqa: B008
     if not b:
         raise HTTPException(status_code=404, detail="Бронь не найдена")
     return b
+
+
+@router.get("/bookings/{bid}/tasks")
+def booking_tasks(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    return crm.tasks(booking_id=bid)
+
+
+@router.post("/bookings/{bid}/checklist")
+def booking_checklist(bid: int, payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    """Create the checklist tasks for a booking from the template (Интеграции → Чек-лист брони)."""
+    payload = payload or {}
+    try:
+        return crm.create_checklist(bid, user["id"], payload.get("assignee_uid") or None, force=True)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.get("/checklist")
+def checklist_settings(user: dict = Depends(current_user)):  # noqa: B008
+    text = crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)
+    return {"text": text, "default": crm.DEFAULT_CHECKLIST, "items": crm.parse_checklist(text),
+            "auto": crm.get_setting("auto_checklist", "0") == "1"}
+
+
+class ChecklistIn(BaseModel):
+    text: str | None = None
+    auto: bool | None = None
+
+
+@router.post("/checklist")
+def set_checklist(payload: ChecklistIn, user: dict = Depends(admin_user)):  # noqa: B008
+    if payload.text is not None:
+        crm.set_setting("booking_checklist", payload.text.strip())
+    if payload.auto is not None:
+        crm.set_setting("auto_checklist", "1" if payload.auto else "0")
+    text = crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)
+    return {"ok": True, "items": crm.parse_checklist(text)}
 
 
 @router.patch("/bookings/{bid}")
@@ -698,19 +737,27 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
                            "push_log": rc_push.recent_log(10)},
         "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
-        "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1"},
+        "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
+                     "auto_checklist": crm.get_setting("auto_checklist", "0") == "1",
+                     "checklist": crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)},
     }
 
 
 class SettingsIn(BaseModel):
     auto_tasks: bool | None = None
+    auto_checklist: bool | None = None
+    checklist: str | None = None
 
 
 @router.post("/integrations/settings")
 def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa: B008
     if payload.auto_tasks is not None:
         crm.set_setting("auto_tasks", "1" if payload.auto_tasks else "0")
-    return {"ok": True}
+    if payload.auto_checklist is not None:
+        crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
+    if payload.checklist is not None:
+        crm.set_setting("booking_checklist", payload.checklist.strip())
+    return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}
 
 
 @router.post("/integrations/sync")
@@ -721,6 +768,7 @@ async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
         raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
     try:
         await asyncio.get_event_loop().run_in_executor(None, crm.auto_tasks)
+        await asyncio.get_event_loop().run_in_executor(None, crm.auto_checklists)
         await asyncio.get_event_loop().run_in_executor(None, crm_ext.sync_deals_from_bookings)
     except Exception:  # noqa: BLE001
         logger.exception("post-sync CRM refresh failed")

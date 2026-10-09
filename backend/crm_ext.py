@@ -133,6 +133,7 @@ def booking_card(bid: int) -> dict | None:
         deal = conn.execute("SELECT id, title, stage_id FROM crm_deals WHERE booking_id = ?", (bid,)).fetchone()
         auto = [dict(r) for r in conn.execute(
             "SELECT * FROM crm_auto_log WHERE booking_id = ? ORDER BY id DESC LIMIT 20", (bid,)).fetchall()]
+        checklist_done = bool(conn.execute("SELECT 1 FROM crm_booking_checklist WHERE booking_id = ?", (bid,)).fetchone())
     cid = crm.ensure_client(b["phone"] or "", b["guest"] or "", b["source"]) if b["phone"] else None
     client = crm.get_client(cid) if cid else None
     b["client"] = client and {k: client[k] for k in ("id", "name", "phone", "email", "source", "notes", "fields")}
@@ -141,6 +142,8 @@ def booking_card(bid: int) -> dict | None:
     crm._contact_states([b])  # noqa: SLF001
     b["deal"] = dict(deal) if deal else None
     b["auto_log"] = auto
+    b["tasks"] = crm.tasks(booking_id=bid)
+    b["checklist_done"] = checklist_done
     return b
 
 

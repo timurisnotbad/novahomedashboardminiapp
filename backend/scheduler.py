@@ -59,6 +59,7 @@ def _reminder_job():
     try:
         from . import crm
         crm.auto_tasks()
+        crm.auto_checklists()
     except Exception as exc:  # noqa: BLE001
         logger.warning("CRM auto tasks failed: %s", exc)
 
