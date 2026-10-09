@@ -131,6 +131,26 @@ class BookingLinkIn(BaseModel):
 
 class ClientPatch(BaseModel):
     status: str | None = None
+    name: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    phone2: str | None = None
+    instagram: str | None = None
+    telegram: str | None = None
+    notes: str | None = None
+    city: str | None = None
+    lang: str | None = None
+
+
+@router.get("/chats/{chat_id}/client")
+def get_chat_client(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import crm, crm_amo
+    chat = inbox.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Чат не найден")
+    cid = chat.get("client_id") or crm_amo._client_for_chat(chat)  # noqa: SLF001
+    c = crm.get_client(cid) or {}
+    return {k: c.get(k) or "" for k in ("id", "name", "phone", "email", "phone2", "instagram", "telegram", "notes", "city", "lang", "status")} | {"id": cid}
 
 
 @router.get("/chats/{chat_id}/bookings")
@@ -181,6 +201,17 @@ def patch_client(chat_id: int, payload: ClientPatch, user: dict = Depends(inbox_
     cid = chat.get("client_id") or crm_amo._client_for_chat(chat)  # noqa: SLF001
     if payload.status is not None:
         crm.set_client_status(cid, payload.status)
+    fields = {k: v for k, v in payload.model_dump().items() if k != "status" and v is not None}
+    if fields:
+        cur = crm.get_client(cid) or {}
+        body = {k: cur.get(k) for k in ("name", "phone", "email", "source", "notes", "fields", "status", "phone2", "instagram", "telegram", "city", "lang", "birthday", "passport")}
+        body.update(fields)
+        try:
+            crm.save_client(cid, body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if payload.name is not None:
+            inbox.update_chat(chat_id, name=payload.name)
     return inbox.get_chat(chat_id)
 
 

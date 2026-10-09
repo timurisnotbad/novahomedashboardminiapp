@@ -567,6 +567,37 @@
     $("modal-card").dataset.tpls = JSON.stringify(list);
   }
 
+  // ---- guest card right from the chat (pencil in the header) -------------------------
+  async function openGuestEdit() {
+    if (!S.open) return;
+    const id = S.open.id;
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let g;
+    try { g = await req(`/chats/${id}/client`); } catch (e) { toast(e.message); closeModal(); return; }
+    loadStatuses();
+    const f = (k, label, ph, type) => `<div><label class="ib-lbl">${label}</label><input class="ib-field" id="ge-${k}" type="${type || "text"}" value="${esc(g[k] || "")}" placeholder="${ph || ""}" /></div>`;
+    $("modal-card").innerHTML = `<h3>Гость</h3>
+      <p>Карточка гостя в CRM. Всё, что вы впишете здесь, видно в «Клиентах», в карточке брони и в этом чате.</p>
+      <div class="ib-2col">${f("name", "Имя", "Имя Фамилия")}<div><label class="ib-lbl">Статус</label><select class="ib-field" id="ge-status"><option value="">— без статуса —</option>${(statuses || []).map((s) => `<option value="${esc(s.name)}" ${s.name === g.status ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div></div>
+      <div class="ib-2col">${f("phone", "Телефон", "+998 90 123 45 67", "tel")}${f("phone2", "Доп. телефон", "", "tel")}</div>
+      <div class="ib-2col">${f("email", "Email", "guest@example.com", "email")}${f("instagram", "Instagram", "@username")}</div>
+      <div class="ib-2col">${f("telegram", "Telegram", "@username")}${f("city", "Город / страна", "")}</div>
+      ${f("lang", "Язык общения", "RU / EN / UZ")}
+      <label class="ib-lbl">Особенности гостя</label><textarea class="ib-field" id="ge-notes" placeholder="Аллергии, предпочтения, во сколько обычно заезжает…">${esc(g.notes || "")}</textarea>
+      <div class="ib-row"><button class="ib-btn" data-close>Отмена</button><button class="ib-btn primary" id="ge-save">Сохранить</button></div>`;
+    $("ge-save").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      const body = {};
+      ["name", "phone", "phone2", "email", "instagram", "telegram", "city", "lang", "notes", "status"].forEach((k) => { body[k] = $("ge-" + k).value.trim(); });
+      try {
+        const c = await req(`/chats/${id}/client`, { method: "PATCH", json: body });
+        S.chats.set(c.id, c); if (S.open && S.open.id === c.id) S.open = c;
+        renderHead(); renderList(); closeModal(); toast("Карточка гостя сохранена");
+      } catch (err) { toast(err.message); e.target.disabled = false; }
+    });
+  }
+
   // ---- link the chat to a booking from the calendar ------------------------------
   async function openBookingPick() {
     if (!S.open) return;
@@ -713,19 +744,7 @@
         else window.open(`/crm/#bookings/${id}`, "_blank");
       }
     });
-    $("rename").addEventListener("click", async () => {
-      if (!S.open) return;
-      const c = S.chats.get(S.open.id) || S.open;
-      const name = prompt("Имя контакта", c.name || c.push_name || "");
-      if (name === null) return;
-      try {
-        const nc = await req(`/chats/${S.open.id}`, { method: "PATCH", json: { name } });
-        S.chats.set(nc.id, nc);
-        S.open = nc;
-        renderHead();
-        renderList();
-      } catch (err) { toast(err.message); }
-    });
+    $("rename").addEventListener("click", () => openGuestEdit());
 
     $("msgs").addEventListener("click", (e) => {
       if (e.target.id === "older") { loadOlder(); return; }

@@ -1114,23 +1114,47 @@ def _booking_out(b: dict) -> dict:
     return {
         "id": b["id"], "apartment": b.get("apartment_name"), "checkin": b.get("begin_date"), "checkout": b.get("end_date"),
         "nights": b.get("days_count"), "guest": b.get("client_name"), "phone": digits(b.get("client_phone")),
-        "amount": b.get("amount"), "debt": b.get("debt"), "source": config.SOURCE_NAMES.get(b.get("source_id"), "Другое"),
+        "amount": b.get("amount"), "debt": (round(float(b.get("amount") or 0) - _paid_amount(b), 2) if b.get("amount") else b.get("debt")),
+        "source": config.SOURCE_NAMES.get(b.get("source_id"), "Другое"),
         "status": b.get("status"), "notes": b.get("short_notes"), "arrival_time": b.get("arrival_time"),
         "departure_time": b.get("departure_time"), "prepayment": b.get("prepayment"),
-        "pay": _pay_state(b),
+        "pay": _pay_state(b), "paid": _paid_amount(b),
     }
+
+
+def _paid_amount(b: dict) -> float:
+    """How much the guest has actually paid, from what RealtyCalendar gives us.
+    Only positive evidence counts: payments (prepayment), a debt smaller than
+    the amount, the % progress, or the «paid» status. A booking with amount and
+    no payment data is unpaid, not paid."""
+    amount = float(b.get("amount") or 0)
+    debt = float(b.get("debt") or 0)
+    prep = float(b.get("prepayment") or 0)
+    prog = float(b.get("prepayment_progress") or 0)
+    st = (b.get("status") or "").lower()
+    paid = 0.0
+    if prep > 0:
+        paid = prep
+    elif 0 < debt < amount:
+        paid = amount - debt
+    elif prog > 0 and amount:
+        paid = amount * min(prog, 100) / 100
+    elif st == "paid":
+        paid = amount
+    return round(min(paid, amount) if amount else paid, 2)
 
 
 def _pay_state(b: dict) -> str:
     """Payment colour like the calendar: paid / prepaid / unpaid / unconfirmed."""
     st = (b.get("status") or "").lower()
-    amount, debt, prep = float(b.get("amount") or 0), float(b.get("debt") or 0), float(b.get("prepayment") or 0)
+    amount = float(b.get("amount") or 0)
     if st == "not_confirmed":
         return "unconfirmed"
-    if amount > 0:  # the money columns are the truth; the status label only when there is no amount
-        if debt <= 0:
+    paid = _paid_amount(b)
+    if amount > 0:
+        if paid >= amount - 0.005:
             return "paid"
-        return "prepaid" if (debt < amount or prep > 0) else "unpaid"
+        return "prepaid" if paid > 0 else "unpaid"
     return {"paid": "paid", "prepaid": "prepaid"}.get(st, "unpaid")
 
 

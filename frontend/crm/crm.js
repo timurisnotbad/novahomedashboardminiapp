@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=44&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=45&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -215,7 +215,7 @@
     const q = S.cache.dealQ || "";
     const deals = await get(`/deals?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
     $("main").innerHTML = `
-      <div class="page-head"><h1>Сделки</h1><button class="btn primary" id="deal-add">Новая сделка</button></div>
+      <div class="page-head"><h1>Сделки</h1><div style="display:flex;gap:8px"><button class="btn" id="deal-backfill" title="Каждый чат — лид: создать сделки для чатов без сделки и передвинуть сделки по броням">Из чатов и броней</button><button class="btn primary" id="deal-add">Новая сделка</button></div></div>
       <div class="toolbar">
         ${S.pipelines.length > 1 ? `<select class="field" id="pipe-sel" style="width:auto">${S.pipelines.map((x) => `<option value="${x.id}" ${x.id === p.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : ""}
         <input class="field grow" id="deal-q" placeholder="Поиск: название, клиент, объект" value="${esc(q)}" />
@@ -235,6 +235,7 @@
     let t;
     $("deal-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { S.cache.dealQ = e.target.value.trim(); navigate(); }, 300); });
     $("deal-add").addEventListener("click", () => dealForm(null, { pipeline_id: p.id }));
+    $("deal-backfill").addEventListener("click", async (e) => { e.target.disabled = true; try { const r = await post("/deals/backfill"); toast(`Создано сделок: ${r.created}, передвинуто: ${r.moved}`); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
     const kb = $("kanban");
     kb.addEventListener("click", (e) => { const c = e.target.closest("[data-deal]"); if (c) openDeal(parseInt(c.dataset.deal, 10)); });
     let dragId = null;
@@ -512,7 +513,7 @@
         <span style="flex:1"></span><button class="btn sm" id="bk-sync">Обновить из RC</button></div>`;
     const PAY = { paid: ["Оплачено", "green"], prepaid: ["Предоплата", "orange"], unpaid: ["Не оплачено", "red"], unconfirmed: ["Не подтверждена", ""] };
     const CONTACT = { contacted: ["✓ связь есть", "green"], incoming: ["✉ гость писал, без ответа", "orange"], none: ["○ связи не было", "red"] };
-    const payTag = (b) => { const p = PAY[b.pay] || PAY.unpaid; return `<span class="tag ${p[1]}">${p[0]}</span>`; };
+    const payTag = (b) => { const p = PAY[b.pay] || PAY.unpaid; const part = b.pay === "prepaid" && Number(b.amount) ? ` ${money(b.paid)} из ${money(b.amount)}` : ""; return `<span class="tag ${p[1]}">${p[0]}${part}</span>`; };
     const contactTag = (b) => { const c = CONTACT[b.contact] || CONTACT.none; return `<span class="tag ${c[1]}" style="font-weight:500">${c[0]}</span>`; };
     const taskTag = (b) => { const t = b.tasks; if (!t) return `<span class="tag" style="font-weight:500">☐ без задач</span>`; const total = t.open + t.done; return `<span class="tag ${t.overdue ? "red" : t.open ? "blue" : "green"}" style="font-weight:500" title="Задачи по брони">${t.open ? "☐" : "☑"} ${t.done}/${total}${t.overdue ? " · просрочено " + t.overdue : ""}</span>`; };
     const bkCard = (b) => `<div class="bk pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}"><div class="bk__top"><span class="bk__apt">${esc(b.apartment)}</span><span class="bk__amt">${money(b.amount)}</span></div>
@@ -658,7 +659,10 @@
         ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Задачи из броней</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-auto" ${d.settings.auto_tasks ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать задачи «Заезд» и «Выезд» на день заезда/выезда (исполнитель — администратор)</label></div>
       <div class="card"><h3>Реквизиты компании (для счетов и подтверждений)</h3>
-        <div class="form-row"><div><label class="lbl">Название</label><input class="field" id="co-name" value="${esc(d.company.name)}" /></div><div><label class="lbl">Телефон</label><input class="field" id="co-phone" value="${esc(d.company.phone)}" /></div></div>
+        <div class="form-row c3"><div><label class="lbl">Бренд (шапка)</label><input class="field" id="co-brand" value="${esc(d.company.brand || "")}" /></div><div><label class="lbl">Подпись под брендом</label><input class="field" id="co-tagline" value="${esc(d.company.tagline || "")}" /></div><div><label class="lbl">Цвет акцента</label><input class="field" id="co-accent" value="${esc(d.company.accent || "#8B7D5A")}" /></div></div>
+        <div class="form-row"><div><label class="lbl">Название</label><input class="field" id="co-name" value="${esc(d.company.name)}" /></div><div><label class="lbl">Юр. лицо</label><input class="field" id="co-legal" value="${esc(d.company.legal || "")}" /></div></div>
+        <div class="form-row c3"><div><label class="lbl">Объект (в подтверждении)</label><input class="field" id="co-property" value="${esc(d.company.property || "")}" /></div><div><label class="lbl">Подписант</label><input class="field" id="co-signer" value="${esc(d.company.signer || "")}" /></div><div><label class="lbl">Должность</label><input class="field" id="co-signer_title" value="${esc(d.company.signer_title || "")}" /></div></div>
+        <div class="form-row"><div><label class="lbl">Телефон</label><input class="field" id="co-phone" value="${esc(d.company.phone)}" /></div><div></div></div>
         <div class="form-row"><div><label class="lbl">Email</label><input class="field" id="co-email" value="${esc(d.company.email)}" /></div><div><label class="lbl">Сайт</label><input class="field" id="co-website" value="${esc(d.company.website)}" /></div></div>
         <div class="form-row"><div><label class="lbl">Адрес</label><input class="field" id="co-address" value="${esc(d.company.address)}" /></div><div><label class="lbl">ИНН / регистрация</label><input class="field" id="co-inn" value="${esc(d.company.inn)}" /></div></div>
         <div class="form-row"><div><label class="lbl">Банковские реквизиты (в счёте)</label><textarea class="field" id="co-bank" rows="3">${esc(d.company.bank)}</textarea></div><div><label class="lbl">Примечание внизу документа</label><textarea class="field" id="co-note" rows="3">${esc(d.company.note)}</textarea></div></div>
@@ -677,7 +681,7 @@
       <div class="card"><h3>Healthchecks.io</h3><div class="small ${d.healthchecks.configured ? "ok" : "muted"}">${d.healthchecks.configured ? "Подключён" : "Не настроен — уведомления о выключенном компьютере не придут"}</div></div>`;
     $("i-sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); navigate(); } catch (err) { toast(err.message); navigate(); } });
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
-    $("co-save").addEventListener("click", async () => { try { await post("/company", { name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); } catch (err) { toast(err.message); } });
+    $("co-save").addEventListener("click", async () => { try { await post("/company", { brand: val("co-brand"), tagline: val("co-tagline"), accent: val("co-accent"), legal: val("co-legal"), property: val("co-property"), signer: val("co-signer"), signer_title: val("co-signer_title"), name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); } catch (err) { toast(err.message); } });
     const et = $("em-test-go"); if (et) et.addEventListener("click", async (e) => { e.target.disabled = true; try { await post("/email", { to: val("em-test"), subject: "Nova Home CRM — тест", text: "Письмо из CRM работает." }); toast("Тестовое письмо отправлено"); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
@@ -767,12 +771,17 @@
   // ---- pipelines -------------------------------------------------------------------
   ROUTES.pipelines = async () => {
     S.pipelines = await get("/pipelines");
+    try { S.flow = (await get("/integrations")).settings.booking_flow; } catch (e) { S.flow = true; }
     $("main").innerHTML = `<div class="page-head"><h1>Воронки</h1><button class="btn primary" id="pp-add">Новая воронка</button></div>
       <div class="page-sub">Этапы, по которым движется сделка. Этап с типом «успех» или «отказ» закрывает сделку.</div>
+      <div class="card"><div class="card__title">Сценарий брони</div>
+        <div class="small">Каждый чат — лид: входящее сообщение создаёт сделку в «Новый запрос». Как только к сделке привязана бронь из календаря, она двигается сама: <b>Ожидает оплаты</b> (не оплачена) → <b>Забронировано</b> (есть предоплата или оплата) → <b>Заселён</b> (день заезда) → <b>Выехал</b> (после выезда). Отказ — «Отказ», но гость остаётся в базе: задача «вернуться к гостю» создаётся автоматически. После выезда задачи «попросить отзыв» и «повторное касание» тоже создаются сами — круг не закрывается. Что именно делать на каждом этапе (сообщение, задача, уведомление) настраивается кнопкой ⚡ в этапе.</div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="pp-flow" ${S.flow !== false ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Двигать сделки по броням автоматически</label></div>
       ${S.pipelines.map((p) => `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h3>${esc(p.name)}</h3><div><button class="btn sm" data-edit="${p.id}">Изменить</button> ${S.pipelines.length > 1 ? `<button class="btn sm danger" data-del="${p.id}">Удалить</button>` : ""}</div></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${p.stages.map((s) => `<span class="tag" style="background:${esc(s.color || "#eee")}22;color:${esc(s.color || "#555")}">${esc(s.name)}${s.kind !== "open" ? " · " + (s.kind === "won" ? "успех" : "отказ") : ""}${(s.actions || []).length ? ` ⚡${s.actions.length}` : ""}</span>`).join("")}</div>
         <div class="muted small" style="margin-top:8px">⚡ — автодействия при переходе сделки на этап: сообщение гостю, задача ответственному, уведомление в Telegram.</div></div>`).join("")}`;
     $("pp-add").addEventListener("click", () => pipelineForm(null));
+    $("pp-flow").addEventListener("change", async (e) => { try { await post("/integrations/settings", { booking_flow: e.target.checked }); S.flow = e.target.checked; toast("Сохранено"); } catch (err) { toast(err.message); } });
     onMain(async (e) => {
       const ed = e.target.closest("[data-edit]"); if (ed) { pipelineForm(S.pipelines.find((p) => p.id === parseInt(ed.dataset.edit, 10))); return; }
       const dl = e.target.closest("[data-del]"); if (dl && confirm("Удалить воронку?")) { try { await del(`/pipelines/${dl.dataset.del}`); navigate(); } catch (err) { toast(err.message); } }
@@ -842,7 +851,7 @@
     const h = b.history;
     const chatPill = (c) => `<span class="chat-pill"><i class="ch ${esc(c.channel)}"></i><a href="#messages/${c.id}" data-close>${esc(c.title)}</a><span class="muted">${esc(c.channel_name)}${c.pinned ? "" : " · по номеру"}</span>${c.pinned ? `<button data-unlink="${c.id}" title="Отвязать">✕</button>` : `<button data-pin="${c.id}" title="Закрепить за бронью">📌</button>`}</span>`;
     modal(`<h2>${esc(b.apartment)} · ${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))}</h2>
-      <div style="margin-bottom:6px">${({ paid: '<span class="tag green">Оплачено</span>', prepaid: '<span class="tag orange">Предоплата</span>', unpaid: '<span class="tag red">Не оплачено</span>', unconfirmed: '<span class="tag">Не подтверждена</span>' })[b.pay] || ""} ${({ contacted: '<span class="tag green">✓ связь есть</span>', incoming: '<span class="tag orange">✉ гость писал, без ответа</span>', none: '<span class="tag red">○ связи не было</span>' })[b.contact] || ""}</div>
+      <div style="margin-bottom:6px">${({ paid: '<span class="tag green">Оплачено</span>', prepaid: `<span class="tag orange">Предоплата ${money(b.paid)} из ${money(b.amount)}</span>`, unpaid: '<span class="tag red">Не оплачено</span>', unconfirmed: '<span class="tag">Не подтверждена</span>' })[b.pay] || ""} ${({ contacted: '<span class="tag green">✓ связь есть</span>', incoming: '<span class="tag orange">✉ гость писал, без ответа</span>', none: '<span class="tag red">○ связи не было</span>' })[b.contact] || ""}</div>
       <div class="muted small" style="margin-bottom:10px">${plural(b.nights || nights(b.checkin, b.checkout) || 0, "ночь", "ночи", "ночей")} · ${esc(b.source)} · ${money(b.amount)}${Number(b.debt) > 0 ? ` · <span class="bad">долг ${money(b.debt)}</span>` : ""}${b.arrival_time ? " · заезд " + esc(b.arrival_time) : ""}${b.departure_time ? " · выезд " + esc(b.departure_time) : ""}${b.notes ? `<div>${esc(b.notes)}</div>` : ""}</div>
       <div class="grid c2">
         <div>

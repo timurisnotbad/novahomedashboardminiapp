@@ -171,6 +171,16 @@ def get_pipelines(user: dict = Depends(current_user)):  # noqa: B008
     return crm.pipelines()
 
 
+@router.post("/deals/backfill")
+async def deals_backfill(user: dict = Depends(current_user)):  # noqa: B008
+    """«Создать сделки из чатов» + move booking deals along the stay."""
+    loop = asyncio.get_event_loop()
+    n = await loop.run_in_executor(None, crm_amo.backfill_deals)
+    await loop.run_in_executor(None, crm_ext.ensure_flow_stages)
+    m = await loop.run_in_executor(None, crm_ext.booking_flow)
+    return {"created": n, "moved": m}
+
+
 @router.post("/pipelines")
 def add_pipeline(payload: PipelineIn, user: dict = Depends(admin_user)):  # noqa: B008
     try:
@@ -847,6 +857,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
+                     "booking_flow": crm.get_setting("booking_flow", "1") == "1",
                      "auto_checklist": crm.get_setting("auto_checklist", "0") == "1",
                      "checklist": crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)},
     }
@@ -857,6 +868,7 @@ class SettingsIn(BaseModel):
     auto_checklist: bool | None = None
     checklist: str | None = None
     auto_deal: bool | None = None
+    booking_flow: bool | None = None
 
 
 @router.post("/integrations/settings")
@@ -867,6 +879,8 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
     if payload.auto_deal is not None:
         crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
+    if payload.booking_flow is not None:
+        crm.set_setting("booking_flow", "1" if payload.booking_flow else "0")
     if payload.checklist is not None:
         crm.set_setting("booking_checklist", payload.checklist.strip())
     return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}

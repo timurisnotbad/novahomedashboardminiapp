@@ -35,9 +35,12 @@ def _job():
     except Exception as exc:  # noqa: BLE001
         logger.warning("Booking-change check failed: %s", exc)
     try:
-        from . import crm, crm_ext
+        from . import crm, crm_amo, crm_ext
         crm.import_clients()  # every guest from the calendar and the chats has a card
+        crm_amo.backfill_deals()  # every chat is a lead on the board
         n = crm_ext.sync_deals_from_bookings()  # deals follow their bookings
+        crm_ext.ensure_flow_stages()
+        crm_ext.booking_flow()  # ...and move along the stay: ожидает оплаты → забронировано → заселён → выехал
         if n:
             logger.info("CRM deals refreshed from bookings: %s", n)
     except Exception as exc:  # noqa: BLE001

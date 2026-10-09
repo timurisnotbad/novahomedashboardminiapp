@@ -79,7 +79,11 @@ def accept(chat_id: int, uid: int, pipeline_id: int | None = None) -> dict:
         b = chat.get("booking")
         data = {"client_id": cid, "title": chat["title"], "pipeline_id": pipeline_id}
         if b:
-            data.update(apartment=b.get("apartment"), checkin=b.get("begin"), checkout=b.get("end"))
+            data.update(apartment=b.get("apartment"), checkin=b.get("begin"), checkout=b.get("end"), booking_id=b.get("id"))
+            with database.get_conn() as conn:
+                bk = conn.execute("SELECT amount FROM bookings WHERE id = ?", (b.get("id"),)).fetchone()
+            if bk:
+                data["amount"] = bk["amount"]
         did = crm.save_deal(None, data, uid)["id"]
     link_chat(did, chat_id)
     return deal_full(did)
@@ -111,6 +115,21 @@ def on_incoming(chat_id: int) -> None:
             sts = crm.client_statuses()
             if sts:
                 crm.set_client_status(cid, sts[0]["name"])
+
+
+def backfill_deals() -> int:
+    """Every chat is a lead: chats that wrote to us and have no deal get one
+    (runs after each sync, so the board fills up on the first start too)."""
+    if crm.get_setting("auto_deal", "1") != "1":
+        return 0
+    n = 0
+    for c in unsorted():
+        try:
+            on_incoming(c["id"])
+            n += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("backfill deal failed for chat %s", c["id"])
+    return n
 
 
 def reject(chat_id: int) -> None:

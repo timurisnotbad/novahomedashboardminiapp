@@ -134,6 +134,17 @@ def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
                 logger.warning("RC event %s without dates skipped", event.get("id"))
                 continue
             client = event.get("client") or {}
+            if not event.get("prepayment"):
+                for k in ("paid", "payed", "paid_amount", "payments_sum", "payed_amount", "total_paid"):
+                    if isinstance(event.get(k), (int, float)) and event[k]:
+                        event["prepayment"] = event[k]
+                        break
+                pays = event.get("payments")
+                if isinstance(pays, list) and pays and not event.get("prepayment"):
+                    try:
+                        event["prepayment"] = sum(float(p.get("amount") or p.get("sum") or 0) for p in pays if isinstance(p, dict))
+                    except (TypeError, ValueError):
+                        pass
             bookings.append({
                 **event,
                 "apartment_id": apt_id,
