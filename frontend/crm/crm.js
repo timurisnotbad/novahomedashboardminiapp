@@ -88,6 +88,7 @@
   function showAuth(setup) {
     setupMode = !!setup;
     if (inboxFrame) { inboxFrame.remove(); inboxFrame = null; } // no chats behind the login form
+    $("tabbar").classList.add("hidden");
     $("app").classList.add("hidden");
     $("auth").classList.remove("hidden");
     $("auth-sub").textContent = setup ? "Первый запуск: создайте администратора" : "Войдите, чтобы продолжить";
@@ -127,7 +128,7 @@
     const [name, arg] = h.split("/");
     const r = ROUTES[name] ? name : "home";
     S.route = r;
-    document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
+    document.querySelectorAll("#nav a, #tabbar a").forEach((a) => a.classList.toggle("is-on", a.dataset.r === r));
     document.querySelector(".side").classList.remove("open");
     const main = $("main");
     main.classList.remove("hidden");
@@ -187,7 +188,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=39&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=40&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -931,6 +932,8 @@
       $("nav-unread").classList.toggle("hidden", !d.unread);
       $("nav-tasks").textContent = d.my_open_tasks || "";
       $("nav-tasks").classList.toggle("hidden", !d.my_open_tasks);
+      $("tab-unread").textContent = d.unread || ""; $("tab-unread").classList.toggle("hidden", !d.unread);
+      $("tab-tasks").textContent = d.my_open_tasks || ""; $("tab-tasks").classList.toggle("hidden", !d.my_open_tasks);
       if (d.latest) {
         if (lastSeenMsg !== null && d.latest.id > lastSeenMsg) { chime(); showPopup(d.latest); }
         lastSeenMsg = Math.max(lastSeenMsg || 0, d.latest.id);
@@ -942,6 +945,8 @@
   async function boot() {
     $("auth").classList.add("hidden");
     $("app").classList.remove("hidden");
+    $("tabbar").classList.toggle("hidden", window.innerWidth > 760);
+    window.addEventListener("resize", () => $("tabbar").classList.toggle("hidden", window.innerWidth > 760));
     document.body.classList.toggle("is-admin", S.me.role === "admin");
     $("me-name").textContent = S.me.name;
     $("me-mail").textContent = S.me.email;

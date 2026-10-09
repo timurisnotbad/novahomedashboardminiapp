@@ -70,6 +70,9 @@ select.field { appearance:auto; }
 .card + .card { margin-top:16px; }
 .card__title { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--label-2); margin-bottom:12px; }
 .grid { display:grid; gap:16px; }
+.grid > * { min-width:0; }          /* long selects/inputs must not widen a column past the screen */
+.modal__card { overflow-x:hidden; }
+.field { max-width:100%; }
 .grid.c2 { grid-template-columns:1fr 1fr; }
 .grid.c3 { grid-template-columns:repeat(3, 1fr); }
 .grid.c4 { grid-template-columns:repeat(4, 1fr); }
@@ -218,16 +221,57 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .main { padding:18px 16px 50px; }
 }
 @media (max-width: 760px) {
+  body { padding-bottom:calc(64px + env(safe-area-inset-bottom, 0px)); }
   .app { flex-direction:column; }
-  .side { width:100%; height:auto; position:sticky; padding:12px 14px; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; }
-  .side__brand { padding:0; flex:1; }
+  /* top bar: brand + burger; the full menu opens as a sheet */
+  .side { width:100%; height:auto; position:sticky; top:0; z-index:30; padding:10px 14px; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; border-right:none; border-bottom:1px solid var(--sep); }
+  .side__brand { padding:0; flex:1; font-size:16px; }
   .side__burger { display:block; font-size:22px; padding:4px 8px; order:1; }
   .side__nav { order:2; } .side__me { order:3; }
   .side__nav, .side__me { display:none; width:100%; }
-  .side.open .side__nav { display:flex; }
+  .side.open .side__nav { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding-top:8px; }
+  .side.open .side__nav a { padding:10px 12px; }
   .side.open .side__me { display:block; margin-top:8px; }
-  .inbox-frame { height:calc(100vh - 56px); }
+  /* bottom tab bar with the five everyday sections */
+  .tabbar { position:fixed; left:0; right:0; bottom:0; z-index:40; display:flex; background:var(--card); border-top:1px solid var(--sep); padding-bottom:env(safe-area-inset-bottom, 0px); }
+  .tabbar a { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 0 6px; font-size:11px; color:var(--label-2); position:relative; }
+  .tabbar a svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .tabbar a.is-on { color:var(--blue-text); }
+  .tabbar .pill { position:absolute; top:4px; left:calc(50% + 6px); font-size:10px; padding:0 5px; }
+  .main { padding:14px 14px 40px; }
+  .page-head h1 { font-size:22px; }
+  .page-head { gap:8px; }
+  .page-head .btn { padding:8px 12px; }
+  .toolbar { gap:6px; }
+  .field, .btn { font-size:16px; } /* iOS does not zoom the page on focus at 16px */
+  .btn.sm { font-size:14px; }
+  .seg button { padding:7px 10px; }
+  .grid.c4, .grid.c3 { grid-template-columns:1fr 1fr; gap:10px; }
+  .stat { padding:12px 14px; } .stat b { font-size:22px; }
+  .card { padding:14px 14px; }
+  /* kanban: one column per screen, swipe between stages */
+  .kanban { scroll-snap-type:x mandatory; gap:10px; margin:0 -14px; padding:0 14px 12px; }
+  .kcol { width:86vw; scroll-snap-align:start; }
+  /* sheets instead of centered dialogs */
+  .modal { padding:0; align-items:end; }
+  .modal__card, .modal__card.wide { width:100%; max-height:92vh; border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); }
+  .row-actions { position:sticky; bottom:-18px; background:var(--card); padding:10px 0 0; margin-top:12px; }
+  .row-actions .btn { flex:1; justify-content:center; }
+  .kv { grid-template-columns:110px 1fr; }
+  .hist { grid-template-columns:repeat(2, 1fr); }
+  .inbox-frame { height:calc(100vh - 56px - 64px - env(safe-area-inset-bottom, 0px)); }
   .list__row { grid-template-columns:1fr; gap:4px; }
+  .list__row .actions button { margin:6px 14px 0 0; }
+  .rule { grid-template-columns:42px 1fr; } .rule .actions { grid-column:2; }
   .table th:nth-child(n+3), .table td:nth-child(n+3) { display:none; }
   .table td.actions, .table th:last-child { display:table-cell; }
+  .table td.actions button { margin-left:10px; }
+  .bar-row { grid-template-columns:110px 1fr 90px; }
+  .trend__col b { display:none; }
+  .popup { left:12px; right:12px; width:auto; bottom:calc(72px + env(safe-area-inset-bottom, 0px)); }
+  .toast { bottom:calc(80px + env(safe-area-inset-bottom, 0px)); }
+  .stage-row { grid-template-columns:22px 1fr 100px 36px 28px; }
+  .act-row { grid-template-columns:1fr; }
+  .chess th, .chess td { min-width:30px; height:30px; } .chess th.apt, .chess td.apt { min-width:70px; font-size:12px; padding:0 6px; }
+  .chess .bar { font-size:10px; line-height:20px; padding:0 5px; }
 }

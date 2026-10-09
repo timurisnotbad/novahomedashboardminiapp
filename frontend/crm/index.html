@@ -2,9 +2,16 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#2563EB" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Nova CRM" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <title>Nova Home CRM</title>
-  <link rel="stylesheet" href="crm.css?v=39" />
+  <link rel="stylesheet" href="crm.css?v=40" />
 </head>
 <body>
   <!-- login / first-run setup -->
@@ -54,11 +61,19 @@
     </aside>
     <main class="main" id="main"></main>
   </div>
+  <!-- phones: bottom tab bar (hidden on desktop by CSS) -->
+  <nav class="tabbar hidden" id="tabbar">
+    <a href="#home" data-r="home"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5"/><path d="M6 9.5V20h4v-5h4v5h4V9.5"/></svg>Главная</a>
+    <a href="#messages" data-r="messages"><svg viewBox="0 0 24 24"><path d="M4.5 18.8l1.1-3.4A7.6 7.6 0 1 1 8.7 18z"/></svg>Чаты<b class="pill hidden" id="tab-unread"></b></a>
+    <a href="#deals" data-r="deals"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="5" height="14" rx="1.5"/><rect x="9.5" y="5" width="5" height="9" rx="1.5"/><rect x="15.5" y="5" width="5" height="12" rx="1.5"/></svg>Сделки</a>
+    <a href="#tasks" data-r="tasks"><svg viewBox="0 0 24 24"><path d="M9.5 7h10M9.5 12h10M9.5 17h10"/><path d="M4 6.6l1 1 1.7-2.1M4 11.6l1 1 1.7-2.1M4 16.6l1 1 1.7-2.1"/></svg>Задачи<b class="pill hidden" id="tab-tasks"></b></a>
+    <a href="#bookings" data-r="bookings"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.6"/><path d="M3.5 9.5h17M8 3.5v3M16 3.5v3"/></svg>Брони</a>
+  </nav>
 
   <div id="modal" class="modal hidden"><div class="modal__back" data-close></div><div class="modal__card" id="modal-card"></div></div>
   <div id="toast" class="toast hidden"></div>
   <div id="popup" class="popup hidden"><b id="popup-title"></b><span id="popup-text"></span><small id="popup-sub"></small></div>
 
-  <script src="crm.js?v=39"></script>
+  <script src="crm.js?v=40"></script>
 </body>
 </html>
