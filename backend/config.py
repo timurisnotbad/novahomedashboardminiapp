@@ -203,6 +203,12 @@ INBOX_NOTIFY_CHAT_IDS = _parse_chat_ids(os.environ.get("INBOX_NOTIFY_CHAT_IDS", 
 INBOX_NOTIFY_OFF = os.environ.get("INBOX_NOTIFY_CHAT_IDS", "").strip() == "0"
 
 
+# CRM (/crm/): the first administrator can be set here; otherwise the setup
+# page in the browser asks for one on first open.
+CRM_ADMIN_EMAIL = os.environ.get("CRM_ADMIN_EMAIL", "").strip().lower()
+CRM_ADMIN_PASSWORD = os.environ.get("CRM_ADMIN_PASSWORD", "").strip()
+
+
 def inbox_notify_targets() -> list[int]:
     if INBOX_NOTIFY_OFF:
         return []

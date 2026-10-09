@@ -14,11 +14,12 @@ MAX_UPLOAD = 30 * 1024 * 1024
 
 
 async def inbox_user(
+    request: Request,
     x_telegram_init_data: str = Header(default=""),  # noqa: B008
     x_owner_key: str = Header(default=""),  # noqa: B008
     x_inbox_key: str = Header(default=""),  # noqa: B008
 ) -> dict:
-    user = inbox.resolve_user(x_telegram_init_data, x_owner_key, x_inbox_key)
+    user = inbox.resolve_user(x_telegram_init_data, x_owner_key, x_inbox_key, request.cookies.get("nh_crm", ""))
     if not user:
         raise HTTPException(status_code=403, detail="Нет доступа к чатам — откройте их командой /chats в боте")
     return user
@@ -59,6 +60,7 @@ class NewChatIn(BaseModel):
 class TemplateIn(BaseModel):
     title: str = ""
     text: str
+    command: str = ""
 
 
 @router.get("/me")
@@ -183,7 +185,11 @@ def get_templates(user: dict = Depends(inbox_user)):  # noqa: B008
 def add_template(payload: TemplateIn, user: dict = Depends(inbox_user)):  # noqa: B008
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="Пустой шаблон")
-    return {"id": inbox.add_template(payload.title or payload.text[:30], payload.text)}
+    from .. import crm
+    try:
+        return {"id": crm.save_command(None, payload.command, payload.title, payload.text)["id"]}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/templates/{tid}")

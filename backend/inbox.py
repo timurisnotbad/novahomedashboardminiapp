@@ -229,8 +229,13 @@ def _agent_name(uid: int) -> str:
     return "Владелец" if uid in config.OWNER_TELEGRAM_IDS else f"id{uid}"
 
 
-def resolve_user(init_data: str, owner_key: str, inbox_key: str) -> dict | None:
+def resolve_user(init_data: str, owner_key: str, inbox_key: str, crm_cookie: str = "") -> dict | None:
     """Who is calling, or None. Dev mode (bot not configured) = full access."""
+    if crm_cookie:
+        from . import crm
+        u = crm.user_from_token(crm_cookie)
+        if u:
+            return {"uid": -u["id"], "name": u["name"], "owner": u["role"] == "admin", "crm": True}
     if not config.BOT_TOKEN or not config.OWNER_TELEGRAM_IDS:
         return {"uid": 0, "name": "Оператор", "owner": True}
     uid = _uid_from_key(inbox_key)
@@ -403,7 +408,22 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
         "VALUES (?, ?, ?, ?, ?, ?, 0)",
         (jid, lid, phone_of_jid(jid), push_name, _now(), _bump(conn)),
     )
+    _new_chat_ids.append((cur.lastrowid, phone_of_jid(jid), push_name or ""))
     return cur.lastrowid
+
+
+_new_chat_ids: list = []
+
+
+def _flush_new_clients() -> None:
+    """A new chat = a client card in the CRM (outside the chat's transaction)."""
+    while _new_chat_ids:
+        chat_id, phone, name = _new_chat_ids.pop()
+        try:
+            from . import crm
+            crm.ensure_client(phone, name, "WhatsApp", chat_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("crm client from chat failed")
 
 
 def _preview(kind: str, text: str) -> str:
@@ -473,6 +493,7 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
         _touch_chat(conn, chat_id, at, "out" if out else "in", m.get("kind") or "text",
                     m.get("text") or "", "sent" if out else None,
                     0 if (out or history) else 1)
+    _flush_new_clients()
     if notify and not out and not history:
         _alert(chat_id, m)
     return {"chat_id": chat_id}
@@ -673,12 +694,15 @@ def start_chat(phone: str, name: str = "") -> dict:
             conn.execute("UPDATE inbox_chats SET name = ?, rev = ? WHERE id = ?", (name.strip(), _bump(conn), chat_id))
         conn.execute("UPDATE inbox_chats SET last_at = COALESCE(last_at, ?), rev = ? WHERE id = ?",
                      (_now(), _bump(conn), chat_id))
+    _flush_new_clients()
     return get_chat(chat_id)
 
 
 def templates() -> list[dict]:
     with database.get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM inbox_templates ORDER BY title, id").fetchall()]
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM inbox_templates ORDER BY CASE WHEN command IS NULL OR command = '' THEN 1 ELSE 0 END, command, title, id"
+        ).fetchall()]
 
 
 def add_template(title: str, text: str) -> int:

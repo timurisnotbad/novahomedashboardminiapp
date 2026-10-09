@@ -8,9 +8,10 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, database, inbox, logsetup, rc_sync, reminders, scheduler
+from . import auth, config, crm, database, inbox, logsetup, rc_sync, reminders, scheduler
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
+from .routers import crm as crm_router
 from .routers import inbox as inbox_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -30,6 +31,7 @@ async def _initial_sync() -> None:
         logger.info("Initial sync: %s bookings (demo=%s)", count, config.DEMO_MODE)
         # seed the booking baseline so we don't announce the whole calendar
         await loop.run_in_executor(None, reminders.check_booking_changes)
+        await loop.run_in_executor(None, crm.auto_tasks)  # today's check-in/out tasks in the CRM
     except Exception as exc:  # noqa: BLE001
         logger.warning("Initial sync failed: %s", exc)
 
@@ -38,6 +40,7 @@ async def _initial_sync() -> None:
 async def lifespan(app: FastAPI):
     database.init_db()
     inbox.init_db()
+    crm.init_db()
     scheduler.start()
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
@@ -70,6 +73,8 @@ for r in (dashboard.router, bookings.router, cleaning.router,
 # hook and signed media links carry no user headers.
 app.include_router(inbox_router.router, prefix=config.API_PREFIX)
 app.include_router(inbox_router.public, prefix=config.API_PREFIX)
+# Nova Home CRM (/crm/): cookie session, its own guards inside the router
+app.include_router(crm_router.router, prefix=config.API_PREFIX)
 
 
 @app.middleware("http")

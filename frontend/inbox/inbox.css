@@ -120,6 +120,14 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-send svg { width:19px; height:19px; }
 .ib-send:disabled { opacity:.5; }
 
+.ib-cmd { background:var(--card); border-top:1px solid var(--sep); max-height:260px; overflow-y:auto; }
+.ib-cmd__it { display:grid; grid-template-columns:110px 1fr; gap:0 10px; padding:7px 14px; cursor:pointer; align-items:baseline; }
+.ib-cmd__it.is-on, .ib-cmd__it:hover { background:var(--tint-soft); }
+.ib-cmd__it b { color:#1F6FB2; font-family:ui-monospace, Menlo, monospace; font-size:13px; }
+.ib-cmd__it span { font-weight:600; font-size:14px; }
+.ib-cmd__it small { grid-column:2; color:var(--label-2); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ib-cmdtag { font-style:normal; color:#1F6FB2; font-family:ui-monospace, Menlo, monospace; font-size:13px; }
+
 /* ---------- modal / toast ---------- */
 .ib-modal { position:fixed; inset:0; z-index:50; display:grid; place-items:center; }
 .ib-modal__back { position:absolute; inset:0; background:rgba(0,0,0,.35); }

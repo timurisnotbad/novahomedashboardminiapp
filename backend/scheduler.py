@@ -41,6 +41,11 @@ def _reminder_job():
         reminders.check_due_tasks()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Reminder check failed: %s", exc)
+    try:
+        from . import crm
+        crm.auto_tasks()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CRM auto tasks failed: %s", exc)
 
 
 def start() -> None:

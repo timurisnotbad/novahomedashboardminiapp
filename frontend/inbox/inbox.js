@@ -369,6 +369,58 @@
     }
   }
 
+  // ---- quick commands: «/wifi» in the composer → template with variables ----
+  const MONTHS_GEN = MONTHS;
+  function fillVars(text) {
+    const c = S.open && (S.chats.get(S.open.id) || S.open) || {};
+    const b = c.booking || {};
+    const fmt = (iso) => { if (!iso) return ""; const d = new Date(iso); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`; };
+    const name = (b.guest || c.title || "").replace(/^\+\d+$/, "").split(" ")[0];
+    const map = { "имя": name, "объект": b.apartment || "", "заезд": fmt(b.begin), "выезд": fmt(b.end) };
+    return text.replace(/\{(имя|объект|заезд|выезд)\}/g, (m, k) => map[k] || m);
+  }
+  let tpls = [];
+  let cmdSel = 0;
+  function loadTpls() {
+    req("/templates").then((l) => { tpls = l || []; }).catch(() => {});
+  }
+  function cmdMatches() {
+    const v = $("text").value;
+    if (!v.startsWith("/") || /\s/.test(v)) return [];
+    const q = v.slice(1).toLowerCase();
+    return tpls.filter((t) => (t.command && t.command.toLowerCase().startsWith(q)) || (!q && t.command)
+      || (q && (t.title || "").toLowerCase().includes(q))).slice(0, 8);
+  }
+  function renderCmd() {
+    let box = $("cmd-box");
+    const list = cmdMatches();
+    if (!list.length) { if (box) box.remove(); return; }
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "cmd-box";
+      box.className = "ib-cmd";
+      $("conv").insertBefore(box, document.querySelector(".ib-compose"));
+      box.addEventListener("mousedown", (e) => {
+        const it = e.target.closest("[data-cmd]");
+        if (it) { e.preventDefault(); useCmd(parseInt(it.dataset.cmd, 10)); }
+      });
+    }
+    cmdSel = Math.min(cmdSel, list.length - 1);
+    box.innerHTML = list.map((t, i) => `<div class="ib-cmd__it ${i === cmdSel ? "is-on" : ""}" data-cmd="${t.id}">
+      <b>${t.command ? "/" + esc(t.command) : "—"}</b><span>${esc(t.title || "")}</span><small>${esc((t.text || "").slice(0, 90))}</small></div>`).join("");
+  }
+  function useCmd(id) {
+    const t = tpls.find((x) => x.id === id);
+    if (!t) return;
+    const ta = $("text");
+    ta.value = fillVars(t.text);
+    const box = $("cmd-box");
+    if (box) box.remove();
+    autosize();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
   function autosize() {
     const ta = $("text");
     ta.style.height = "auto";
@@ -489,12 +541,13 @@
     $("modal").classList.remove("hidden");
     $("modal-card").innerHTML = "<p>Загрузка…</p>";
     let list = [];
-    try { list = await req("/templates"); } catch (e) { toast(e.message); }
+    try { list = await req("/templates"); tpls = list; } catch (e) { toast(e.message); }
     $("modal-card").innerHTML = `<h3>Шаблоны ответов</h3>
-      <p>Нажмите на шаблон, чтобы вставить его в сообщение.</p>
-      <div>${list.map((t) => `<div class="ib-tpl"><div class="ib-tpl__body" data-tpl-use="${t.id}"><b>${esc(t.title)}</b><span>${esc(t.text)}</span></div>
+      <p>Нажмите на шаблон, чтобы вставить его. В поле сообщения можно набрать «/» и начало команды. Переменные {имя} {объект} {заезд} {выезд} подставляются из брони гостя.</p>
+      <div>${list.map((t) => `<div class="ib-tpl"><div class="ib-tpl__body" data-tpl-use="${t.id}"><b>${t.command ? '<i class="ib-cmdtag">/' + esc(t.command) + '</i> ' : ""}${esc(t.title)}</b><span>${esc(t.text)}</span></div>
         <button class="ib-icon" data-tpl-del="${t.id}" title="Удалить"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>`).join("") || '<p>Пока нет шаблонов.</p>'}</div>
       <h3 style="margin-top:14px;font-size:16px">Новый шаблон</h3>
+      <input class="ib-field" id="tpl-cmd" placeholder="Команда, например wifi (необязательно)" maxlength="30" />
       <input class="ib-field" id="tpl-title" placeholder="Название (например: Инструкция заезда)" maxlength="60" />
       <textarea class="ib-field" id="tpl-text" placeholder="Текст сообщения"></textarea>
       <div class="ib-row"><button class="ib-btn" data-close>Закрыть</button><button class="ib-btn primary" data-tpl-add>Сохранить</button></div>`;
@@ -528,8 +581,16 @@
     $("search").addEventListener("input", (e) => { S.q = e.target.value.trim(); renderList(); });
     $("back").addEventListener("click", closeChat);
     $("send").addEventListener("click", sendText);
-    $("text").addEventListener("input", autosize);
+    $("text").addEventListener("input", () => { autosize(); renderCmd(); });
+    $("text").addEventListener("blur", () => setTimeout(() => { const b = $("cmd-box"); if (b) b.remove(); }, 150));
     $("text").addEventListener("keydown", (e) => {
+      const list = cmdMatches();
+      if (list.length && $("cmd-box")) {
+        if (e.key === "ArrowDown") { e.preventDefault(); cmdSel = (cmdSel + 1) % list.length; renderCmd(); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); cmdSel = (cmdSel - 1 + list.length) % list.length; renderCmd(); return; }
+        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); useCmd(list[cmdSel].id); return; }
+        if (e.key === "Escape") { $("cmd-box").remove(); return; }
+      }
       // Enter sends on a computer; on phones Enter is a new line (send button)
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing && window.innerWidth > 760) {
         e.preventDefault();
@@ -610,7 +671,8 @@
         const t = list.find((x) => String(x.id) === use.dataset.tplUse);
         if (t) {
           const ta = $("text");
-          ta.value = ta.value ? ta.value + "\n" + t.text : t.text;
+          const txt = fillVars(t.text);
+          ta.value = ta.value ? ta.value + "\n" + txt : txt;
           autosize();
           closeModal();
           ta.focus();
@@ -627,7 +689,7 @@
         const text = $("tpl-text").value.trim();
         if (!text) { toast("Введите текст шаблона"); return; }
         try {
-          await req("/templates", { method: "POST", json: { title: $("tpl-title").value.trim(), text } });
+          await req("/templates", { method: "POST", json: { title: $("tpl-title").value.trim(), text, command: $("tpl-cmd").value.trim() } });
           openTemplates();
         } catch (err) { toast(err.message); }
         return;
@@ -682,6 +744,7 @@
     } catch (e) { toast(e.message); }
     renderList();
     refreshWa();
+    loadTpls();
     setInterval(refreshWa, 30000);
     const m = /chat=(\d+)/.exec(location.hash);
     if (m) openChat(parseInt(m[1], 10));
