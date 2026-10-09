@@ -203,6 +203,10 @@ INBOX_NOTIFY_CHAT_IDS = _parse_chat_ids(os.environ.get("INBOX_NOTIFY_CHAT_IDS", 
 INBOX_NOTIFY_OFF = os.environ.get("INBOX_NOTIFY_CHAT_IDS", "").strip() == "0"
 
 
+# ---- Wazzup (wazzup24.ru) — the paid WhatsApp connection: Интеграция с CRM → Ключ API
+WAZZUP_API_KEY = os.environ.get("WAZZUP_API_KEY", "").strip()
+WAZZUP_CHANNEL_ID = os.environ.get("WAZZUP_CHANNEL_ID", "").strip()  # optional: which Wazzup channel sends WhatsApp (default: first active)
+
 # ---- Official channels through Meta (WhatsApp Cloud API + Instagram Direct)
 # One webhook for both: {WEBAPP_URL}/api/inbox/meta/webhook, verify token below.
 META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "").strip()
@@ -354,4 +358,4 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "37"
+APP_VERSION = "38"

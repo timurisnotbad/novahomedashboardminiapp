@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, crm_amo, crm_ext, database, inbox, meta_api, rc_sync, tg_channels
+from .. import config, crm, crm_amo, crm_ext, database, inbox, meta_api, rc_sync, tg_channels, wazzup
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -618,6 +618,7 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
         counts = {r[0] or "wa": r[1] for r in conn.execute(
             "SELECT channel, COUNT(*) FROM inbox_chats GROUP BY channel").fetchall()}
     return {
+        "wazzup": wazzup.status(),
         "whatsapp": {**st, "chats": counts.get("wa", 0)},
         "whatsapp_cloud": {**meta_api.wa_status(), "chats": counts.get("wac", 0)},
         "instagram": {**meta_api.ig_status(), "chats": counts.get("ig", 0)},
@@ -627,6 +628,14 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
         "telegram_guest_bot": {**tg_channels.bot_status(), "chats": counts.get("tgbot", 0)},
         "telegram_bot": {"configured": bool(config.BOT_TOKEN), "notify_targets": config.inbox_notify_targets()},
     }
+
+
+@router.post("/channels/wazzup/webhook")
+def wazzup_register(user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return wazzup.register_webhook()
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 class TgPhoneIn(BaseModel):

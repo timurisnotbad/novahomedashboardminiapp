@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_sync, reminders, scheduler, tg_channels
+from . import auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_sync, reminders, scheduler, tg_channels, wazzup
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
         logger.warning("META_APP_SECRET is empty: webhook signatures are not checked — set it in .env")
+    wazzup.start()              # Wazzup: check the key, register the webhook (background)
     await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
     tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
     asyncio.create_task(_initial_sync())  # don't block startup on the network

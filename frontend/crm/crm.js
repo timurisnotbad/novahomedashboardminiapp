@@ -187,7 +187,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=37&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=38&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -511,6 +511,7 @@
       if (!$("modal").classList.contains("hidden")) return; // don't repaint under an open dialog
       const d = await get("/channels");
       if (S.route !== "channels") { clearInterval(chTimer); return; }
+      const wz = d.wazzup;
       const w = d.whatsapp, wc = d.whatsapp_cloud, ig = d.instagram, tg = d.telegram, gb = d.telegram_guest_bot, mw = d.meta_webhook;
       const ok = w.status === "connected";
       const num = w.me ? "+" + (w.me.id || "").split("@")[0].split(":")[0] : "";
@@ -520,7 +521,15 @@
         tgStep === "code" || tg.pending_phone && tgStep !== "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Код из Telegram (${esc(tg.pending_phone || "")})</label><input class="field" id="tg-code" inputmode="numeric" placeholder="12345" /></div><div><button class="btn primary" id="tg-sign">Войти</button> <button class="btn link" id="tg-again">другой номер</button></div></div>`
         : tgStep === "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Пароль двухэтапной защиты</label><input class="field" id="tg-pass" type="password" /></div><div><button class="btn primary" id="tg-sign-pass">Войти</button></div></div>`
         : `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Номер телефона аккаунта</label><input class="field" id="tg-phone" type="tel" placeholder="+998 90 123 45 67" /></div><div><button class="btn primary" id="tg-send">Получить код</button></div></div>`;
+      const wzChan = (c) => `<span class="tag ${c.state === "active" ? "green" : "orange"}">${esc(c.transport || "")}${c.plainId ? " · " + esc(c.plainId) : ""}${c.state && c.state !== "active" ? " · " + esc(c.state) : ""}</span>`;
       $("main").innerHTML = `<div class="page-head"><h1>Каналы</h1></div><div class="page-sub">Откуда приходят сообщения в «Сообщения». Все каналы попадают в один список чатов, карточка клиента создаётся сама.</div>
+        <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <div><h3>Wazzup — WhatsApp по API</h3>${state(wz.configured ? (wz.ok && wz.webhook_ok !== false) : null, !wz.configured ? "Не настроен" : !wz.ok ? "Ошибка: " + esc(wz.error || "") : wz.webhook_ok === false ? "Ключ работает, вебхук не подключён: " + esc(wz.webhook_error || "") : wz.webhook_ok ? "Подключён · вебхук зарегистрирован" : "Подключён · проверяю вебхук…")}
+            <div class="muted small">Основной канал WhatsApp: номер живёт в Wazzup, CRM получает входящие и отвечает через их API. Чатов: ${wz.chats || 0}.</div>
+            ${wz.channels && wz.channels.length ? `<div style="margin-top:6px">${wz.channels.map(wzChan).join(" ")}</div>` : ""}</div>
+          ${wz.configured && admin ? `<button class="btn" id="wz-hook">Подключить вебхук заново</button>` : ""}</div>
+          ${wz.configured ? `<div class="muted small" style="margin-top:8px">Адрес вебхука: <span class="mono">${esc(wz.webhook_url || "")}</span></div>` : `<details class="small" style="margin-top:8px"><summary>Как подключить</summary><ol class="muted" style="margin:6px 0 0 18px"><li>Wazzup → Настройки → Интеграция с CRM → скопировать <b>Ключ API</b>.</li><li>В <code>.env</code>: <span class="mono">WAZZUP_API_KEY=…</span>, затем <code>restart_all.bat</code>.</li><li>Вебхук зарегистрируется сам (нужен https-адрес WEBAPP_URL).</li></ol></details>`}
+        </div>
         <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
           <div><h3>WhatsApp — привязка по QR ${num ? `<span class="muted">${esc(num)}</span>` : ""}</h3>${state(ok ? true : false, ok ? "Подключён" : w.status === "offline" ? "Мост не запущен (окно «Nova WhatsApp»)" : w.status === "qr" || w.status === "logged_out" ? "Не привязан — отсканируйте QR-код" : "Подключение… " + esc(w.error || ""))}
             <div class="muted small">Как WhatsApp Web: бесплатно, телефон работает как обычно. Чатов: ${w.chats}</div></div>
@@ -552,6 +561,7 @@
           <div class="muted small">Уведомления о новых сообщениях из всех каналов (${d.telegram_bot.notify_targets.length ? "чатов: " + d.telegram_bot.notify_targets.length : "выключены"}); ответ на уведомление уходит гостю.</div></div>
         <div class="card"><h3>Booking.com · Airbnb</h3><div class="muted small">Брони приходят через RealtyCalendar («Интеграции»). Сообщения гостей — в приложениях площадок.</div></div>`;
       const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+      on("wz-hook", async (e) => { e.target.disabled = true; try { const r = await post("/channels/wazzup/webhook"); toast("Вебхук подключён: " + r.url); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
       on("wa-off", async () => { if (!confirm("Отключить WhatsApp? Для возврата нужно будет снова сканировать QR.")) return; try { await post("/channels/whatsapp/logout"); toast("Отключено"); render(); } catch (err) { toast(err.message); } });
       on("tg-send", async (e) => { e.target.disabled = true; try { await post("/channels/telegram/send_code", { phone: val("tg-phone") }); tgStep = "code"; toast("Код отправлен в Telegram"); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
       on("tg-again", () => { tgStep = "phone"; render(); });

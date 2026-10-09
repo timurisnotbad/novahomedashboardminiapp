@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import config, inbox, meta_api
+from .. import config, inbox, meta_api, wazzup
 
 MAX_UPLOAD = 30 * 1024 * 1024
 
@@ -242,6 +242,19 @@ async def meta_webhook(request: Request):
         return {"ok": False}
     meta_api.handle_webhook(data)  # answer fast, process in a thread
     return {"ok": True}
+
+
+@public.post("/wazzup/webhook/{token}")
+async def wazzup_webhook(token: str, request: Request):
+    if not hmac.compare_digest(token, wazzup.webhook_token()):
+        raise HTTPException(status_code=403, detail="bad token")
+    try:
+        data = await request.json()
+    except ValueError:
+        data = {}
+    if isinstance(data, dict) and not data.get("test"):
+        wazzup.handle_webhook(data)
+    return {"ok": True}  # Wazzup's connection test and every delivery expect a plain 200
 
 
 @public.get("/media/{name}")

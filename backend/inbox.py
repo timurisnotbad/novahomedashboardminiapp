@@ -113,7 +113,9 @@ CREATE INDEX IF NOT EXISTS idx_inbox_chat_lid ON inbox_chats(lid);
 #   ig    — Instagram Direct (Meta)                      backend/meta_api.py
 #   tg    — Telegram, the company's own account          backend/tg_channels.py
 #   tgbot — Telegram bot for guests                      backend/tg_channels.py
-CHANNELS = {"wa": "WhatsApp", "wac": "WhatsApp", "ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram-бот"}
+CHANNELS = {"wa": "WhatsApp", "wac": "WhatsApp", "wz": "WhatsApp", "wzig": "Instagram", "wztg": "Telegram",
+            "ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram-бот"}
+WA_LIKE = ("wa", "wac", "wz")  # the same phone number through different transports = one chat
 STATUS_ORDER = {"failed": -1, "pending": 0, "sent": 1, "delivered": 2, "read": 3}
 PREVIEW = {
     "image": "📷 Фото", "video": "🎬 Видео", "audio": "🎤 Голосовое", "document": "📄 Файл",
@@ -450,7 +452,7 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
                          (push_name, _bump(conn), r["id"]))
         if lid and not r["lid"]:
             conn.execute("UPDATE inbox_chats SET lid = ? WHERE id = ?", (lid, r["id"]))
-        if channel != (r["channel"] or "wa") and channel in ("wa", "wac") and (r["channel"] or "wa") in ("wa", "wac"):
+        if channel != (r["channel"] or "wa") and channel in WA_LIKE and (r["channel"] or "wa") in WA_LIKE:
             # the same WhatsApp number now talks through the other transport: answer there
             conn.execute("UPDATE inbox_chats SET channel = ?, rev = ? WHERE id = ?", (channel, _bump(conn), r["id"]))
         if phone and not r["phone"]:
@@ -753,11 +755,19 @@ def _dispatch_send(channel: str, payload: dict) -> dict:
     """Hand an outgoing message to its channel; returns {"id": external id}."""
     if channel == "wa":
         st = bridge_status()
-        if st.get("status") != "connected" and config.WA_CLOUD_TOKEN and config.WA_CLOUD_PHONE_ID:
-            channel = "wac"  # the QR bridge is down but the official API is set up: use it
-        else:
+        if st.get("status") == "connected":
             return _bridge("POST", "/send", payload, timeout=60)
+        # the QR bridge is down: fall back to Wazzup, then to the Cloud API
+        if config.WAZZUP_API_KEY:
+            channel = "wz"
+        elif config.WA_CLOUD_TOKEN and config.WA_CLOUD_PHONE_ID:
+            channel = "wac"
+        else:
+            return _bridge("POST", "/send", payload, timeout=60)  # raises the bridge error
     try:
+        if channel in ("wz", "wzig", "wztg"):
+            from . import wazzup
+            return wazzup.send(payload)
         if channel == "wac":
             from . import meta_api
             return meta_api.wa_send(payload)
