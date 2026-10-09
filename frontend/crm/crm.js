@@ -188,7 +188,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=40&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=41&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -447,9 +447,14 @@
       <div class="toolbar"><div class="seg"><button data-view="day" class="${st.view === "day" ? "is-on" : ""}">День</button><button data-view="chess" class="${st.view === "chess" ? "is-on" : ""}">Шахматка</button></div>
         <button class="btn" data-step="-1">←</button><input class="field" type="date" id="bk-date" value="${st.view === "day" ? st.date : st.start}" style="width:auto" /><button class="btn" data-step="1">→</button><button class="btn link" id="bk-today">Сегодня</button>
         <span style="flex:1"></span><button class="btn sm" id="bk-sync">Обновить из RC</button></div>`;
-    const bkCard = (b) => `<div class="bk"><div class="bk__top"><span class="bk__apt">${esc(b.apartment)}</span><span class="bk__amt">${money(b.amount)}</span></div>
+    const PAY = { paid: ["Оплачено", "green"], prepaid: ["Предоплата", "orange"], unpaid: ["Не оплачено", "red"], unconfirmed: ["Не подтверждена", ""] };
+    const CONTACT = { contacted: ["✓ связь есть", "green"], incoming: ["✉ гость писал, без ответа", "orange"], none: ["○ связи не было", "red"] };
+    const payTag = (b) => { const p = PAY[b.pay] || PAY.unpaid; return `<span class="tag ${p[1]}">${p[0]}</span>`; };
+    const contactTag = (b) => { const c = CONTACT[b.contact] || CONTACT.none; return `<span class="tag ${c[1]}" style="font-weight:500">${c[0]}</span>`; };
+    const bkCard = (b) => `<div class="bk pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}"><div class="bk__top"><span class="bk__apt">${esc(b.apartment)}</span><span class="bk__amt">${money(b.amount)}</span></div>
       <div class="bk__sub">${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))} · ${plural(b.nights || nights(b.checkin, b.checkout) || 0, "ночь", "ночи", "ночей")}${b.arrival_time || b.departure_time ? ` · ${esc(b.arrival_time || "")}${b.arrival_time && b.departure_time ? "/" : ""}${esc(b.departure_time || "")}` : ""}</div>
-      <div class="bk__guest">${b.client_id ? `<a href="#clients/${b.client_id}">${esc(b.guest || "Гость")}</a>` : `<b>${esc(b.guest || "Гость")}</b>`}${b.phone ? ` · +${esc(b.phone)}` : ""} <span class="muted small">· ${esc(b.source)}</span>${Number(b.debt) > 0 ? ` <span class="tag red">долг ${money(b.debt)}</span>` : ""}</div>
+      <div class="bk__guest">${b.client_id ? `<a href="#clients/${b.client_id}">${esc(b.guest || "Гость")}</a>` : `<b>${esc(b.guest || "Гость")}</b>`}${b.phone ? ` · +${esc(b.phone)}` : ""} <span class="muted small">· ${esc(b.source)}</span></div>
+      <div class="bk__tags">${payTag(b)}${Number(b.debt) > 0 ? `<span class="tag red">долг ${money(b.debt)}</span>` : ""}${contactTag(b)}</div>
       ${b.notes ? `<div class="bk__notes">${esc(b.notes)}</div>` : ""}
       <div class="bk__links"><a href="#" data-bopen="${b.id}">Открыть бронь</a><a href="#" data-bdeal="${b.id}">${b.deal_id ? "Сделка" : "+ Сделка"}</a></div></div>`;
     if (st.view === "day") {
@@ -476,14 +481,14 @@
             const span = Math.max(1, endIdx - startIdx) - (startIdx === i ? 0 : 0);
             const w = `calc(${span * 100}% - 4px)`;
             const left = startIdx === i ? "50%" : "2px";
-            bar = `<span class="bar ${src(b)}" style="left:${left};width:${w}" data-bk="${b.id}" title="${esc(b.guest || "")} · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${money(b.amount)}">${esc(b.guest || "Гость")}</span>`;
+            bar = `<span class="bar pay-${esc(b.pay || "unpaid")} contact-${esc(b.contact || "none")}" style="left:${left};width:${w}" data-bk="${b.id}" title="${esc(b.guest || "")} · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${money(b.amount)} · ${esc(b.source)} · ${(PAY[b.pay] || PAY.unpaid)[0]} · ${(CONTACT[b.contact] || CONTACT.none)[0]}">${b.contact === "none" ? "○ " : b.contact === "incoming" ? "✉ " : ""}${esc(b.guest || "Гость")}</span>`;
           }
           return `<td class="${d.getDay() % 6 === 0 ? "we" : ""} ${di === today ? "today" : ""}">${bar}</td>`;
         }).join("");
         return `<tr><td class="apt">${esc(a)}</td>${cells}</tr>`;
       }).join("");
       $("main").innerHTML = head + `<div class="chess"><table><thead><tr><th class="apt">Объект</th>${days.map((d) => `<th class="${d.getDay() % 6 === 0 ? "we" : ""} ${iso(d) === today ? "today" : ""}">${d.getDate()}<br><small>${WD[d.getDay()]}</small></th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>
-        <div class="muted small" style="margin-top:8px">Полоска начинается в день заезда и заканчивается в день выезда. <span class="tag" style="background:#3B82F6;color:#fff">Booking</span> <span class="tag" style="background:#F472B6;color:#fff">Airbnb</span> <span class="tag" style="background:#34D399;color:#fff">Прямая</span></div>`;
+        <div class="muted small" style="margin-top:8px">Цвет — оплата как в календаре: <span class="tag" style="background:#22C55E;color:#fff">оплачено</span> <span class="tag" style="background:#F59E0B;color:#fff">предоплата</span> <span class="tag" style="background:#EF4444;color:#fff">не оплачено</span> <span class="tag" style="background:#9CA3AF;color:#fff">не подтверждена</span> · Связь с гостем: сплошная — писали ему, <b>✉ пунктир</b> — гость писал, без ответа, <b>○ бледная</b> — связи не было. Источник — в подсказке при наведении.</div>`;
       $("main").querySelector(".chess").addEventListener("click", (e) => {
         const bar = e.target.closest("[data-bk]");
         if (!bar) return;
@@ -742,6 +747,7 @@
     const h = b.history;
     const chatPill = (c) => `<span class="chat-pill"><i class="ch ${esc(c.channel)}"></i><a href="#messages/${c.id}" data-close>${esc(c.title)}</a><span class="muted">${esc(c.channel_name)}${c.pinned ? "" : " · по номеру"}</span>${c.pinned ? `<button data-unlink="${c.id}" title="Отвязать">✕</button>` : `<button data-pin="${c.id}" title="Закрепить за бронью">📌</button>`}</span>`;
     modal(`<h2>${esc(b.apartment)} · ${esc(dShort(b.checkin))} – ${esc(dShort(b.checkout))}</h2>
+      <div style="margin-bottom:6px">${({ paid: '<span class="tag green">Оплачено</span>', prepaid: '<span class="tag orange">Предоплата</span>', unpaid: '<span class="tag red">Не оплачено</span>', unconfirmed: '<span class="tag">Не подтверждена</span>' })[b.pay] || ""} ${({ contacted: '<span class="tag green">✓ связь есть</span>', incoming: '<span class="tag orange">✉ гость писал, без ответа</span>', none: '<span class="tag red">○ связи не было</span>' })[b.contact] || ""}</div>
       <div class="muted small" style="margin-bottom:10px">${plural(b.nights || nights(b.checkin, b.checkout) || 0, "ночь", "ночи", "ночей")} · ${esc(b.source)} · ${money(b.amount)}${Number(b.debt) > 0 ? ` · <span class="bad">долг ${money(b.debt)}</span>` : ""}${b.arrival_time ? " · заезд " + esc(b.arrival_time) : ""}${b.departure_time ? " · выезд " + esc(b.departure_time) : ""}${b.notes ? `<div>${esc(b.notes)}</div>` : ""}</div>
       <div class="grid c2">
         <div>
@@ -802,13 +808,15 @@
       <div class="form-row c3"><div><label class="lbl">Заезд</label><input class="field" id="be-in" type="date" value="${esc(b.checkin)}" /></div>
         <div><label class="lbl">Выезд</label><input class="field" id="be-out" type="date" value="${esc(b.checkout)}" /></div>
         <div><label class="lbl">Сумма, $</label><input class="field" id="be-amt" type="number" step="any" value="${esc(b.amount ?? "")}" /></div></div>
+      <div class="form-row"><div><label class="lbl">Статус оплаты (как в календаре)</label><select class="field" id="be-status">${[["booked", "Бронь, не оплачена"], ["prepaid", "Предоплата внесена"], ["paid", "Оплачено"], ["confirmed", "Подтверждена"], ["not_confirmed", "Не подтверждена"]].map(([k, v]) => `<option value="${k}" ${b.status === k ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+        <div><label class="lbl">Предоплата, $</label><input class="field" id="be-prep" type="number" step="any" value="${esc(b.prepayment ?? "")}" /></div></div>
       <div class="form-row"><div><label class="lbl">Время заезда</label><input class="field" id="be-at" value="${esc(b.arrival_time || "")}" placeholder="15:00" /></div>
         <div><label class="lbl">Время выезда</label><input class="field" id="be-dt" value="${esc(b.departure_time || "")}" placeholder="12:00" /></div></div>
       <label class="lbl">Заметка брони (видна в RealtyCalendar)</label><textarea class="field" id="be-notes" rows="3">${esc(b.notes || "")}</textarea>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="be-go">Сохранить в календарь</button></div>`);
     $("be-go").addEventListener("click", async (e) => {
-      const cur = { guest: b.guest || "", phone: b.phone || "", checkin: b.checkin, checkout: b.checkout, amount: b.amount == null ? "" : String(b.amount), arrival_time: b.arrival_time || "", departure_time: b.departure_time || "", notes: b.notes || "" };
-      const now = { guest: val("be-guest"), phone: val("be-phone").replace(/\D/g, ""), checkin: val("be-in"), checkout: val("be-out"), amount: val("be-amt"), arrival_time: val("be-at"), departure_time: val("be-dt"), notes: val("be-notes") };
+      const cur = { guest: b.guest || "", phone: b.phone || "", checkin: b.checkin, checkout: b.checkout, amount: b.amount == null ? "" : String(b.amount), arrival_time: b.arrival_time || "", departure_time: b.departure_time || "", notes: b.notes || "", status: b.status || "", prepayment: b.prepayment == null ? "" : String(b.prepayment) };
+      const now = { guest: val("be-guest"), phone: val("be-phone").replace(/\D/g, ""), checkin: val("be-in"), checkout: val("be-out"), amount: val("be-amt"), arrival_time: val("be-at"), departure_time: val("be-dt"), notes: val("be-notes"), status: val("be-status"), prepayment: val("be-prep") };
       const changes = {};
       Object.keys(now).forEach((k) => { if (String(now[k]) !== String(cur[k])) changes[k] = now[k]; });
       if (!Object.keys(changes).length) { toast("Ничего не изменилось"); return; }

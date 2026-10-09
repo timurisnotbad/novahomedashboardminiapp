@@ -138,6 +138,7 @@ def booking_card(bid: int) -> dict | None:
     b["client"] = client and {k: client[k] for k in ("id", "name", "phone", "email", "source", "notes", "fields")}
     b["history"] = client_history(b["phone"]) if b["phone"] else None
     b["chats"] = chats
+    crm._contact_states([b])  # noqa: SLF001
     b["deal"] = dict(deal) if deal else None
     b["auto_log"] = auto
     return b

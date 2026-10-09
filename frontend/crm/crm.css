@@ -145,7 +145,12 @@ label.lbl { display:block; font-size:13px; color:var(--label-2); margin:10px 0 4
 .chess th.apt { z-index:4; }
 .chess td.today, .chess th.today { background:var(--blue-soft); }
 .chess .bar { position:absolute; top:5px; bottom:5px; left:50%; border-radius:6px; background:#60A5FA; color:#fff; font-size:11px; font-weight:600; line-height:24px; padding:0 8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; z-index:1; cursor:pointer; }
-.chess .bar.airbnb { background:#F472B6; } .chess .bar.booking { background:#3B82F6; } .chess .bar.direct { background:#34D399; }
+.chess .bar.pay-paid { background:#22C55E; } .chess .bar.pay-prepaid { background:#F59E0B; } .chess .bar.pay-unpaid { background:#EF4444; } .chess .bar.pay-unconfirmed { background:#9CA3AF; }
+.chess .bar.contact-incoming { outline:2px dashed #fff; outline-offset:-3px; }
+.chess .bar.contact-none { opacity:.55; }
+.bk { border-left:4px solid transparent; padding-left:10px; margin-left:-10px; }
+.bk.pay-paid { border-left-color:#22C55E; } .bk.pay-prepaid { border-left-color:#F59E0B; } .bk.pay-unpaid { border-left-color:#EF4444; } .bk.pay-unconfirmed { border-left-color:#9CA3AF; }
+.bk__tags { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
 
 /* ---------- tasks ---------- */
 .task { display:flex; gap:12px; align-items:flex-start; padding:12px 0; border-bottom:1px solid var(--sep); }

@@ -832,8 +832,45 @@ def _booking_out(b: dict) -> dict:
         "nights": b.get("days_count"), "guest": b.get("client_name"), "phone": digits(b.get("client_phone")),
         "amount": b.get("amount"), "debt": b.get("debt"), "source": config.SOURCE_NAMES.get(b.get("source_id"), "Другое"),
         "status": b.get("status"), "notes": b.get("short_notes"), "arrival_time": b.get("arrival_time"),
-        "departure_time": b.get("departure_time"),
+        "departure_time": b.get("departure_time"), "prepayment": b.get("prepayment"),
+        "pay": _pay_state(b),
     }
+
+
+def _pay_state(b: dict) -> str:
+    """Payment colour like the calendar: paid / prepaid / unpaid / unconfirmed."""
+    st = (b.get("status") or "").lower()
+    amount, debt, prep = float(b.get("amount") or 0), float(b.get("debt") or 0), float(b.get("prepayment") or 0)
+    if st == "not_confirmed":
+        return "unconfirmed"
+    if amount > 0:  # the money columns are the truth; the status label only when there is no amount
+        if debt <= 0:
+            return "paid"
+        return "prepaid" if (debt < amount or prep > 0) else "unpaid"
+    return {"paid": "paid", "prepaid": "prepaid"}.get(st, "unpaid")
+
+
+def _contact_states(rows: list[dict]) -> None:
+    """Has anyone talked to the guest? contact = contacted (we wrote) /
+    incoming (guest wrote, nobody answered) / none (no chat at all)."""
+    with database.get_conn() as conn:
+        chats = {}
+        for r in conn.execute("SELECT c.id, c.phone, "
+                              "EXISTS(SELECT 1 FROM inbox_messages m WHERE m.chat_id = c.id AND m.direction = 'out') AS out_ "
+                              "FROM inbox_chats c").fetchall():
+            chats[r["id"]] = (r["phone"] or "", bool(r["out_"]))
+        pinned = {}
+        for r in conn.execute("SELECT booking_id, chat_id FROM crm_booking_chats").fetchall():
+            pinned.setdefault(r["booking_id"], []).append(r["chat_id"])
+    by_phone: dict[str, list] = {}
+    for cid, (phone, out) in chats.items():
+        if len(phone) >= 7:
+            by_phone.setdefault(phone[-9:], []).append(out)
+    for b in rows:
+        outs = [chats[c][1] for c in pinned.get(b["id"], []) if c in chats]
+        if b.get("phone") and len(b["phone"]) >= 7:
+            outs += by_phone.get(b["phone"][-9:], [])
+        b["contact"] = "none" if not outs else ("contacted" if any(outs) else "incoming")
 
 
 def bookings_day(day: str) -> dict:
@@ -847,6 +884,7 @@ def bookings_day(day: str) -> dict:
     for b in rows:
         b["deal_id"] = deals_map.get(b["id"])
         b["client_id"] = cm.get((b["phone"] or "")[-9:]) if b["phone"] else None
+    _contact_states(rows)
     return {
         "date": day,
         "arrivals": [b for b in rows if b["checkin"] == day],
@@ -865,6 +903,7 @@ def bookings_grid(start: str, days: int = 30) -> dict:
             "SELECT id, booking_id FROM crm_deals WHERE booking_id IS NOT NULL").fetchall()}
     for b in rows:
         b["deal_id"] = deals_map.get(b["id"])
+    _contact_states(rows)
     apts = services.apartment_names()
     return {"start": d0.isoformat(), "days": days, "apartments": apts, "bookings": rows}
 

@@ -24,7 +24,9 @@ logger = logging.getLogger("nova.rc.push")
 
 # CRM field -> RC field. Dates go as DD.MM.YYYY like the read API expects them.
 FIELDS = {"guest": "fio", "phone": "phone", "amount": "amount", "arrival_time": "arrival_time",
-          "departure_time": "departure_time", "notes": "short_notes", "checkin": "begin_date", "checkout": "end_date"}
+          "departure_time": "departure_time", "notes": "short_notes", "checkin": "begin_date", "checkout": "end_date",
+          "status": "status", "prepayment": "prepayment"}
+STATUSES = ("booked", "prepaid", "paid", "confirmed", "not_confirmed")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crm_rc_log (
@@ -62,8 +64,12 @@ def _payload(changes: dict) -> dict:
             client["fio"] = (v or "").strip()
         elif k == "phone":
             client["phone"] = ("+" + re.sub(r"\D", "", str(v))) if v else ""
-        elif k == "amount":
-            ev["amount"] = float(str(v).replace(",", ".").replace(" ", "")) if v not in (None, "") else 0
+        elif k in ("amount", "prepayment"):
+            ev[k] = float(str(v).replace(",", ".").replace(" ", "")) if v not in (None, "") else 0
+        elif k == "status":
+            if v not in STATUSES:
+                raise RCError("Неизвестный статус оплаты")
+            ev["status"] = v
         elif k in ("checkin", "checkout"):
             ev[FIELDS[k]] = _dmy(v)
         elif k in FIELDS:
@@ -138,11 +144,11 @@ def update_booking(bid: int, changes: dict, who: str = "") -> dict:
     if fresh:
         got = {"guest": fresh["client_name"], "phone": re.sub(r"\D", "", fresh["client_phone"] or ""), "amount": fresh["amount"],
                "arrival_time": fresh["arrival_time"], "departure_time": fresh["departure_time"], "notes": fresh["short_notes"],
-               "checkin": fresh["begin_date"], "checkout": fresh["end_date"]}
+               "checkin": fresh["begin_date"], "checkout": fresh["end_date"], "status": fresh["status"], "prepayment": fresh["prepayment"]}
         for k, v in changes.items():
-            want = re.sub(r"\D", "", str(v)) if k == "phone" else (float(str(v).replace(",", ".") or 0) if k == "amount" else (v or ""))
+            want = re.sub(r"\D", "", str(v)) if k == "phone" else (float(str(v).replace(",", ".") or 0) if k in ("amount", "prepayment") else (v or ""))
             have = got.get(k)
-            if k == "amount":
+            if k in ("amount", "prepayment"):
                 have = float(have or 0)
             if (have or "") != (want or ""):
                 mismatch.append(k)
