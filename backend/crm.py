@@ -526,8 +526,49 @@ DEFAULT_CLIENT_STATUSES = """Новый | #6B7280
 Забронировал | #2563EB
 Живёт сейчас | #10B981
 Постоянник | #8B5CF6
+Отменил бронь | #F97316
 VIP | #DB2777
 Не беспокоить | #EF4444"""
+
+# statuses the calendar sets by itself; the rest are set by people and never overwritten
+AUTO_STATUSES = ("Новый", "Без брони", "Забронировал", "Живёт сейчас", "Постоянник", "Отменил бронь")
+
+
+def auto_client_status(c: dict, cancelled: bool = False) -> str | None:
+    """The guest's latest state from the calendar: living now / booked / regular / no booking."""
+    today = date.today().isoformat()
+    bs = [b for b in (c.get("bookings") or [])]
+    living = any(b["checkin"] <= today < b["checkout"] for b in bs)
+    future = any(b["checkin"] > today for b in bs)
+    past = [b for b in bs if b["checkout"] <= today]
+    if living:
+        return "Живёт сейчас"
+    if future:
+        return "Забронировал"
+    if cancelled:
+        return "Отменил бронь"
+    if len(past) >= 2:
+        return "Постоянник"
+    if past:
+        return "Без брони"
+    return None
+
+
+def refresh_client_statuses(cancelled_ids: set | None = None) -> int:
+    """After every sync: clients whose status is automatic (or empty) follow the calendar."""
+    names = {s["name"] for s in client_statuses()}
+    n = 0
+    with database.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT id, phone, status FROM crm_clients WHERE phone != ''").fetchall()]
+    for r in rows:
+        if r["status"] and r["status"] not in AUTO_STATUSES:
+            continue  # set by a person: keep
+        c = {"bookings": client_bookings(r["phone"])}
+        want = auto_client_status(c, cancelled=r["id"] in (cancelled_ids or set()))
+        if want and want in names and want != (r["status"] or ""):
+            set_client_status(r["id"], want)
+            n += 1
+    return n
 
 
 def client_statuses() -> list[dict]:

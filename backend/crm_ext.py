@@ -412,11 +412,12 @@ def revenue(month: str) -> dict:
 
 # Deal stages the booking drives (matched by name, within the deal's pipeline)
 FLOW_STAGES = {"unpaid": ("Ожидает оплаты",), "booked": ("Забронировано", "Бронь подтверждена"), "living": ("Заселён", "Живёт"),
-               "out": ("Выехал", "Выезд")}
+               "out": ("Выехал", "Выезд"), "cancelled": ("Отменена", "Отмена брони", "Отменено")}
 FLOW_DEFAULT_ACTIONS = {  # one-time defaults so the «scenario» works out of the box; editable in Воронки
     "Выехал": [("task", "Попросить отзыв и напомнить о себе: скидка на следующий визит", 1, "11:00"),
                ("task", "Повторное касание: спросить о планах, предложить бронь", 60, "11:00")],
     "Отказ": [("task", "Вернуться к гостю: уточнить, актуален ли запрос", 14, "11:00")],
+    "Отменена": [("task", "Бронь отменена: узнать причину, предложить другие даты или квартиру", 1, "11:00")],
 }
 
 
@@ -435,6 +436,17 @@ def ensure_flow_stages() -> None:
                 conn.execute("UPDATE crm_stages SET sort = sort + 1 WHERE pipeline_id = ? AND sort >= ?", (p["id"], sort))
                 conn.execute("INSERT INTO crm_stages (pipeline_id, name, sort, color, kind) VALUES (?, 'Выехал', ?, '#6B7280', 'won')", (p["id"], sort))
             conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES ('flow_stage_v1', '1')")
+        if "flow_stage_v2" not in {r["key"] for r in conn.execute("SELECT key FROM crm_settings WHERE key = 'flow_stage_v2'").fetchall()}:
+            names = {r["name"]: r for r in conn.execute("SELECT * FROM crm_stages WHERE pipeline_id = ?", (p["id"],)).fetchall()}
+            if not any(n in names for n in FLOW_STAGES["cancelled"]):
+                sort = max((r["sort"] for r in names.values()), default=0) + 1
+                conn.execute("INSERT INTO crm_stages (pipeline_id, name, sort, color, kind) VALUES (?, 'Отменена', ?, '#F97316', 'lost')", (p["id"], sort))
+            st = conn.execute("SELECT id FROM crm_stages WHERE pipeline_id = ? AND name = 'Отменена'", (p["id"],)).fetchone()
+            if st and not conn.execute("SELECT 1 FROM crm_stage_actions WHERE stage_id = ?", (st["id"],)).fetchone():
+                for i, (kind, text, days, at) in enumerate(FLOW_DEFAULT_ACTIONS["Отменена"]):
+                    conn.execute("INSERT INTO crm_stage_actions (stage_id, kind, text, days, at_time, sort) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (st["id"], kind, text, days, at, i))
+            conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES ('flow_stage_v2', '1')")
         if "flow_actions_v1" not in done:
             for r in conn.execute("SELECT * FROM crm_stages WHERE pipeline_id = ?", (p["id"],)).fetchall():
                 acts = FLOW_DEFAULT_ACTIONS.get(r["name"])
@@ -458,14 +470,35 @@ def booking_flow() -> int:
     moved = 0
     with database.get_conn() as conn:
         deals = [dict(r) for r in conn.execute(
-            "SELECT d.id, d.stage_id, d.pipeline_id, d.client_id, b.begin_date, b.end_date, b.status AS b_status, b.amount, b.debt, b.prepayment, "
-            "b.prepayment_progress, COALESCE(b.is_delete, 0) AS del, s.kind FROM crm_deals d JOIN bookings b ON b.id = d.booking_id "
-            "JOIN crm_stages s ON s.id = d.stage_id").fetchall()]
+            "SELECT d.id, d.stage_id, d.pipeline_id, d.client_id, d.checkin AS d_checkin, d.checkout AS d_checkout, d.apartment AS d_apartment, d.notes, "
+            "b.id AS b_id, b.begin_date, b.end_date, b.status AS b_status, b.amount, b.debt, b.prepayment, "
+            "b.prepayment_progress, COALESCE(b.is_delete, 0) AS del, s.kind, s.name AS stage_name FROM crm_deals d "
+            "LEFT JOIN bookings b ON b.id = d.booking_id JOIN crm_stages s ON s.id = d.stage_id WHERE d.booking_id IS NOT NULL").fetchall()]
+        synced = database.last_sync()
         stages = {}
         for r in conn.execute("SELECT id, pipeline_id, name FROM crm_stages").fetchall():
             stages.setdefault(r["pipeline_id"], {})[r["name"]] = r["id"]
+    cancelled_clients: set = set()
     for d in deals:
-        if d["kind"] == "lost" or d["del"] or d["b_status"] in ("cancelled", "canceled"):
+        gone = (d["b_id"] is None or d["del"] or d["b_status"] in ("cancelled", "canceled"))
+        horizon = (date.today() + timedelta(days=config.SYNC_DAYS_AHEAD)).isoformat()
+        if gone and synced and (d["d_checkout"] or "9999") >= today and (d["d_checkin"] or "0000") <= horizon:
+            # the booking vanished from the calendar before check-out = cancelled there
+            if d["kind"] == "lost":
+                continue
+            target = next((stages.get(d["pipeline_id"], {}).get(n) for n in FLOW_STAGES["cancelled"] if stages.get(d["pipeline_id"], {}).get(n)), None)
+            if target and target != d["stage_id"]:
+                try:
+                    note = (d["notes"] or "").rstrip()
+                    note = (note + "\n" if note else "") + f"Бронь {d['d_apartment'] or ''} {d['d_checkin'] or ''}–{d['d_checkout'] or ''} отменена в календаре {today}"
+                    crm.save_deal(d["id"], {"stage_id": target, "notes": note}, uid)
+                    moved += 1
+                    if d["client_id"]:
+                        cancelled_clients.add(d["client_id"])
+                except Exception:  # noqa: BLE001
+                    logger.exception("booking flow (cancel) failed for deal %s", d["id"])
+            continue
+        if gone or d["kind"] == "lost":
             continue
         if d["end_date"] <= today:
             key = "out"
@@ -485,6 +518,10 @@ def booking_flow() -> int:
                     crm.set_client_status(d["client_id"], "Постоянник")
         except Exception:  # noqa: BLE001
             logger.exception("booking flow failed for deal %s", d["id"])
+    try:
+        crm.refresh_client_statuses(cancelled_clients)
+    except Exception:  # noqa: BLE001
+        logger.exception("client statuses refresh failed")
     return moved
 
 
