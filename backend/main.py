@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup
+from . import auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     crm_ext.init_db()
     crm_amo.init_db()
     rc_push.init_db()
+    docs.init_db()
     scheduler.start()
     if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
         logger.warning("META_APP_SECRET is empty: webhook signatures are not checked — set it in .env")

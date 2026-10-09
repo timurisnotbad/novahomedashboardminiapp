@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import config, inbox
+from . import config, database, inbox
 
 logger = logging.getLogger("nova.tg")
 
@@ -97,7 +97,34 @@ async def _after_login() -> None:
     _error = None
     _client.remove_event_handler(_on_message)
     _client.add_event_handler(_on_message, events.NewMessage())
+    _client.remove_event_handler(_on_raw)
+    _client.add_event_handler(_on_raw, events.Raw())
     logger.info("telegram account connected: %s", _me)
+
+
+async def _on_raw(update) -> None:
+    """Read receipts: Telegram tells us the peer read our messages up to max_id
+    (UpdateReadHistoryOutbox) — the same «two ticks» as WhatsApp."""
+    try:
+        from telethon.tl import types as t
+        if isinstance(update, t.UpdateReadHistoryOutbox) and isinstance(update.peer, t.PeerUser):
+            await asyncio.get_event_loop().run_in_executor(None, _mark_read, update.peer.user_id, update.max_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram read receipt failed")
+
+
+def _mark_read(uid: int, max_id: int) -> None:
+    jid = f"tg:{uid}"
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT m.wa_id FROM inbox_messages m JOIN inbox_chats c ON c.id = m.chat_id "
+                            "WHERE c.jid = ? AND m.direction = 'out' AND m.status != 'read' AND m.wa_id LIKE ?",
+                            (jid, f"tg:{uid}:%",)).fetchall()
+    for r in rows:
+        try:
+            if int(r["wa_id"].rsplit(":", 1)[1]) <= max_id:
+                inbox.store_ack(r["wa_id"], "read")
+        except (ValueError, IndexError):
+            continue
 
 
 async def _on_message(event) -> None:

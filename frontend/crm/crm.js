@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=43&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=44&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -348,8 +348,14 @@
     const html = `<h2>${esc(c.name)}</h2>
       <div class="muted small" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span>${c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : ""}${c.email ? " · " + esc(c.email) : ""}${c.source ? " · " + esc(c.source) : ""}</span><select class="field sm" id="c-status" style="width:auto" title="Статус клиента">${statusOptions(c.status)}</select></div>
       <div class="grid c2">
-        <div><dl class="kv">${fieldRowsHtml}${c.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(c.notes)}</dd>` : ""}</dl>
-          ${!fieldRowsHtml && !c.notes ? `<div class="muted small">Дополнительных полей нет — настраиваются в «Поля карточек»</div>` : ""}</div>
+        <div>
+          <div class="card__title">Профиль гостя</div>
+          <dl class="kv">${profileRows(c)}${fieldRowsHtml}${c.notes ? `<dt>Заметки</dt><dd style="white-space:pre-wrap">${esc(c.notes)}</dd>` : ""}</dl>
+          ${!profileRows(c) && !fieldRowsHtml && !c.notes ? `<div class="muted small">Пока только имя и телефон — нажмите «Изменить», чтобы добавить email, соцсети, паспорт и т. д.</div>` : ""}
+          <div class="card__title" style="margin-top:12px">Каналы связи</div>
+          ${c.chats && c.chats.length ? c.chats.map((ch) => `<div class="small" style="padding:4px 0;border-bottom:1px solid var(--sep)"><span class="chat-pill" style="margin:0;padding:3px 8px"><i class="ch ${esc(ch.channel)}"></i><a href="#messages/${ch.id}" data-close>${esc(ch.channel_name)} · ${esc(ch.title)}</a></span> <span class="muted">${esc((ch.last_text || "").slice(0, 50))}${ch.unread ? ` <b class="pill">${ch.unread}</b>` : ""}</span></div>`).join("") : `<div class="muted small">Переписки ещё не было — кнопки WhatsApp / Telegram внизу откроют чат</div>`}
+          ${c.documents && c.documents.length ? `<div class="card__title" style="margin-top:12px">Документы</div>${c.documents.slice(0, 6).map((d) => `<div class="small" style="padding:3px 0"><a href="${d.url}" target="_blank">📄 ${esc(d.title)} ${esc(d.number)}</a> <span class="muted">${money(d.amount)} · ${esc(dShort(d.created_at))}</span></div>`).join("")}` : ""}
+        </div>
         <div>
           <div class="card__title">Брони</div>
           ${c.bookings.length ? c.bookings.slice(0, 6).map((b) => `<div class="small" style="padding:4px 0;border-bottom:1px solid var(--sep)"><b>${esc(b.apartment)}</b> · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${money(b.amount)} <span class="muted">${esc(b.source)}</span></div>`).join("") : `<div class="muted small">Броней не найдено</div>`}
@@ -360,7 +366,7 @@
         </div></div>
       <div class="row-actions">${S.me.role === "admin" ? `<button class="btn danger" id="c-del">Удалить</button>` : ""}<span style="flex:1"></span>
         <button class="btn" id="c-task">+ Задача</button><button class="btn" id="c-deal">+ Сделка</button>
-        <button class="btn" id="c-chat">${c.chat_id ? "Открыть чат" : "Написать в WhatsApp"}</button>
+        <button class="btn" id="c-chat" title="WhatsApp"><i class="ch wa"></i> WhatsApp</button><button class="btn" id="c-tg" title="Telegram"><i class="ch tg"></i> Telegram</button>${c.email ? `<button class="btn" id="c-mail">✉ Email</button>` : ""}
         <button class="btn" id="c-edit">Изменить</button>${asPage ? `<a class="btn primary" href="#clients">К списку</a>` : `<button class="btn primary" data-close>Закрыть</button>`}</div>`;
     if (asPage) { $("main").innerHTML = `<div class="card">${html}</div>`; } else modal(html, true);
     const root = asPage ? $("main") : $("modal-card");
@@ -368,14 +374,37 @@
     root.querySelector("#c-status").addEventListener("change", async (e) => { try { await post(`/clients/${id}/status`, { status: e.target.value }); c.status = e.target.value; toast(c.status ? "Статус: " + c.status : "Статус снят"); } catch (err) { toast(err.message); } });
     root.querySelector("#c-task").addEventListener("click", () => taskForm({ client_id: c.id, title: "" }, () => openClient(id, asPage)));
     root.querySelector("#c-deal").addEventListener("click", async () => { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); dealForm(null, { client_id: c.id, title: "" }); });
-    root.querySelector("#c-chat").addEventListener("click", () => openClientChat(c.id));
+    root.querySelector("#c-chat").addEventListener("click", () => openClientChat(c.id, "wa"));
+    root.querySelector("#c-tg").addEventListener("click", () => openClientChat(c.id, "tg"));
+    const cm = root.querySelector("#c-mail"); if (cm) cm.addEventListener("click", () => emailForm({ to: c.email, client_id: c.id, subject: "", text: `${c.name ? c.name.split(" ")[0] + ", " : ""}здравствуйте!\n\n` }));
     root.querySelectorAll("[data-deal]").forEach((a) => a.addEventListener("click", async (e) => { e.preventDefault(); S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(a.dataset.deal, 10)); }));
     const dl = root.querySelector("#c-del");
     if (dl) dl.addEventListener("click", async () => { if (!confirm("Удалить клиента?")) return; await del(`/clients/${id}`); closeModal(); location.hash = "#clients"; navigate(); });
   }
 
-  async function openClientChat(cid) {
-    try { const r = await post(`/clients/${cid}/chat`); closeModal(); location.hash = `#messages/${r.chat_id}`; } catch (err) { toast(err.message); }
+  async function openClientChat(cid, channel) {
+    try { const r = await post(`/clients/${cid}/chat`, { channel: channel || "wa" }); closeModal(); location.hash = `#messages/${r.chat_id}`; } catch (err) { toast(err.message); }
+  }
+  const PROFILE = [["email", "Email"], ["instagram", "Instagram"], ["telegram", "Telegram"], ["phone2", "Доп. телефон"], ["birthday", "Дата рождения"], ["passport", "Паспорт"], ["city", "Город / страна"], ["lang", "Язык общения"]];
+  function profileRows(c) {
+    return PROFILE.filter(([k]) => c[k]).map(([k, l]) => { let v = esc(c[k]); if (k === "instagram") v = `<a href="https://instagram.com/${esc(c[k].replace(/^@/, "").replace(/^https?:\/\/(www\.)?instagram\.com\//, ""))}" target="_blank">${v}</a>`; if (k === "telegram" && /^@?[a-z0-9_]{4,}$/i.test(c[k])) v = `<a href="https://t.me/${esc(c[k].replace(/^@/, ""))}" target="_blank">${v}</a>`; if (k === "email") v = `<a href="mailto:${esc(c[k])}">${v}</a>`; if (k === "birthday") v = esc(dShort(c[k])) + (c[k].length === 10 ? ` ${c[k].slice(0, 4)}` : ""); return `<dt>${l}</dt><dd>${v}</dd>`; }).join("");
+  }
+  // ---- email from the CRM (SMTP in .env) -----------------------------------------
+  async function emailForm(o) {
+    let st = { configured: false };
+    try { st = await get("/email"); } catch (e) { /* ignore */ }
+    modal(`<h2>Письмо</h2>
+      ${st.configured ? `<div class="muted small" style="margin-bottom:8px">От: ${esc(st.from || "")}</div>` : `<div class="warn small" style="margin-bottom:8px">Email не настроен: заполните SMTP_HOST, SMTP_USER, SMTP_PASSWORD в .env (см. Интеграции → Email) и перезапустите сервер.</div>`}
+      <label class="lbl">Кому</label><input class="field" id="em-to" type="email" value="${esc(o.to || "")}" placeholder="guest@example.com" />
+      <label class="lbl">Тема</label><input class="field" id="em-subj" value="${esc(o.subject || "")}" />
+      <label class="lbl">Текст</label><textarea class="field" id="em-text" rows="7">${esc(o.text || "")}</textarea>
+      ${o.doc ? `<div class="small" style="margin-top:6px">📎 Вложение: <b>${esc(o.doc.title)} ${esc(o.doc.number)}</b> (PDF)</div>` : ""}
+      <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="em-go" ${st.configured ? "" : "disabled"}>Отправить</button></div>`);
+    $("em-go").addEventListener("click", async (e) => {
+      e.target.disabled = true; e.target.textContent = "Отправляю…";
+      try { await post("/email", { to: val("em-to"), subject: val("em-subj"), text: $("em-text").value, doc_id: o.doc ? o.doc.id : null, booking_id: o.booking_id || null, client_id: o.client_id || null }); toast("Письмо отправлено"); closeModal(); if (o.after) o.after(); }
+      catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Отправить"; }
+    });
   }
 
   async function clientForm(c) {
@@ -388,11 +417,19 @@
       <div class="form-row"><div><label class="lbl">Email</label><input class="field" id="cf-email" value="${esc(c.email || "")}" /></div>
         <div><label class="lbl">Источник</label><input class="field" id="cf-source" value="${esc(c.source || "")}" placeholder="Booking.com, Airbnb, WhatsApp…" list="src-list" /><datalist id="src-list"><option>Booking.com</option><option>Airbnb</option><option>WhatsApp</option><option>Telegram</option><option>Instagram</option><option>Рекомендация</option></datalist></div></div>
       <label class="lbl">Статус</label><select class="field" id="cf-status">${statusOptions(c.status)}</select>
+      <div class="form-row"><div><label class="lbl">Instagram</label><input class="field" id="cf-instagram" value="${esc(c.instagram || "")}" placeholder="@username" /></div>
+        <div><label class="lbl">Telegram</label><input class="field" id="cf-telegram" value="${esc(c.telegram || "")}" placeholder="@username или номер" /></div></div>
+      <div class="form-row c3"><div><label class="lbl">Доп. телефон</label><input class="field" id="cf-phone2" value="${esc(c.phone2 || "")}" /></div>
+        <div><label class="lbl">Дата рождения</label><input class="field" id="cf-birthday" type="date" value="${esc(c.birthday || "")}" /></div>
+        <div><label class="lbl">Язык общения</label><input class="field" id="cf-lang" value="${esc(c.lang || "")}" placeholder="RU / EN / UZ" list="lang-list" /><datalist id="lang-list"><option>Русский</option><option>English</option><option>O'zbek</option></datalist></div></div>
+      <div class="form-row"><div><label class="lbl">Паспорт</label><input class="field" id="cf-passport" value="${esc(c.passport || "")}" placeholder="серия, номер" /></div>
+        <div><label class="lbl">Город / страна</label><input class="field" id="cf-city" value="${esc(c.city || "")}" /></div></div>
       ${fieldInputsHtml ? `<div class="form-row">${fieldInputsHtml}</div>` : ""}
       <label class="lbl">Заметки</label><textarea class="field" id="cf-notes">${esc(c.notes || "")}</textarea>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="cf-go">Сохранить</button></div>`);
     $("cf-go").addEventListener("click", async () => {
-      const body = { name: val("cf-name"), phone: val("cf-phone"), email: val("cf-email"), source: val("cf-source"), notes: val("cf-notes"), fields: readFields($("modal-card")), status: val("cf-status") };
+      const body = { name: val("cf-name"), phone: val("cf-phone"), email: val("cf-email"), source: val("cf-source"), notes: val("cf-notes"), fields: readFields($("modal-card")), status: val("cf-status"),
+        instagram: val("cf-instagram"), telegram: val("cf-telegram"), phone2: val("cf-phone2"), birthday: val("cf-birthday"), passport: val("cf-passport"), city: val("cf-city"), lang: val("cf-lang") };
       try {
         const r = c.id ? await put(`/clients/${c.id}`, body) : await post("/clients", body);
         closeModal(); toast("Сохранено");
@@ -609,6 +646,8 @@
   // ---- integrations -------------------------------------------------------------
   ROUTES.integrations = async () => {
     const d = await get("/integrations");
+    d.company = await get("/company").catch(() => ({ name: "", phone: "", email: "", website: "", address: "", inn: "", bank: "", note: "", currency: "USD" }));
+    d.email = await get("/email").catch(() => ({ configured: false, log: [] }));
     const rc = d.realtycalendar;
     $("main").innerHTML = `<div class="page-head"><h1>Интеграции</h1></div>
       <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
@@ -618,6 +657,16 @@
         <div class="muted small" style="margin-top:10px">Запись в календарь: из карточки брони («Изменить бронь») уходят гость, телефон, сумма, даты, время, заметка. ${rc.push_log && rc.push_log.length ? `Последние записи:` : "Записей пока не было."}</div>
         ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Задачи из броней</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-auto" ${d.settings.auto_tasks ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать задачи «Заезд» и «Выезд» на день заезда/выезда (исполнитель — администратор)</label></div>
+      <div class="card"><h3>Реквизиты компании (для счетов и подтверждений)</h3>
+        <div class="form-row"><div><label class="lbl">Название</label><input class="field" id="co-name" value="${esc(d.company.name)}" /></div><div><label class="lbl">Телефон</label><input class="field" id="co-phone" value="${esc(d.company.phone)}" /></div></div>
+        <div class="form-row"><div><label class="lbl">Email</label><input class="field" id="co-email" value="${esc(d.company.email)}" /></div><div><label class="lbl">Сайт</label><input class="field" id="co-website" value="${esc(d.company.website)}" /></div></div>
+        <div class="form-row"><div><label class="lbl">Адрес</label><input class="field" id="co-address" value="${esc(d.company.address)}" /></div><div><label class="lbl">ИНН / регистрация</label><input class="field" id="co-inn" value="${esc(d.company.inn)}" /></div></div>
+        <div class="form-row"><div><label class="lbl">Банковские реквизиты (в счёте)</label><textarea class="field" id="co-bank" rows="3">${esc(d.company.bank)}</textarea></div><div><label class="lbl">Примечание внизу документа</label><textarea class="field" id="co-note" rows="3">${esc(d.company.note)}</textarea></div></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><select class="field" id="co-currency" style="width:auto"><option value="USD" ${d.company.currency === "USD" ? "selected" : ""}>USD $</option><option value="UZS" ${d.company.currency === "UZS" ? "selected" : ""}>UZS</option><option value="EUR" ${d.company.currency === "EUR" ? "selected" : ""}>EUR</option></select><button class="btn" id="co-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить реквизиты</button></div></div>
+      <div class="card"><h3>Email из CRM</h3><div class="small ${d.email.configured ? "ok" : "warn"}">${d.email.configured ? `Настроен: ${esc(d.email.from || "")} через ${esc(d.email.host || "")}` : "Не настроен — заполните SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD в .env (для Gmail — «пароль приложения») и перезапустите сервер"}</div>
+        <div class="muted small" style="margin-top:4px">Письма с PDF-счётом, квитанцией или подтверждением уходят из карточки брони и из карточки клиента.</div>
+        ${d.email.configured ? `<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input class="field" id="em-test" type="email" placeholder="Адрес для тестового письма" style="flex:1;min-width:200px" /><button class="btn" id="em-test-go">Отправить тест</button></div>` : ""}
+        ${d.email.log && d.email.log.length ? `<table class="table" style="margin-top:8px"><thead><tr><th>Когда</th><th>Кому</th><th>Тема</th><th>Статус</th></tr></thead><tbody>${d.email.log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td class="small">${esc(l.to_addr)}</td><td class="small">${esc(l.subject || "")}</td><td class="${l.status === "sent" ? "ok" : "bad"} small">${l.status === "sent" ? "отправлено" : esc((l.error || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card"><h3>Чек-лист брони</h3>
         <div class="muted small">Шаблон задач, которые создаются по каждой брони (кнопка «Чек-лист» в карточке брони). Одна строка — одна задача: <span class="mono">Текст | заезд -1 10:00</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b> или <b>сегодня</b>; потом сдвиг в днях (−1 — за день до, +1 — на следующий день) и время. Без времени берётся время заезда/выезда из брони.</div>
@@ -628,6 +677,8 @@
       <div class="card"><h3>Healthchecks.io</h3><div class="small ${d.healthchecks.configured ? "ok" : "muted"}">${d.healthchecks.configured ? "Подключён" : "Не настроен — уведомления о выключенном компьютере не придут"}</div></div>`;
     $("i-sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); navigate(); } catch (err) { toast(err.message); navigate(); } });
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("co-save").addEventListener("click", async () => { try { await post("/company", { name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); } catch (err) { toast(err.message); } });
+    const et = $("em-test-go"); if (et) et.addEventListener("click", async (e) => { e.target.disabled = true; try { await post("/email", { to: val("em-test"), subject: "Nova Home CRM — тест", text: "Письмо из CRM работает." }); toast("Тестовое письмо отправлено"); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-cl-save").addEventListener("click", async () => { try { const r = await post("/integrations/settings", { checklist: $("i-cl").value }); toast(`Сохранено: ${r.items.length} задач в чек-листе`); } catch (err) { toast(err.message); } });
@@ -808,7 +859,7 @@
           <div id="bk-chats">${b.chats.length ? b.chats.map(chatPill).join("") : `<div class="muted small">Чатов нет</div>`}</div>
           <div style="display:flex;gap:6px;margin-top:6px"><input class="field" id="bk-find" placeholder="Привязать чат: имя или номер" /><button class="btn sm" id="bk-find-go">Найти</button></div>
           <div id="bk-found"></div>
-          ${b.phone ? `<button class="btn sm" id="bk-wa" style="margin-top:6px">Открыть WhatsApp по номеру</button>` : ""}
+          ${b.phone ? `<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button class="btn sm" id="bk-wa"><i class="ch wa"></i> Написать в WhatsApp</button><button class="btn sm" id="bk-tg"><i class="ch tg"></i> Написать в Telegram</button>${b.client && b.client.email ? `<button class="btn sm" id="bk-mail">✉ Email</button>` : ""}</div>` : ""}
           <div class="card__title" style="margin-top:14px">Написать гостю</div>
           <select class="field" id="bk-to">${b.chats.map((c) => `<option value="${c.id}">${esc(c.channel_name)} · ${esc(c.title)}</option>`).join("") || `<option value="">— сначала привяжите чат —</option>`}</select>
           <textarea class="field" id="bk-msg" rows="3" placeholder="Текст (переменные {имя} {объект} {заезд} {выезд} подставятся)" style="margin-top:6px"></textarea>
@@ -817,8 +868,10 @@
         </div>
       </div>
       <div class="bk-tasks" id="bk-tasks"></div>
+      <div class="bk-tasks" id="bk-docs"></div>
       <div class="row-actions"><button class="btn primary" data-close>Закрыть</button></div>`, true);
     renderBookingTasks(b);
+    renderBookingDocs(b);
     const fillVars = (t) => { const d = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = (b.guest || "").split(" ")[0]; return t.replace(/\{(имя|объект|заезд|выезд)\}/g, (m, k) => ({ "имя": nm, "объект": b.apartment || "", "заезд": d(b.checkin), "выезд": d(b.checkout) }[k] || m)); };
     get("/commands").then((list) => { $("bk-tpl").innerHTML += list.map((t) => `<option value="${t.id}">${esc(t.command ? "/" + t.command + " " : "")}${esc(t.title)}</option>`).join(""); $("bk-tpl").dataset.list = JSON.stringify(list); }).catch(() => {});
     $("bk-tpl").addEventListener("change", (e) => { const t = JSON.parse(e.target.dataset.list || "[]").find((x) => String(x.id) === e.target.value); if (t) $("bk-msg").value = fillVars(t.text); });
@@ -831,7 +884,9 @@
     $("bk-notes-save").addEventListener("click", async () => { try { await put(`/clients/${b.client.id}`, { name: b.client.name, phone: b.client.phone, email: b.client.email, source: b.client.source, fields: b.client.fields, notes: $("bk-notes").value }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("bk-edit").addEventListener("click", () => bookingForm(b));
     const bd = $("bk-deal"); if (bd) bd.addEventListener("click", async () => { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); try { const d = await post(`/bookings/${id}/deal`); openDeal(d.id); } catch (err) { toast(err.message); } });
-    const wa = $("bk-wa"); if (wa) wa.addEventListener("click", async () => { if (!b.client) return; await openClientChat(b.client.id); });
+    const wa = $("bk-wa"); if (wa) wa.addEventListener("click", async () => { if (!b.client) { toast("У брони нет карточки гостя"); return; } await openClientChat(b.client.id, "wa"); });
+    const tg = $("bk-tg"); if (tg) tg.addEventListener("click", async () => { if (!b.client) { toast("У брони нет карточки гостя"); return; } await openClientChat(b.client.id, "tg"); });
+    const bm = $("bk-mail"); if (bm) bm.addEventListener("click", () => emailForm({ to: b.client.email, booking_id: b.id, client_id: b.client.id, subject: `Nova Home · ${b.apartment} · ${dShort(b.checkin)}–${dShort(b.checkout)}`, text: "" }));
     const find = async () => {
       const q = $("bk-find").value.trim(); if (!q) return;
       const list = await get(`/chats/search?q=${encodeURIComponent(q)}`);
@@ -844,6 +899,26 @@
       const un = e.target.closest("[data-unlink]"); if (un) { await del(`/bookings/${id}/chats/${un.dataset.unlink}`); openBooking(id); return; }
       const dl = e.target.closest("[data-dealopen]"); if (dl) { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(dl.dataset.dealopen, 10)); }
     });
+  }
+
+  // «Документы»: invoice / receipt / confirmation PDFs made from the booking, sent by email
+  const DOC_KINDS = [["invoice", "Счёт"], ["receipt", "Квитанция"], ["confirmation", "Подтверждение"]];
+  async function renderBookingDocs(b) {
+    const box = $("bk-docs"); if (!box) return;
+    let list = [];
+    try { list = await get(`/bookings/${b.id}/documents`); } catch (e) { list = []; }
+    const lang = S.cache.docLang || (/[a-z]/i.test(b.guest || "") && !/[а-я]/i.test(b.guest || "") ? "en" : "ru");
+    S.cache.docLang = lang;
+    box.innerHTML = `<div class="bk-tasks__head"><div class="card__title" style="margin:0">Документы ${list.length ? `<span class="tag">${list.length}</span>` : ""}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><div class="seg sm"><button data-dlang="ru" class="${lang === "ru" ? "is-on" : ""}">RU</button><button data-dlang="en" class="${lang === "en" ? "is-on" : ""}">EN</button></div>${DOC_KINDS.map(([k, n]) => `<button class="btn sm" data-dmake="${k}">+ ${n}</button>`).join("")}</div></div>
+      ${list.length ? list.map((d) => `<div class="doc-row"><a href="${d.url}" target="_blank">📄 <b>${esc(d.title)}</b> ${esc(d.number)}</a><span class="muted small">${money(d.amount)} · ${esc(dtShort(d.created_at))} · ${esc((d.lang || "ru").toUpperCase())}</span><span style="flex:1"></span><a class="btn sm" href="${d.url}" download="${esc(d.number)}.pdf">PDF</a><button class="btn sm" data-dmail="${d.id}">✉ Email</button><button class="task__del" data-ddel="${d.id}" title="Удалить">✕</button></div>`).join("")
+        : `<div class="muted small">Счёт на оплату, квитанция об оплате или подтверждение брони — одной кнопкой, PDF с реквизитами компании (Интеграции → Реквизиты). Отправляются гостю на email прямо отсюда.</div>`}`;
+    box.onclick = async (e) => {
+      const dl = e.target.closest("[data-dlang]"); if (dl) { S.cache.docLang = dl.dataset.dlang; renderBookingDocs(b); return; }
+      const mk = e.target.closest("[data-dmake]"); if (mk) { mk.disabled = true; try { const d = await post(`/bookings/${b.id}/documents`, { kind: mk.dataset.dmake, lang: S.cache.docLang }); toast(`Создан: ${d.title} ${d.number}`); window.open(d.url, "_blank"); } catch (err) { toast(err.message); } renderBookingDocs(b); return; }
+      const dd = e.target.closest("[data-ddel]"); if (dd) { if (confirm("Удалить документ?")) { await del(`/documents/${dd.dataset.ddel}`); renderBookingDocs(b); } return; }
+      const dm = e.target.closest("[data-dmail]"); if (dm) { const d = list.find((x) => x.id === parseInt(dm.dataset.dmail, 10)); emailForm({ to: (b.client && b.client.email) || d.data.email || "", booking_id: b.id, client_id: b.client ? b.client.id : null, doc: d, subject: `${d.title} ${d.number} · Nova Home`, text: `${(b.guest || "").split(" ")[0] ? (b.guest || "").split(" ")[0] + ", " : ""}${d.lang === "en" ? "hello!\n\nPlease find attached: " : "здравствуйте!\n\nВо вложении: "}${d.title} ${d.number}.\n${b.apartment} · ${dShort(b.checkin)} – ${dShort(b.checkout)}\n\n${d.lang === "en" ? "Best regards,\nNova Home" : "С уважением,\nNova Home"}`, after: () => renderBookingDocs(b) }); }
+    };
   }
 
   // «Задачи по брони»: the island inside the booking card — checklist + own tasks

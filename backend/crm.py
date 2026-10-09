@@ -173,8 +173,10 @@ def init_db() -> None:
             conn.execute("UPDATE crm_tasks SET booking_id = CAST(substr(src_key, instr(src_key, ':') + 1) AS INTEGER) "
                          "WHERE booking_id IS NULL AND (src_key LIKE 'checkin:%' OR src_key LIKE 'checkout:%')")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_tasks_booking ON crm_tasks(booking_id)")
-        if "status" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_clients)").fetchall()]:
-            conn.execute("ALTER TABLE crm_clients ADD COLUMN status TEXT")
+        ccols = [r[1] for r in conn.execute("PRAGMA table_info(crm_clients)").fetchall()]
+        for col in ("status", "instagram", "telegram", "phone2", "birthday", "passport", "city", "lang"):
+            if col not in ccols:
+                conn.execute(f"ALTER TABLE crm_clients ADD COLUMN {col} TEXT")  # noqa: S608
         if not conn.execute("SELECT 1 FROM crm_pipelines").fetchone():
             pid = conn.execute("INSERT INTO crm_pipelines (name, sort) VALUES ('Продажи', 0)").lastrowid
             for i, (nm, color, kind) in enumerate(DEFAULT_STAGES):
@@ -466,7 +468,46 @@ def _client_out(r) -> dict:
     except ValueError:
         c["fields"] = {}
     c["status"] = c.get("status") or ""
+    for k in PROFILE_FIELDS:
+        c[k] = c.get(k) or ""
     return c
+
+
+PROFILE_FIELDS = ("instagram", "telegram", "phone2", "birthday", "passport", "city", "lang")
+
+
+def client_chats(cid: int) -> list[dict]:
+    """All conversations with this guest across channels (by phone and by the chat on the card)."""
+    from . import inbox
+    with database.get_conn() as conn:
+        c = conn.execute("SELECT phone, chat_id FROM crm_clients WHERE id = ?", (cid,)).fetchone()
+        if not c:
+            return []
+        ids = []
+        if c["chat_id"]:
+            ids.append(c["chat_id"])
+        if c["phone"] and len(c["phone"]) >= 7:
+            ids += [r["id"] for r in conn.execute("SELECT id FROM inbox_chats WHERE phone LIKE ? ORDER BY last_at DESC",
+                                                   ("%" + c["phone"][-9:],)).fetchall()]
+    out, seen = [], set()
+    for i in ids:
+        if i in seen:
+            continue
+        seen.add(i)
+        ch = inbox.get_chat(i)
+        if ch:
+            out.append({k: ch.get(k) for k in ("id", "title", "channel", "channel_name", "last_text", "last_at", "unread", "phone")})
+    return out
+
+
+def note_channel(cid: int, channel: str, handle: str = "") -> None:
+    """A guest that came through Instagram/Telegram: remember the handle on the card."""
+    col = "instagram" if channel in ("ig", "wzig") else "telegram" if channel in ("tg", "wztg", "tgbot") else None
+    if not col or not handle:
+        return
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE crm_clients SET {col} = COALESCE(NULLIF({col}, ''), ?), updated_at = ? WHERE id = ?",  # noqa: S608
+                     (handle.strip(), _now(), cid))
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +571,12 @@ def get_client(cid: int) -> dict | None:
     c["bookings"] = client_bookings(c["phone"] or "", c["name"] or "")
     if not c["chat_id"] and c["phone"]:
         c["chat_id"] = _chat_id_for_phone(c["phone"])
+    c["chats"] = client_chats(cid)
+    try:
+        from . import docs
+        c["documents"] = docs.documents(client_id=cid)
+    except Exception:  # noqa: BLE001
+        c["documents"] = []
     return c
 
 
@@ -565,21 +612,25 @@ def save_client(cid: int | None, data: dict) -> dict:
     fld = data.get("fields") if isinstance(data.get("fields"), dict) else {}
     with database.get_conn() as conn:
         if cid:
-            cur = conn.execute("SELECT status FROM crm_clients WHERE id = ?", (cid,)).fetchone()
+            cur = conn.execute("SELECT * FROM crm_clients WHERE id = ?", (cid,)).fetchone()
             status = (data.get("status") if "status" in data else (cur["status"] if cur else "")) or ""
+            prof = [((data.get(k) if k in data else (cur[k] if cur else "")) or "").strip() for k in PROFILE_FIELDS]
             conn.execute(
-                "UPDATE crm_clients SET name = ?, phone = ?, email = ?, source = ?, notes = ?, fields = ?, status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE crm_clients SET name = ?, phone = ?, email = ?, source = ?, notes = ?, fields = ?, status = ?, "
+                "instagram = ?, telegram = ?, phone2 = ?, birthday = ?, passport = ?, city = ?, lang = ?, updated_at = ? WHERE id = ?",
                 (name, phone, (data.get("email") or "").strip(), (data.get("source") or "").strip(),
-                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), status.strip(), _now(), cid))
+                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), status.strip(), *prof, _now(), cid))
         else:
             if phone:
                 dup = conn.execute("SELECT id FROM crm_clients WHERE phone LIKE ?", ("%" + phone[-9:],)).fetchone()
                 if dup:
                     raise ValueError(f"Клиент с этим номером уже есть (#{dup['id']})")
+            prof = [(data.get(k) or "").strip() for k in PROFILE_FIELDS]
             cid = conn.execute(
-                "INSERT INTO crm_clients (name, phone, email, source, notes, fields, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO crm_clients (name, phone, email, source, notes, fields, status, instagram, telegram, phone2, birthday, passport, city, lang, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (name or ("+" + phone), phone, (data.get("email") or "").strip(), (data.get("source") or "").strip(),
-                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), (data.get("status") or "").strip(), _now(), _now())).lastrowid
+                 data.get("notes") or "", json.dumps(fld, ensure_ascii=False), (data.get("status") or "").strip(), *prof, _now(), _now())).lastrowid
     return get_client(cid)
 
 

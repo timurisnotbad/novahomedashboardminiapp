@@ -466,7 +466,7 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
         "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
         (channel, jid, lid, phone, push_name, _now(), _bump(conn)),
     )
-    _new_chat_ids.append((cur.lastrowid, phone, push_name or "", CHANNELS.get(channel, channel)))
+    _new_chat_ids.append((cur.lastrowid, phone, push_name or "", CHANNELS.get(channel, channel), channel))
     return cur.lastrowid
 
 
@@ -476,13 +476,15 @@ _new_chat_ids: list = []
 def _flush_new_clients() -> None:
     """A new chat = a client card in the CRM (outside the chat's transaction)."""
     while _new_chat_ids:
-        chat_id, phone, name, source = _new_chat_ids.pop()
+        chat_id, phone, name, source, channel = _new_chat_ids.pop()
         try:
             from . import crm
             if phone:
-                crm.ensure_client(phone, name, source, chat_id)
+                cid = crm.ensure_client(phone, name, source, chat_id)
             else:
-                crm.ensure_client_for_chat(chat_id, name, source)
+                cid = crm.ensure_client_for_chat(chat_id, name, source)
+            if cid:
+                crm.note_channel(cid, channel, name or (("+" + phone) if phone and channel in ("tg", "wztg") else ""))
         except Exception:  # noqa: BLE001
             logger.exception("crm client from chat failed")
 

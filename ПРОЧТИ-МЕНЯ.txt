@@ -46,6 +46,7 @@ CRM (браузер):       WEBAPP_URL/crm/   — первый вход созд
   Instagram Direct (Meta)     — IG_PAGE_TOKEN
   Telegram — аккаунт компании — TG_API_ID, TG_API_HASH (my.telegram.org), вход в CRM → Каналы
   Telegram-бот для гостей     — TG_GUEST_BOT_TOKEN (отдельный бот)
+  Email из CRM (счета, PDF)   — SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD (Gmail: пароль приложения)
 
 ЕСЛИ ЧТО-ТО НЕ ТАК
 ------------------

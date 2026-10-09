@@ -226,6 +226,13 @@ DATA_DIR = BASE_DIR / "data"
 # CRM (/crm/): the first administrator can be set here; otherwise the setup
 # page in the browser asks for one on first open.
 CRM_ADMIN_EMAIL = os.environ.get("CRM_ADMIN_EMAIL", "").strip().lower()
+# ---- email from the CRM (invoices, confirmations): any SMTP, Gmail app password works
+SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
+SMTP_PORT = _int_env("SMTP_PORT", 587)
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+SMTP_FROM = os.environ.get("SMTP_FROM", "").strip()
+SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "Nova Home").strip()
 CRM_ADMIN_PASSWORD = os.environ.get("CRM_ADMIN_PASSWORD", "").strip()
 
 
@@ -358,4 +365,4 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "43"
+APP_VERSION = "44"

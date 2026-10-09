@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, crm_amo, crm_ext, database, inbox, meta_api, rc_push, rc_sync, tg_channels, wazzup
+from .. import config, crm, crm_amo, crm_ext, database, docs, inbox, meta_api, rc_push, rc_sync, tg_channels, wazzup
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -323,22 +323,98 @@ def del_client(cid: int, user: dict = Depends(admin_user)):  # noqa: B008
 
 
 @router.post("/clients/{cid}/chat")
-def client_chat(cid: int, user: dict = Depends(current_user)):  # noqa: B008
-    """Open (or start) the WhatsApp chat of a client."""
+def client_chat(cid: int, payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    """Open (or start) a chat with the client in WhatsApp (default) or Telegram ({"channel": "tg"})."""
+    channel = (payload or {}).get("channel") or "wa"
+    group = ("tg", "wztg") if channel == "tg" else inbox.WA_LIKE
     c = crm.get_client(cid)
     if not c:
         raise HTTPException(status_code=404, detail="Клиент не найден")
-    if c.get("chat_id"):
-        return {"chat_id": c["chat_id"]}
+    for ch in crm.client_chats(cid):  # an existing conversation in that messenger
+        if ch["channel"] in group:
+            return {"chat_id": ch["id"]}
     if not c.get("phone"):
         raise HTTPException(status_code=400, detail="У клиента нет телефона")
     try:
-        chat = inbox.start_chat(c["phone"], c.get("name") or "")  # QR bridge, or Wazzup when the bridge is offline
+        chat = inbox.start_chat(c["phone"], c.get("name") or "", channel)  # QR bridge / Wazzup / Telegram account
     except inbox.BridgeError as exc:
-        raise HTTPException(status_code=502, detail=f"Не удалось открыть WhatsApp-чат: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Не удалось открыть чат: {exc}") from exc
     with database.get_conn() as conn:
-        conn.execute("UPDATE crm_clients SET chat_id = ? WHERE id = ?", (chat["id"], cid))
+        conn.execute("UPDATE crm_clients SET chat_id = COALESCE(chat_id, ?) WHERE id = ?", (chat["id"], cid))
     return {"chat_id": chat["id"]}
+
+
+# ---- documents (PDF) & email ----------------------------------------------------
+@router.get("/company")
+def get_company(user: dict = Depends(current_user)):  # noqa: B008
+    return docs.company()
+
+
+@router.post("/company")
+def set_company(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    return docs.set_company(payload)
+
+
+@router.get("/bookings/{bid}/documents")
+def booking_documents(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    return docs.documents(booking_id=bid)
+
+
+@router.post("/bookings/{bid}/documents")
+def make_document(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return docs.create_document(bid, payload.get("kind") or "invoice", user["id"], payload.get("lang") or "ru", payload.get("amount"))
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.get("/documents/{did}.pdf")
+def document_pdf(did: int, user: dict = Depends(current_user)):  # noqa: B008
+    d = docs.get_document(did)
+    if not d:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    try:
+        pdf = docs.render_pdf(d)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"PDF не собрался: {exc}") from exc
+    from fastapi.responses import Response as RawResponse
+    return RawResponse(pdf, media_type="application/pdf",
+                       headers={"Content-Disposition": f"inline; filename=\"{d['number']}.pdf\""})
+
+
+@router.delete("/documents/{did}")
+def del_document(did: int, user: dict = Depends(current_user)):  # noqa: B008
+    docs.delete_document(did)
+    return {"ok": True}
+
+
+class EmailIn(BaseModel):
+    to: str
+    subject: str = ""
+    text: str = ""
+    doc_id: int | None = None
+    booking_id: int | None = None
+    client_id: int | None = None
+
+
+@router.get("/email")
+def email_status(user: dict = Depends(current_user)):  # noqa: B008
+    return docs.email_status()
+
+
+@router.post("/email")
+def email_send(payload: EmailIn, user: dict = Depends(current_user)):  # noqa: B008
+    att = []
+    if payload.doc_id:
+        d = docs.get_document(payload.doc_id)
+        if not d:
+            raise HTTPException(status_code=404, detail="Документ не найден")
+        att.append((f"{d['number']}.pdf", docs.render_pdf(d), "application/pdf"))
+    try:
+        return docs.send_email(payload.to, payload.subject, payload.text, att, user["name"],
+                               payload.booking_id, payload.client_id, payload.doc_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 # ---- deals --------------------------------------------------------------------

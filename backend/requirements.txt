@@ -7,3 +7,4 @@ apscheduler>=3.10
 python-telegram-bot[job-queue]>=20.7
 playwright>=1.40   # вкладка «Цены» (после установки: playwright install chromium)
 telethon>=1.36     # канал «Telegram — аккаунт компании» в CRM (вход по номеру, как в Wazzup)
+reportlab>=4.0   # PDF: счета, квитанции, подтверждения брони из CRM

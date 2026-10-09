@@ -35,7 +35,8 @@ def _job():
     except Exception as exc:  # noqa: BLE001
         logger.warning("Booking-change check failed: %s", exc)
     try:
-        from . import crm_ext
+        from . import crm, crm_ext
+        crm.import_clients()  # every guest from the calendar and the chats has a card
         n = crm_ext.sync_deals_from_bookings()  # deals follow their bookings
         if n:
             logger.info("CRM deals refreshed from bookings: %s", n)
