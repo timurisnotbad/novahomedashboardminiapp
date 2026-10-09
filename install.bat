@@ -19,6 +19,17 @@ echo Ustanavlivayu...
 python -m pip install --upgrade pip
 python -m pip install -r backend\requirements.txt
 echo.
+echo Chaty WhatsApp (nuzhen Node.js LTS s nodejs.org)...
+where node >nul 2>&1
+if errorlevel 1 (
+  echo   Node.js ne nayden - chaty WhatsApp ne budut rabotat.
+  echo   Ustanovite Node.js LTS s nodejs.org i zapustite install.bat eshchyo raz.
+) else (
+  pushd wa-bridge
+  call npm install --omit=dev
+  popd
+)
+echo.
 echo Proveryayu rezultat...
 python diagnose.py
 pause

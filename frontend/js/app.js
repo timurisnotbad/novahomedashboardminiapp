@@ -795,6 +795,25 @@
       return;
     }
     navigate("today", true);
+    inboxBadge();
+  }
+
+  // ---- «Чаты» button: unread WhatsApp count; hidden for people without access
+  function inboxBadge() {
+    const btn = document.getElementById("inbox-btn");
+    const badge = document.getElementById("inbox-badge");
+    if (!btn) return;
+    api.getInboxUnread()
+      .then((d) => {
+        const n = (d && d.unread_total) || 0;
+        badge.textContent = n > 99 ? "99+" : String(n);
+        badge.classList.toggle("hidden", !n);
+        setTimeout(inboxBadge, 30000);
+      })
+      .catch((e) => {
+        if (e.status === 403) btn.classList.add("hidden");
+        else setTimeout(inboxBadge, 60000);
+      });
   }
 
   if (document.readyState === "loading") {

@@ -8,9 +8,10 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, database, logsetup, rc_sync, reminders, scheduler
+from . import auth, config, database, inbox, logsetup, rc_sync, reminders, scheduler
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
+from .routers import inbox as inbox_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logsetup.setup("server")  # everything also goes to logs/server.log
@@ -36,6 +37,7 @@ async def _initial_sync() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
+    inbox.init_db()
     scheduler.start()
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
@@ -61,6 +63,13 @@ for r in (dashboard.router, bookings.router, cleaning.router,
           tasks.router, prices.router, penalties.router, payroll.router,
           payrecon.router, control.router):
     app.include_router(r, prefix=config.API_PREFIX, dependencies=[Depends(auth.access_guard)])
+
+
+# «Чаты» (shared WhatsApp inbox): its own guard — personal links from /chats
+# work in any browser and sign replies with the operator's name; the bridge
+# hook and signed media links carry no user headers.
+app.include_router(inbox_router.router, prefix=config.API_PREFIX)
+app.include_router(inbox_router.public, prefix=config.API_PREFIX)
 
 
 @app.middleware("http")

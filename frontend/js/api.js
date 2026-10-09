@@ -4,7 +4,7 @@
   // window.NH_API_BASE = "http://localhost:8000" for split deployments.
   const BASE = (window.NH_API_BASE || "") + "/api";
   // must match backend/config.py APP_VERSION — used to detect a stale server process
-  const APP_VERSION = "34";
+  const APP_VERSION = "35";
 
   function initData() {
     try {
@@ -87,6 +87,8 @@
     getGuests: () => req("/guests"),
     getOccupancy: (days = 7) => req(`/occupancy?days=${days}`),
     getMe: () => req("/me"),
+    // «Чаты»: unread WhatsApp messages for the header badge (no chat data)
+    getInboxUnread: () => req("/inbox/poll?since=2147483647", { timeoutMs: 8000 }),
     getBalances: () => req("/finance/balances"),
     getPenalties: () => req("/penalties"),
     addPenalty: (payload) =>

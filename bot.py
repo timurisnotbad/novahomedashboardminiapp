@@ -29,8 +29,8 @@ try:
     from telegram.ext import (Application, ApplicationHandlerStop, CommandHandler, ContextTypes,
                               MessageHandler, filters)
 
-    from backend import (attendance, booking_prices, config, database, issues, logsetup, notify,
-                         pay_parse, rc_sync, services, supplies)
+    from backend import (attendance, booking_prices, config, database, inbox, issues, logsetup,
+                         notify, pay_parse, rc_sync, services, supplies)
 except BaseException as _import_exc:  # noqa: BLE001 — a missing library must not close the window
     import traceback
 
@@ -136,6 +136,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+def _inbox_url(uid: int) -> str:
+    base = config.WEBAPP_URL.split("?")[0].rstrip("/")
+    return f"{base}/inbox/?v={config.APP_VERSION}&k={inbox.personal_key(uid)}"
+
+
+async def chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«Чаты» — the shared WhatsApp inbox. Everyone allowed gets a personal
+    link: it opens in Telegram and in any browser on the computer, and their
+    replies are signed with their name."""
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    _register(user)
+    if chat and chat.type != "private":
+        me = context.bot.username or "novahomedashboardbot"
+        await msg.reply_text(f"Чаты открываются из личного чата: напишите /chats боту @{me}.")
+        return
+    if not config.WEBAPP_URL:
+        await msg.reply_text("WEBAPP_URL не задан в .env — страница чатов недоступна.")
+        return
+    if not await asyncio.to_thread(inbox.may_use, user.id):
+        await msg.reply_text("У вас нет доступа к чатам. Попросите владельца добавить вас в INBOX_USERS.")
+        return
+    await asyncio.to_thread(inbox.remember_agent, user.id, user.full_name or user.first_name or "",
+                            user.username or "")
+    url = _inbox_url(user.id)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Открыть чаты", web_app=WebAppInfo(url=url))],
+        [InlineKeyboardButton("🖥 Открыть в браузере", url=url)],
+    ])
+    await msg.reply_text(
+        "💬 Чаты WhatsApp Nova Home — вся переписка с гостями в одном месте.\n\n"
+        "«Открыть в браузере» — личная ссылка для компьютера: сохраните её в закладки. "
+        "Не пересылайте её: ответы по ней подписываются вашим именем.",
+        reply_markup=markup,
+    )
+
+
+async def on_inbox_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A reply to a «💬 WhatsApp» alert is sent to the guest."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not msg.reply_to_message or not msg.text:
+        return
+    reply_to = msg.reply_to_message
+    if not reply_to.from_user or reply_to.from_user.id != context.bot.id:
+        return
+    chat_id = await asyncio.to_thread(inbox.chat_for_alert, msg.chat_id, reply_to.message_id)
+    if not chat_id:
+        return  # not an inbox alert — let the other handlers see it
+    if not await asyncio.to_thread(inbox.may_use, user.id):
+        raise ApplicationHandlerStop
+    await asyncio.to_thread(inbox.remember_agent, user.id, user.full_name or user.first_name or "",
+                            user.username or "")
+    name = await asyncio.to_thread(inbox._agent_name, user.id)  # noqa: SLF001
+    try:
+        await asyncio.to_thread(inbox.send, chat_id, name, msg.text)
+        await _ack(context, msg, REACT_OK, "✅ Отправлено в WhatsApp")
+    except inbox.BridgeError as exc:
+        await msg.reply_text(f"❌ Не отправлено: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("inbox reply failed")
+        await msg.reply_text("❌ Не отправлено — ошибка, подробности в logs\\bot.log")
+    raise ApplicationHandlerStop
+
+
 async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     summary = await asyncio.to_thread(services.build_text_summary, datetime.date.today())
     await update.effective_message.reply_text(summary)
@@ -168,6 +236,7 @@ _TOPIC_ROLES = {
     "явка": "attendance", "приход": "attendance", "attendance": "attendance",
     "поломки": "issues", "ремонт": "issues", "issues": "issues",
     "общий": "general", "общее": "general", "general": "general",
+    "чаты": "inbox", "whatsapp": "inbox", "вацап": "inbox", "ватсап": "inbox", "inbox": "inbox",
 }
 
 
@@ -185,7 +254,8 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = (msg.text or "").split()
     role = _TOPIC_ROLES.get(parts[1].lower()) if len(parts) > 1 else None
     if not role:
-        labels = {"cleaning": "уборки", "attendance": "явка", "issues": "поломки", "general": "общий"}
+        labels = {"cleaning": "уборки", "attendance": "явка", "issues": "поломки", "general": "общий",
+                  "inbox": "чаты"}
         lines = []
         try:
             for r in await asyncio.to_thread(database.chat_topics, chat.id):
@@ -203,6 +273,7 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/topic уборки — отчёты горничных, контроль 18:00, вечерний план\n"
             "/topic явка — приходы и перекличка\n"
             "/topic поломки — бот читает эту тему и заносит закупки и задачи в «Контроль»\n"
+            "/topic чаты — новые сообщения гостей из WhatsApp (ответ — reply на уведомление)\n"
             "/topic общий — всё остальное\n\n"
             "Тема General привязывается так же (отправьте команду в General)."
         )
@@ -842,6 +913,7 @@ _TOPIC_NAME_ROLES = (
     ("cleaning", ("уборк", "убор", "clean", "tozal", "отчёт", "отчет", "hisobot")),
     ("attendance", ("явк", "приход", "attend", "davomat", "локац", "location", "kelish")),
     ("issues", ("полом", "ремонт", "неисправ", "issue", "broken", "repair", "buzil", "muammo", "ta'mir", "tamir")),
+    ("inbox", ("чаты", "whatsapp", "вацап", "ватсап", "wazzup")),
 )
 
 
@@ -1613,6 +1685,7 @@ async def _set_commands(app) -> None:
         BotCommand("today", "Сводка на сегодня"),
         BotCommand("supplies", "Список закупок (/нужно)"),
         BotCommand("attendance", "Кто отметился сегодня"),
+        BotCommand("chats", "Чаты WhatsApp с гостями"),
         BotCommand("myid", "Мой Telegram ID"),
     ]
     owner = common + [
@@ -1700,9 +1773,15 @@ def main() -> None:
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("supplies", supplies_cmd))
+    app.add_handler(CommandHandler("chats", chats_cmd))
     # Telegram only detects latin /commands, so accept typed Cyrillic ones too
     # (slash required — a plain «цены» in the group is just conversation).
     _msg = filters.UpdateType.MESSAGE
+    # replies to «💬 WhatsApp» alerts go to the guest — checked before everything
+    # else (the handler stops the update only when it really was an alert)
+    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & _msg,
+                                   on_inbox_reply), group=-2)
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(чаты|чат)\b") & _msg, chats_cmd))
     # «Поломки» topic reader — its own group, so it sees every group text
     # (new and edited) before the group-0 handlers and can stop them
     app.add_handler(MessageHandler(

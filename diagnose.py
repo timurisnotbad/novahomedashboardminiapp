@@ -181,6 +181,36 @@ def check_server():
         print(f"{WARN}/api/health не ответил: {type(exc).__name__}: {exc}")
 
 
+def check_whatsapp():
+    line("6б. ЧАТЫ WHATSAPP (wa-bridge)")
+    import shutil
+    if not shutil.which("node"):
+        print(f"{WARN}Node.js не установлен — «Чаты» WhatsApp выключены (нужен Node.js LTS с nodejs.org)")
+        return
+    if not (BASE / "wa-bridge" / "node_modules").exists():
+        print(f"{WARN}Библиотеки моста не установлены — запустите install.bat")
+        problem("Чаты WhatsApp: запустите install.bat (ставит библиотеки wa-bridge)")
+        return
+    try:
+        from backend import inbox
+        st = inbox.bridge_status()
+    except Exception as exc:  # noqa: BLE001
+        print(f"{WARN}Не удалось спросить мост: {type(exc).__name__}: {exc}")
+        return
+    status = st.get("status")
+    if status == "connected":
+        me = (st.get("me") or {}).get("id", "")
+        print(f"{OK}WhatsApp подключён: +{me.split('@')[0].split(':')[0]}")
+    elif status == "offline":
+        print(f"{BAD}Окно «Nova WhatsApp» не запущено")
+        problem("Чаты WhatsApp: мост не запущен — запустите restart_all.bat")
+    elif status in ("qr", "logged_out"):
+        print(f"{WARN}WhatsApp не привязан — откройте «Чаты» и отсканируйте QR-код телефоном")
+        problem("Чаты WhatsApp: телефон не привязан — /chats → «Нужен QR»")
+    else:
+        print(f"{WARN}WhatsApp: {status} {st.get('error') or ''}")
+
+
 def tail(path: Path, n: int = 12):
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -368,6 +398,7 @@ def main():
     check_env()
     check_db()
     check_server()
+    check_whatsapp()
     check_logs()
     try:
         check_why_stopped()
