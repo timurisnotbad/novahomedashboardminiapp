@@ -317,10 +317,33 @@ def _chat_out(r) -> dict:
     c["channel"] = c.get("channel") or "wa"
     c["channel_name"] = CHANNELS.get(c["channel"], c["channel"])
     c["title"] = c.get("name") or c.get("push_name") or (("+" + c["phone"]) if c.get("phone") else c["channel_name"])
-    b = booking_for(c.get("phone") or "")
+    b = _pinned_booking(c["id"]) or booking_for(c.get("phone") or "")
     c["booking"] = ({"apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
                      "guest": b["client_name"], "when": b["when"]} if b else None)
     return c
+
+
+_pin_cache: dict = {"at": 0.0, "map": {}}
+
+
+def _pinned_booking(chat_id: int):
+    """Booking the team pinned to the chat (crm_booking_chats), 30 s cache."""
+    if time.time() - _pin_cache["at"] > 30:
+        m: dict = {}
+        try:
+            with database.get_conn() as conn:
+                for r in conn.execute("SELECT chat_id, booking_id FROM crm_booking_chats").fetchall():
+                    m.setdefault(r["chat_id"], []).append(r["booking_id"])
+        except Exception:  # noqa: BLE001 — table not there yet
+            pass
+        _pin_cache.update(at=time.time(), map=m)
+    if chat_id not in _pin_cache["map"]:
+        return None
+    try:
+        from . import crm_ext
+        return crm_ext.pinned_booking_for_chat(chat_id)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _msg_out(r) -> dict:
@@ -358,7 +381,19 @@ def chat_list(q: str = "", only: str = "all", me: str = "", limit: int = 300) ->
 def get_chat(chat_id: int) -> dict | None:
     with database.get_conn() as conn:
         r = conn.execute("SELECT * FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
-    return _chat_out(r) if r else None
+        if not r:
+            return None
+        c = _chat_out(r)
+        # the guest's notes from the CRM card («особенности гостя»)
+        try:
+            n = conn.execute("SELECT id, notes FROM crm_clients WHERE chat_id = ? OR (? != '' AND phone LIKE ?) "
+                             "ORDER BY CASE WHEN chat_id = ? THEN 0 ELSE 1 END LIMIT 1",
+                             (chat_id, c.get("phone") or "", "%" + (c.get("phone") or "")[-9:], chat_id)).fetchone()
+            c["client_id"] = n["id"] if n else None
+            c["client_notes"] = (n["notes"] or "") if n else ""
+        except Exception:  # noqa: BLE001 — CRM tables not there yet
+            c["client_id"], c["client_notes"] = None, ""
+    return c
 
 
 def messages(chat_id: int, before_id: int | None = None, limit: int = 60) -> list[dict]:
@@ -498,6 +533,7 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
                              (m.get("text") or None, rev, target))
             return None
         chat_id = _ensure_chat(conn, jid, m.get("lid"), None if out else m.get("push_name"), channel, m.get("phone"))
+        is_first = conn.execute("SELECT 1 FROM inbox_messages WHERE chat_id = ? LIMIT 1", (chat_id,)).fetchone() is None
         exists = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ?", (m["id"],)).fetchone()
         if exists:
             return None
@@ -527,7 +563,17 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
                     0 if (out or history) else 1)
     if notify and not out and not history:
         _alert(chat_id, m)
+        # auto-replies (first message / off hours) — in the background
+        threading.Thread(target=_auto_incoming, args=(chat_id, is_first), daemon=True).start()
     return {"chat_id": chat_id}
+
+
+def _auto_incoming(chat_id: int, is_first: bool) -> None:
+    try:
+        from . import crm_ext
+        crm_ext.on_incoming(chat_id, is_first)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto incoming failed")
 
 
 def store_history(items: list[dict]) -> int:

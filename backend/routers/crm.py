@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, database, inbox, meta_api, rc_sync, tg_channels
+from .. import config, crm, crm_ext, database, inbox, meta_api, rc_sync, tg_channels
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -145,10 +145,19 @@ def home(user: dict = Depends(current_user)):  # noqa: B008
 
 @router.get("/badges")
 def badges(user: dict = Depends(current_user)):  # noqa: B008
+    """Sidebar counters + the latest incoming message (sound / popup in the shell)."""
     with database.get_conn() as conn:
         unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
         mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ?", (user["id"],)).fetchone()[0]
-    return {"unread": unread, "my_open_tasks": mine}
+        last = conn.execute(
+            "SELECT m.id, m.chat_id, m.kind, m.text, m.at, c.name, c.push_name, c.phone, c.channel FROM inbox_messages m "
+            "JOIN inbox_chats c ON c.id = m.chat_id WHERE m.direction = 'in' ORDER BY m.id DESC LIMIT 1").fetchone()
+    latest = None
+    if last:
+        latest = {"id": last["id"], "chat_id": last["chat_id"], "at": last["at"], "channel": inbox.CHANNELS.get(last["channel"] or "wa", "WhatsApp"),
+                  "title": last["name"] or last["push_name"] or (("+" + last["phone"]) if last["phone"] else "Гость"),
+                  "text": inbox._preview(last["kind"], last["text"])}  # noqa: SLF001
+    return {"unread": unread, "my_open_tasks": mine, "latest": latest}
 
 
 # ---- pipelines & fields -------------------------------------------------------
@@ -232,8 +241,17 @@ def order_fields(payload: OrderIn, user: dict = Depends(admin_user)):  # noqa: B
 
 # ---- clients ------------------------------------------------------------------
 @router.get("/clients")
-def get_clients(q: str = "", user: dict = Depends(current_user)):  # noqa: B008
-    return crm.clients(q)
+def get_clients(q: str = "", history: int = 0, user: dict = Depends(current_user)):  # noqa: B008
+    return crm_ext.clients_with_history(q) if history else crm.clients(q)
+
+
+@router.get("/clients/export.xlsx")
+def export_clients(user: dict = Depends(current_user)):  # noqa: B008
+    from fastapi.responses import Response as RawResponse
+    data = crm_ext.export_clients_xlsx()
+    name = f"nova-clients-{crm._now()[:10]}.xlsx"
+    return RawResponse(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.post("/clients")
@@ -363,6 +381,94 @@ def del_task(tid: int, user: dict = Depends(current_user)):  # noqa: B008
 
 
 # ---- bookings -----------------------------------------------------------------
+@router.get("/bookings/{bid}/card")
+def booking_card(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    b = crm_ext.booking_card(bid)
+    if not b:
+        raise HTTPException(status_code=404, detail="Бронь не найдена")
+    return b
+
+
+class LinkIn(BaseModel):
+    chat_id: int
+
+
+@router.post("/bookings/{bid}/chats")
+def link_chat(bid: int, payload: LinkIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        crm_ext.link_chat(bid, payload.chat_id, user["name"])
+    except ValueError as exc:
+        _bad(exc)
+    return {"ok": True}
+
+
+@router.delete("/bookings/{bid}/chats/{chat_id}")
+def unlink_chat(bid: int, chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_ext.unlink_chat(bid, chat_id)
+    return {"ok": True}
+
+
+@router.get("/chats/search")
+def chats_search(q: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return [{k: c.get(k) for k in ("id", "title", "phone", "channel", "channel_name", "last_text", "last_at")}
+            for c in inbox.chat_list(q, "all", "", 30)]
+
+
+@router.get("/revenue")
+def revenue(month: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    from datetime import date as _d
+    return crm_ext.revenue(month[:7] if month else _d.today().strftime("%Y-%m"))
+
+
+# ---- auto-message rules ---------------------------------------------------------
+@router.get("/auto")
+def get_rules(user: dict = Depends(current_user)):  # noqa: B008
+    return {"rules": crm_ext.rules(), "triggers": crm_ext.TRIGGERS, "log": crm_ext.auto_log(100)}
+
+
+@router.post("/auto")
+def add_rule(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm_ext.save_rule(None, payload)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.put("/auto/{rid}")
+def put_rule(rid: int, payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm_ext.save_rule(rid, payload)
+    except ValueError as exc:
+        _bad(exc)
+
+
+class ToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.patch("/auto/{rid}")
+def toggle_rule(rid: int, payload: ToggleIn, user: dict = Depends(admin_user)):  # noqa: B008
+    crm_ext.toggle_rule(rid, payload.enabled)
+    return {"ok": True}
+
+
+@router.delete("/auto/{rid}")
+def del_rule(rid: int, user: dict = Depends(admin_user)):  # noqa: B008
+    crm_ext.delete_rule(rid)
+    return {"ok": True}
+
+
+@router.post("/auto/preview")
+def preview_rules(user: dict = Depends(current_user)):  # noqa: B008
+    """What the enabled booking rules would send right now (nothing is sent)."""
+    return crm_ext.run_auto_rules(dry=True)
+
+
+@router.post("/auto/run")
+def run_rules(user: dict = Depends(admin_user)):  # noqa: B008
+    return crm_ext.run_auto_rules()
+
+
 @router.get("/bookings/day")
 def bookings_day(date: str, user: dict = Depends(current_user)):  # noqa: B008
     return crm.bookings_day(date[:10])
@@ -475,7 +581,6 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
     return {
         "realtycalendar": {"configured": bool(config.RC_TOKEN), "demo": config.DEMO_MODE, "last_sync": database.last_sync(),
                            "bookings": n, "interval_min": config.SYNC_INTERVAL_MINUTES, "apartments": len(config.APARTMENTS)},
-        "sheet": {"configured": config.FINANCE_ENABLED},
         "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1"},
@@ -501,6 +606,7 @@ async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
         raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
     try:
         await asyncio.get_event_loop().run_in_executor(None, crm.auto_tasks)
+        await asyncio.get_event_loop().run_in_executor(None, crm_ext.sync_deals_from_bookings)
     except Exception:  # noqa: BLE001
-        logger.exception("auto tasks failed")
+        logger.exception("post-sync CRM refresh failed")
     return {"bookings": n, "last_sync": database.last_sync()}

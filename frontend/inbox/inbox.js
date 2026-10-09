@@ -165,8 +165,8 @@
     const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
     $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
     const b = $("conv-booking");
-    b.innerHTML = bookingText(c.booking, true);
-    b.classList.toggle("hidden", !c.booking);
+    b.innerHTML = bookingText(c.booking, true) + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    b.classList.toggle("hidden", !c.booking && !c.client_notes);
     const sel = $("assignee");
     const names = Array.from(new Set(S.agents.concat(c.assignee ? [c.assignee] : [])));
     sel.innerHTML = `<option value="">— ничей —</option>` + names.map((n) =>
@@ -468,7 +468,9 @@
     }
   }
 
+  const EMBED = /[?&]embed=1/.test(location.search);
   function beep() {
+    if (EMBED) return; // the CRM shell plays the sound and shows the popup
     const now = Date.now();
     if (lastIncoming && now - lastIncoming < 3000) return;
     lastIncoming = now;

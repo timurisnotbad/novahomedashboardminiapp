@@ -34,6 +34,21 @@ def _job():
         reminders.check_booking_changes()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Booking-change check failed: %s", exc)
+    try:
+        from . import crm_ext
+        n = crm_ext.sync_deals_from_bookings()  # deals follow their bookings
+        if n:
+            logger.info("CRM deals refreshed from bookings: %s", n)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CRM deal sync failed: %s", exc)
+
+
+def _auto_messages_job():
+    try:
+        from . import crm_ext
+        crm_ext.run_auto_rules()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Auto messages failed: %s", exc)
 
 
 def _reminder_job():
@@ -75,6 +90,14 @@ def start() -> None:
         hour=22,
         minute=0,
         id="evening_summary",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _auto_messages_job,
+        "interval",
+        minutes=5,
+        id="auto_messages",
         max_instances=1,
         coalesce=True,
     )
