@@ -51,6 +51,7 @@ def _auto_messages_job():
     try:
         from . import crm_ext
         crm_ext.run_auto_rules()
+        crm_ext.run_task_messages()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Auto messages failed: %s", exc)
 

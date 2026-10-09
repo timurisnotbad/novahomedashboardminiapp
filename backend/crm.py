@@ -169,12 +169,19 @@ def init_db() -> None:
             conn.execute("ALTER TABLE crm_fields ADD COLUMN entity TEXT DEFAULT 'client'")
         if "fields" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
-        if "booking_id" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_tasks)").fetchall()]:
+        tcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_tasks)").fetchall()]
+        for col in ("auto_text", "auto_status"):
+            if col not in tcols:
+                conn.execute(f"ALTER TABLE crm_tasks ADD COLUMN {col} TEXT")  # noqa: S608
+        if "booking_id" not in tcols:
             conn.execute("ALTER TABLE crm_tasks ADD COLUMN booking_id INTEGER")
             # tasks «Заезд/Выезд» created before this version: attach them to their booking
             conn.execute("UPDATE crm_tasks SET booking_id = CAST(substr(src_key, instr(src_key, ':') + 1) AS INTEGER) "
                          "WHERE booking_id IS NULL AND (src_key LIKE 'checkin:%' OR src_key LIKE 'checkout:%')")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_tasks_booking ON crm_tasks(booking_id)")
+        old = conn.execute("SELECT value FROM crm_settings WHERE key = 'booking_checklist'").fetchone()
+        if old and old[0].strip() == OLD_CHECKLIST_V42.strip():
+            conn.execute("DELETE FROM crm_settings WHERE key = 'booking_checklist'")  # the v42 default → new default with messages
         ccols = [r[1] for r in conn.execute("PRAGMA table_info(crm_clients)").fetchall()]
         for col in ("status", "instagram", "telegram", "phone2", "birthday", "passport", "city", "lang"):
             if col not in ccols:
@@ -905,6 +912,7 @@ def _task_out(r, names, cmap, bmap=None) -> dict:
     b = (bmap or {}).get(t.get("booking_id")) if t.get("booking_id") else None
     t["booking"] = {"id": b["id"], "apartment": b.get("apartment_name"), "checkin": b.get("begin_date"), "checkout": b.get("end_date"),
                     "guest": b.get("client_name"), "label": _booking_label(b)} if b else None
+    t["is_message"] = bool(t.get("auto_text"))
     return t
 
 
@@ -1061,7 +1069,7 @@ def auto_tasks(day: date | None = None) -> int:
 # One line = one task:  Текст задачи | заезд -1 10:00
 #   anchor: заезд / выезд / сегодня, then day offset (+1, -2, 0), then time.
 # ---------------------------------------------------------------------------
-DEFAULT_CHECKLIST = """Подтвердить бронь и предоплату | сегодня 0 10:00
+OLD_CHECKLIST_V42 = """Подтвердить бронь и предоплату | сегодня 0 10:00
 Отправить адрес, код домофона и правила | заезд -1 10:00
 Проверить уборку и готовность квартиры | заезд 0 12:00
 Встретить гостя / передать ключи | заезд 0 15:00
@@ -1069,7 +1077,22 @@ DEFAULT_CHECKLIST = """Подтвердить бронь и предоплату
 Принять квартиру, вернуть депозит | выезд 0 12:00
 Попросить отзыв | выезд +1 11:00"""
 
-_CL_RE = re.compile(r"^(?P<title>.+?)\s*\|\s*(?P<anchor>заезд|выезд|сегодня|checkin|checkout|today)\s*(?P<off>[+-]?\d+)?\s*(?P<time>\d{1,2}:\d{2})?\s*$", re.I)
+DEFAULT_CHECKLIST = """# Одна строка = одна задача:  Текст | заезд -1 15:00 | текст сообщения гостю
+# Точка отсчёта: заезд, выезд, сегодня или сразу. Если после второй | есть текст —
+# это сообщение: в назначенное время CRM сама отправит его гостю в чат (WhatsApp /
+# Telegram, привязанный к брони или найденный по номеру) и закроет задачу.
+# Нет чата или отправка не удалась — задача остаётся менеджеру.
+Подтвердить бронь гостю | сразу | {имя}, здравствуйте! Это Nova Home. Ваша бронь подтверждена: {объект}, заезд {заезд время}, выезд {выезд время}, {ночей} ночей. Если появятся вопросы — пишите сюда, мы на связи.
+Узнать время приезда | заезд -1 15:00 | {имя}, добрый день! Завтра ждём вас в {объект}. Подскажите, во сколько примерно приедете? Заезд с {время заезда}, если нужно раньше — постараемся подстроиться.
+Отправить инструкцию по заселению | заезд 0 14:00 | {имя}, инструкция по заселению в {объект}: адрес — ..., код домофона — ..., ключи — .... Wi-Fi: ... Если что-то не получается — звоните или пишите, поможем.
+Принять паспорт | заезд 0
+Принять оплату (остаток {долг} $) | заезд 0
+Спросить, как прошло заселение | заезд 0 19:00 | {имя}, как прошло заселение? Всё ли в порядке в квартире? Если что-то нужно — напишите, решим.
+Напомнить о выселении | выезд -1 20:00 | {имя}, напоминаем: завтра выезд до {время выезда}. Ключи оставьте ..., если нужно задержаться — напишите заранее, посмотрим, что можно сделать.
+Поблагодарить и пожелать хорошей дороги | выезд 0 11:30 | {имя}, спасибо, что выбрали Nova Home! Хорошей дороги. Если что-то было не так — напишите нам, нам важно это знать.
+Попросить отзыв | выезд +1 15:00 | {имя}, будем очень благодарны за отзыв о проживании на площадке, где вы бронировали, и в Google Картах: ... Это помогает нам становиться лучше. До новых встреч!"""
+
+_CL_RE = re.compile(r"^(?P<title>.+?)\s*\|\s*(?P<anchor>заезд|выезд|сегодня|сразу|checkin|checkout|today|now)\s*(?P<off>[+-]?\d+)?\s*(?P<time>\d{1,2}:\d{2})?\s*(?:\|\s*(?P<msg>.+))?$", re.I)
 
 
 def parse_checklist(text: str) -> list[dict]:
@@ -1081,11 +1104,12 @@ def parse_checklist(text: str) -> list[dict]:
         m = _CL_RE.match(line)
         if m:
             a = m.group("anchor").lower()
-            anchor = "checkin" if a in ("заезд", "checkin") else "checkout" if a in ("выезд", "checkout") else "today"
+            anchor = "checkin" if a in ("заезд", "checkin") else "checkout" if a in ("выезд", "checkout") else "now" if a in ("сразу", "now") else "today"
             items.append({"title": m.group("title").strip(), "anchor": anchor, "offset": int(m.group("off") or 0),
-                          "time": m.group("time") or ""})
+                          "time": m.group("time") or "", "message": (m.group("msg") or "").strip()})
         else:
-            items.append({"title": line.split("|")[0].strip(), "anchor": "checkin", "offset": 0, "time": ""})
+            parts = [x.strip() for x in line.split("|")]
+            items.append({"title": parts[0], "anchor": "checkin", "offset": 0, "time": "", "message": parts[2] if len(parts) > 2 else ""})
     return items
 
 
@@ -1094,6 +1118,8 @@ def checklist_preview(text: str | None = None) -> list[dict]:
 
 
 def _cl_due(item: dict, b: dict) -> str:
+    if item["anchor"] == "now":
+        return datetime.now().strftime("%Y-%m-%dT%H:%M")
     base = date.today() if item["anchor"] == "today" else date.fromisoformat((b["end_date"] if item["anchor"] == "checkout" else b["begin_date"])[:10])
     d = base + timedelta(days=item["offset"])
     t = item["time"] or ((b.get("departure_time") if item["anchor"] == "checkout" else b.get("arrival_time")) or "10:00")[:5]
@@ -1117,11 +1143,14 @@ def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force:
             return {"created": 0, "already": True}
         cid = ensure_client(b.get("client_phone") or "", b.get("client_name") or "") if b.get("client_phone") else None
         n = 0
+        from . import crm_ext
+        bo = _booking_out(b)
         for it in items:
             key = f"cl:{bid}:{hashlib.sha1(it['title'].lower().encode()).hexdigest()[:10]}"
+            title = crm_ext.fill(it["title"], bo, None)
             cur = conn.execute(
-                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id) "
-                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)", (it["title"], _cl_due(it, b), assignee_uid or uid, cid, uid, _now(), key, bid))
+                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id, auto_text) "
+                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)", (title, _cl_due(it, b), assignee_uid or uid, cid, uid, _now(), key, bid, it.get("message") or None))
             n += cur.rowcount
         conn.execute("INSERT OR REPLACE INTO crm_booking_checklist (booking_id, created_by, created_at, n) VALUES (?, ?, ?, ?)",
                      (bid, uid, _now(), n))
@@ -1131,7 +1160,7 @@ def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force:
 def auto_checklists(days_ahead: int = 30) -> int:
     """Setting «auto_checklist»: every new booking (check-in within N days)
     gets the checklist automatically, assigned to the first admin."""
-    if get_setting("auto_checklist", "0") != "1":
+    if get_setting("auto_checklist", "1") != "1":
         return 0
     admins = [u for u in list_users() if u["role"] == "admin" and u["active"]]
     if not admins:

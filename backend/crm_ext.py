@@ -753,6 +753,62 @@ def _send_rule(rule: dict, b: dict | None, key: str, now: datetime, chat: dict |
     return {"rule": rule["name"], "booking_id": b and b["id"], "chat": chat and chat["title"], "status": status, "error": error}
 
 
+# ---------------------------------------------------------------------------
+# Checklist messages: a task with auto_text is a message the CRM sends itself
+# when it is due (chat pinned to the booking, or found by phone). Sent → the
+# task closes; no chat / failure → the task stays open for a person.
+# ---------------------------------------------------------------------------
+def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
+    with database.get_conn() as conn:
+        t = conn.execute("SELECT * FROM crm_tasks WHERE id = ?", (tid,)).fetchone()
+        if not t:
+            raise ValueError("Задача не найдена")
+        if not t["auto_text"]:
+            raise ValueError("У задачи нет текста сообщения")
+        if t["status"] == "done" and not force:
+            return {"status": "skipped", "error": "уже выполнена"}
+        b = _booking(conn, t["booking_id"]) if t["booking_id"] else None
+    chat, why = (None, "у задачи нет брони")
+    if b:
+        chat, why = _chat_for_booking(b, {"channel": "auto", "only_if_chat": True})
+    text = fill(t["auto_text"], b, chat)
+    status, error = "sent", None
+    if not chat:
+        status, error = "skipped", why or "нет чата с гостем"
+    else:
+        try:
+            inbox.send(chat["id"], who or AUTHOR, text)
+        except Exception as exc:  # noqa: BLE001
+            status, error = "failed", str(exc)
+    with database.get_conn() as conn:
+        if status == "sent":
+            conn.execute("UPDATE crm_tasks SET status = 'done', done_at = ?, auto_status = ? WHERE id = ?",
+                         (crm._now(), f"sent:{chat['title']}", tid))
+        else:
+            conn.execute("UPDATE crm_tasks SET auto_status = ? WHERE id = ?", (f"{status}:{error}"[:300], tid))
+    logger.info("task message %s → %s: %s %s", tid, chat and chat.get("title"), status, error or "")
+    return {"status": status, "error": error, "chat": chat and chat.get("title"), "text": text}
+
+
+def run_task_messages() -> int:
+    """Every 5 minutes: due message-tasks go out; tasks overdue by more than a day
+    are left to people (no late spam)."""
+    now = crm._now()[:16]
+    cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+    with database.get_conn() as conn:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM crm_tasks WHERE status = 'open' AND auto_text IS NOT NULL AND due IS NOT NULL AND due <= ? AND due >= ? "
+            "AND (auto_status IS NULL OR auto_status LIKE 'skipped:%' OR auto_status LIKE 'failed:%') ORDER BY due LIMIT 50", (now, cutoff)).fetchall()]
+    n = 0
+    for tid in ids:
+        try:
+            if send_task_message(tid)["status"] == "sent":
+                n += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("task message %s failed", tid)
+    return n
+
+
 def _in_hours(now: datetime, frm: str | None, to: str | None) -> bool:
     try:
         fh, fm = (int(x) for x in (frm or "09:00").split(":"))

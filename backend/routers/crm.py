@@ -619,6 +619,15 @@ def patch_task(tid: int, payload: dict, user: dict = Depends(current_user)):  # 
         _bad(exc)
 
 
+@router.post("/tasks/{tid}/send")
+def send_task_message(tid: int, user: dict = Depends(current_user)):  # noqa: B008
+    """A checklist message task: send it to the guest now and close the task."""
+    try:
+        return crm_ext.send_task_message(tid, user["name"], force=True)
+    except ValueError as exc:
+        _bad(exc)
+
+
 @router.delete("/tasks/{tid}")
 def del_task(tid: int, user: dict = Depends(current_user)):  # noqa: B008
     crm.delete_task(tid)
@@ -653,7 +662,7 @@ def booking_checklist(bid: int, payload: dict | None = None, user: dict = Depend
 def checklist_settings(user: dict = Depends(current_user)):  # noqa: B008
     text = crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)
     return {"text": text, "default": crm.DEFAULT_CHECKLIST, "items": crm.parse_checklist(text),
-            "auto": crm.get_setting("auto_checklist", "0") == "1"}
+            "auto": crm.get_setting("auto_checklist", "1") == "1"}
 
 
 class ChecklistIn(BaseModel):
@@ -885,7 +894,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
                      "booking_flow": crm.get_setting("booking_flow", "1") == "1",
                      "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
-                     "auto_checklist": crm.get_setting("auto_checklist", "0") == "1",
+                     "auto_checklist": crm.get_setting("auto_checklist", "1") == "1",
                      "checklist": crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)},
     }
 

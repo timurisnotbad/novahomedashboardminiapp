@@ -196,7 +196,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=48&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=49&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -453,7 +453,7 @@
     const groups = [["Просрочено", (t) => t.due && t.due < now && t.status === "open"], ["Сегодня", (t) => t.due && t.due.slice(0, 10) === today && !(t.due < now)],
       ["В работе", (t) => t.status === "open" && (!t.due || t.due.slice(0, 10) > today)], ["Выполнено", (t) => t.status === "done"]];
     const row = (t) => `<div class="task ${t.status}" data-id="${t.id}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-done="${t.id}" />
-      <div class="task__body"><div class="task__title">${esc(t.title)}</div>
+      <div class="task__body"><div class="task__title">${t.is_message ? '<span class="tag blue" title="Сообщение: CRM отправит гостю сама в назначенное время">✉ авто</span> ' : ""}${esc(t.title)}${t.is_message && t.status === "open" ? ` <button class="btn sm" data-tsend="${t.id}">Отправить сейчас</button>` : ""}</div>${t.is_message ? `<div class="task__msg">${esc(t.auto_text)}</div>` : ""}${t.auto_status && t.status === "open" ? `<div class="small bad">${esc(t.auto_status.replace(/^(skipped|failed):/, "не отправлено: "))}</div>` : ""}
         <div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.client_id ? `<a href="#clients/${t.client_id}">${esc(t.client_name || "клиент")}</a>` : ""}${t.deal_id ? `<a href="#" data-deal="${t.deal_id}">сделка</a>` : ""}${t.booking_id && !byBooking ? `<a href="#" data-bopen="${t.booking_id}" title="Открыть бронь">🏠 ${esc(t.booking ? t.booking.label : "бронь #" + t.booking_id)}</a>` : ""}</div></div>
       <button class="task__del" data-edit="${t.id}" title="Изменить">✎</button><button class="task__del" data-del="${t.id}" title="Удалить">✕</button></div>`;
     $("main").innerHTML = `
@@ -475,6 +475,7 @@
       const m = e.target.closest("[data-mine]"); if (m) { f.mine = parseInt(m.dataset.mine, 10); navigate(); return; }
       const st = e.target.closest("[data-status]"); if (st) { f.status = st.dataset.status; navigate(); return; }
       if (e.target.id === "t-add") { addTask(); return; }
+      const ts = e.target.closest("[data-tsend]"); if (ts) { ts.disabled = true; try { const r = await post(`/tasks/${ts.dataset.tsend}/send`); toast(r.status === "sent" ? `Отправлено: ${r.chat}` : `Не отправлено: ${r.error}`); } catch (err) { toast(err.message); } navigate(); return; }
       const dn = e.target.closest("[data-done]"); if (dn) { try { await patch(`/tasks/${dn.dataset.done}`, { status: dn.checked ? "done" : "open" }); navigate(); } catch (err) { toast(err.message); } return; }
       const dl = e.target.closest("[data-del]"); if (dl) { if (confirm("Удалить задачу?")) { await del(`/tasks/${dl.dataset.del}`); navigate(); } return; }
       const ed = e.target.closest("[data-edit]"); if (ed) { taskForm(list.find((t) => t.id === parseInt(ed.dataset.edit, 10)), navigate); return; }
@@ -697,8 +698,8 @@
       <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card"><h3>Чек-лист брони</h3>
-        <div class="muted small">Шаблон задач, которые создаются по каждой брони (кнопка «Чек-лист» в карточке брони). Одна строка — одна задача: <span class="mono">Текст | заезд -1 10:00</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b> или <b>сегодня</b>; потом сдвиг в днях (−1 — за день до, +1 — на следующий день) и время. Без времени берётся время заезда/выезда из брони.</div>
-        <textarea class="field mono" id="i-cl" rows="8" style="margin-top:8px" ${S.me.role !== "admin" ? "disabled" : ""}>${esc(d.settings.checklist || "")}</textarea>
+        <div class="muted small">Шаблон задач по каждой брони (кнопка «Чек-лист» в карточке брони или автоматически для новых броней). Одна строка — одна задача: <span class="mono">Текст | заезд -1 15:00 | сообщение гостю</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b>, <b>сегодня</b> или <b>сразу</b>; потом сдвиг в днях и время (без времени — время заезда/выезда из брони). Если после второй | написан текст, это <b>сообщение</b>: в назначенное время CRM сама отправит его гостю в чат (WhatsApp или Telegram, привязанный к брони или найденный по номеру) и закроет задачу. Нет чата или ошибка — задача остаётся менеджеру с кнопкой «Отправить сейчас». Переменные: {имя} {объект} {заезд время} {выезд время} {время заезда} {время выезда} {ночей} {сумма} {долг}.</div>
+        <textarea class="field mono" id="i-cl" rows="16" style="margin-top:8px" ${S.me.role !== "admin" ? "disabled" : ""}>${esc(d.settings.checklist || "")}</textarea>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><button class="btn" id="i-cl-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить шаблон</button><button class="btn link" id="i-cl-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартный</button>
           <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать чек-лист автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
       <div class="card"><h3>Telegram Mini App</h3><div class="small ${d.telegram.configured ? "ok" : "bad"}">${d.telegram.configured ? "Бот настроен" : "BOT_TOKEN не задан"}</div><div class="muted small">${esc(d.telegram.webapp_url || "")}</div></div>
@@ -969,7 +970,7 @@
     const open = list.filter((t) => t.status === "open"), done = list.filter((t) => t.status === "done");
     const late = open.filter((t) => t.due && t.due < now).length;
     const row = (t) => `<div class="task ${t.status}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-tdone="${t.id}" />
-      <div class="task__body"><div class="task__title">${esc(t.title)}</div><div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.status === "done" && t.done_at ? `<span class="muted">✓ ${esc(dtShort(t.done_at))}</span>` : ""}</div></div>
+      <div class="task__body"><div class="task__title">${t.is_message ? '<span class="tag blue" title="Сообщение: CRM отправит гостю сама в назначенное время">✉ авто</span> ' : ""}${esc(t.title)}${t.is_message && t.status === "open" ? ` <button class="btn sm" data-tsend="${t.id}">Отправить сейчас</button>` : ""}</div>${t.is_message ? `<div class="task__msg">${esc(t.auto_text)}</div>` : ""}${t.auto_status && t.status === "open" ? `<div class="small bad">${esc(t.auto_status.replace(/^(skipped|failed):/, "не отправлено: "))}</div>` : ""}<div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.status === "done" && t.done_at ? `<span class="muted">✓ ${esc(dtShort(t.done_at))}</span>` : ""}</div></div>
       <button class="task__del" data-tedit="${t.id}" title="Изменить">✎</button><button class="task__del" data-tdel="${t.id}" title="Удалить">✕</button></div>`;
     box.innerHTML = `<div class="bk-tasks__head"><div class="card__title" style="margin:0">Задачи по брони ${list.length ? `<span class="tag ${late ? "red" : open.length ? "blue" : "green"}">${done.length}/${list.length}${late ? " · просрочено " + late : ""}</span>` : ""}</div>
         <div class="bk-tasks__prog"><div class="prog"><i style="width:${list.length ? Math.round(100 * done.length / list.length) : 0}%"></i></div><button class="btn sm" id="bkt-checklist" title="Создать задачи по шаблону (Интеграции → Чек-лист брони)">${b.checklist_done ? "Дополнить чек-лист" : "✚ Чек-лист"}</button></div></div>
@@ -988,6 +989,7 @@
       catch (err) { toast(err.message); e.target.disabled = false; }
     });
     box.onclick = async (e) => {
+      const ts = e.target.closest("[data-tsend]"); if (ts) { ts.disabled = true; try { const r = await post(`/tasks/${ts.dataset.tsend}/send`); toast(r.status === "sent" ? `Отправлено: ${r.chat}` : `Не отправлено: ${r.error}`); } catch (err) { toast(err.message); } reload(); return; }
       const dn = e.target.closest("[data-tdone]"); if (dn) { try { await patch(`/tasks/${dn.dataset.tdone}`, { status: dn.checked ? "done" : "open" }); } catch (err) { toast(err.message); } reload(); return; }
       const dl = e.target.closest("[data-tdel]"); if (dl) { if (confirm("Удалить задачу?")) { await del(`/tasks/${dl.dataset.tdel}`); reload(); } return; }
       const ed = e.target.closest("[data-tedit]"); if (ed) { const t = list.find((x) => x.id === parseInt(ed.dataset.tedit, 10)); if (t) taskForm(t, () => openBooking(b.id)); }
