@@ -48,13 +48,14 @@
   function onMain(fn) { $("main").onclick = fn; }
   function keepFocus(id) { const el = $(id); if (el && el.value) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
   function modal(html, wide) {
+    $("modal-card").onclick = null;
     $("modal-card").innerHTML = html;
     $("modal-card").classList.toggle("wide", !!wide);
     $("modal").classList.remove("hidden");
     const f = $("modal-card").querySelector("input, textarea, select");
     if (f) setTimeout(() => f.focus(), 50);
   }
-  function closeModal() { $("modal").classList.add("hidden"); }
+  function closeModal() { $("modal").classList.add("hidden"); $("modal-card").onclick = null; }
   function val(id) { const el = $(id); return el ? el.value.trim() : ""; }
   function userOptions(selected) {
     return S.users.filter((u) => u.active || u.id === selected).map((u) => `<option value="${u.id}" ${u.id === selected ? "selected" : ""}>${esc(u.name)}</option>`).join("");
@@ -196,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=55&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=56&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -938,11 +939,13 @@
     };
     $("bk-find-go").addEventListener("click", find);
     $("bk-find").addEventListener("keydown", (e) => { if (e.key === "Enter") find(); });
-    $("modal-card").addEventListener("click", async (e) => {
+    // one handler per open (assignment, not addEventListener): re-opening the card
+    // used to stack handlers, so one click linked the chat N times and the card flickered
+    $("modal-card").onclick = async (e) => {
       const pin = e.target.closest("[data-pin]"); if (pin) { try { await post(`/bookings/${id}/chats`, { chat_id: parseInt(pin.dataset.pin, 10) }); toast("Чат закреплён"); openBooking(id); } catch (err) { toast(err.message); } return; }
       const un = e.target.closest("[data-unlink]"); if (un) { await del(`/bookings/${id}/chats/${un.dataset.unlink}`); openBooking(id); return; }
       const dl = e.target.closest("[data-dealopen]"); if (dl) { S.pipelines = S.pipelines.length ? S.pipelines : await get("/pipelines"); openDeal(parseInt(dl.dataset.dealopen, 10)); }
-    });
+    };
   }
 
   // «Документы»: invoice / receipt / confirmation PDFs made from the booking, sent by email
