@@ -14,60 +14,84 @@
     return SEL || {};
   }
   function qsa(sel, root) { try { return Array.from((root || document).querySelectorAll(sel)); } catch (e) { return []; } }
-  function labelValue(labelRe, root) {
-    // "Номер бронирования:" followed by the value in the next node
-    const re = rx(labelRe);
-    const nodes = qsa("*", root || document).filter((n) => n.children.length === 0 && re.test(txt(n)) && txt(n).length < 60);
-    for (const n of nodes) {
-      const own = txt(n);
-      const after = own.replace(re, "").replace(/^[:\s]+/, "");
-      if (after) return after;
-      const sib = n.nextElementSibling || (n.parentElement && n.parentElement.nextElementSibling);
-      if (sib && txt(sib)) return txt(sib).split("\n")[0];
+  // ---- reservation panel: label → value by geometry (value sits right under or right of its label)
+  const LABELS = "Номер бронирования|Booking number|Reservation number|Имя гостя|Guest name|Заезд|Check-in|Отъезд|Выезд|Check-out|Итого|Total|Предпочитаемый язык|Preferred language|Количество гостей|Number of guests|номер:|Room|Unit";
+  function leaves(root) { return qsa("*", root || document).filter((n) => n.children.length === 0 && isVisible(n) && txt(n)); }
+  function labelValue(labelRe) {
+    const re = rx("^\\s*(" + labelRe + ")\\s*:?\\s*"), all = leaves(document);
+    const label = all.find((n) => re.test(txt(n)) && txt(n).length < 60);
+    if (!label) return "";
+    const own = txt(label).replace(re, "").trim();
+    if (own) return own;
+    const lr = label.getBoundingClientRect(), isLabel = rx("^(" + LABELS + ")\\s*:?$");
+    let best = null, bestD = 1e9;
+    for (const n of all) {
+      if (n === label || isLabel.test(txt(n))) continue;
+      const r = n.getBoundingClientRect();
+      const below = r.top >= lr.bottom - 2 && r.top - lr.bottom < 40 && Math.abs(r.left - lr.left) < 24;
+      const right = Math.abs(r.top - lr.top) < 10 && r.left >= lr.right - 2 && r.left - lr.right < 120;
+      if (!below && !right) continue;
+      const d = below ? (r.top - lr.bottom) + Math.abs(r.left - lr.left) : (r.left - lr.right);
+      if (d < bestD) { bestD = d; best = n; }
     }
-    return "";
+    return best ? txt(best) : "";
   }
-  function timeOf(el, S) {
-    const t = el.querySelector(S.msgTime); const m = (txt(t) || txt(el)).match(/\b(\d{1,2}:\d{2})\b/);
-    return m ? m[1] : "";
+  const RU_M = { "янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "май": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12 };
+  function isoDate(s) {
+    const m = (s || "").toLowerCase().match(/(\d{1,2})\s+([а-яa-z]{3})[а-яa-z]*\.?\s+(\d{4})/);
+    if (!m || !RU_M[m[2]]) return "";
+    return `${m[3]}-${String(RU_M[m[2]]).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   }
-  function isOutgoing(el, S) {
-    const r = el.getBoundingClientRect(); const mid = window.innerWidth / 2;
-    if (rx(S.outgoingHints).test(txt(el))) return true;
-    const cs = getComputedStyle(el);
-    if (/flex-end|right/.test(cs.alignSelf + cs.justifyContent + cs.textAlign + cs.marginLeft) && r.left > mid * 0.7) return true;
-    return r.left + r.width / 2 > mid + 40;
+  function panel() {
+    return { reservation: (labelValue("Номер бронирования|Booking number|Reservation number").match(/\d{6,}/) || [""])[0],
+      guest: labelValue("Имя гостя|Guest name"), checkin: isoDate(labelValue("Заезд|Check-in")), checkout: isoDate(labelValue("Отъезд|Выезд|Check-out")),
+      total: labelValue("Итого|Total"), lang: labelValue("Предпочитаемый язык|Preferred language"), guests: labelValue("Количество гостей|Number of guests"),
+      room: labelValue("\\d+ номер|\\d+ номера|Room|Unit") };
+  }
+  // ---- messages: bubbles are the coloured blocks in the middle column; day separators give the dates
+  const STATUS = /^(Доставлено|Delivered|Прочитано|Read|Отправлено|Sent|Ответ не требуется|No reply needed|Ответить|Reply|Сегодня|Today|Вчера|Yesterday)$/i;
+  const SEP = /^(Сегодня|Today|Вчера|Yesterday|\d{1,2}\s+[а-яa-z]{3,}\.?\s+\d{4})$/i;
+  function bubbleOf(leaf, colL, colR) {
+    let el = leaf;
+    for (let i = 0; i < 7 && el && el !== document.body; i++, el = el.parentElement) {
+      const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+      const bg = cs.backgroundColor || "";
+      const painted = bg && !/rgba\(0, 0, 0, 0\)|transparent/.test(bg);
+      if (painted && r.width < (colR - colL) * 0.92 && r.width > 40) return el;
+    }
+    return null;
   }
   function conversation(S) {
     const composer = qsa(S.composer).find(isVisible);
-    const reservation = labelValue(S.reservationLabel), guest = labelValue(S.guestLabel);
-    let bubbles = qsa(S.message).filter(isVisible);
-    if (!bubbles.length && composer) {
-      // heuristic: the scrollable column above the composer, leaf blocks with text + a HH:MM near them
-      let col = composer; for (let i = 0; i < 8 && col && col.parentElement; i++) { col = col.parentElement; if (col.scrollHeight > col.clientHeight + 40 || col.querySelectorAll("*").length > 60) break; }
-      bubbles = qsa("div, p, span", col).filter((n) => n.children.length <= 3 && txt(n).length > 0 && txt(n).length < 2000 && isVisible(n) && /\d{1,2}:\d{2}/.test(txt(n.parentElement || n)) && !/\d{1,2}:\d{2}$/.test(txt(n)) );
+    const P = panel();
+    if (!composer) return null;
+    const cr = composer.getBoundingClientRect(); const colL = cr.left - 30, colR = cr.right + 30, colMid = (colL + colR) / 2;
+    const all = leaves(document).filter((n) => { const r = n.getBoundingClientRect(); return r.left >= colL && r.right <= colR && r.bottom < cr.top; });
+    const msgs = []; const seen = new Set(); let day = new Date().toISOString().slice(0, 10); let lastTime = "";
+    for (const n of all) {
+      const t = txt(n);
+      if (SEP.test(t)) { const d = /сегодня|today/i.test(t) ? new Date() : /вчера|yesterday/i.test(t) ? new Date(Date.now() - 864e5) : null; day = d ? d.toISOString().slice(0, 10) : (isoDate(t) || day); continue; }
+      const tm = t.match(/^(\d{1,2}:\d{2})$/); if (tm) { lastTime = tm[1]; if (msgs.length && !msgs[msgs.length - 1].time) msgs[msgs.length - 1].time = tm[1]; continue; }
+      if (STATUS.test(t) || t.length < 1) continue;
+      const b = bubbleOf(n, colL, colR); if (!b || seen.has(b)) continue;
+      if (b.querySelector("a, button, input, textarea") || /Защитите свой аккаунт|Protect your account/i.test(txt(b))) continue;
+      seen.add(b);
+      const text = txt(b).replace(/\s*\b\d{1,2}:\d{2}\b\s*$/, "").replace(/\s*(Доставлено|Delivered|Прочитано|Read|Отправлено|Sent)\s*$/i, "").trim();
+      if (!text || STATUS.test(text)) continue;
+      const r = b.getBoundingClientRect();
+      msgs.push({ dir: (r.left + r.right) / 2 > colMid ? "out" : "in", text, day, time: "" });
     }
-    const msgs = [];
-    for (const b of bubbles) {
-      const text = txt(b).replace(/\s*(Доставлено|Delivered|Прочитано|Read|Ответ не требуется|Ответить)\s*$/i, "").replace(/\s*\b\d{1,2}:\d{2}\b\s*$/, "").trim();
-      if (!text || text.length > 4000 || /^(Сегодня|Today|Вчера|Yesterday)$/i.test(text)) continue;
-      if (msgs.length && msgs[msgs.length - 1].text === text) continue;
-      msgs.push({ dir: isOutgoing(b, S) ? "out" : "in", text, time: timeOf(b, S) });
-    }
-    if (!msgs.length && !guest) return null;
-    const today = new Date().toISOString().slice(0, 10);
-    return { reservation, guest, checkin: labelValue(S.checkinLabel), checkout: labelValue(S.checkoutLabel), room: labelValue(S.roomLabel),
-      messages: msgs.map((m) => ({ dir: m.dir, text: m.text, at: m.time ? `${today}T${m.time.padStart(5, "0")}:00` : undefined })) };
+    if (!msgs.length && !P.guest) return null;
+    return Object.assign(P, { messages: msgs.map((m) => ({ dir: m.dir, text: m.text, at: `${m.day}T${(m.time || "00:00").padStart(5, "0")}:00` })) });
   }
   function inboxList(S) {
-    const items = qsa(S.listItem).filter(isVisible);
-    let unread = 0; const previews = [];
-    for (const it of items) {
-      const t = txt(it); if (!t) continue;
-      const name = t.split(/\d{1,2} [а-яa-z]{3,4}\.? \d{4}|\n/i)[0].trim().slice(0, 80);
-      const hasDot = !!it.querySelector(S.listUnread) || /•/.test(t);
-      if (hasDot) unread++;
-      previews.push({ name, unread: hasDot });
+    const search = qsa(S.search).find(isVisible); let unread = 0; const previews = [];
+    if (search) {
+      const sr = search.getBoundingClientRect();
+      const col = leaves(document).filter((n) => { const r = n.getBoundingClientRect(); return r.left >= sr.left - 10 && r.right <= sr.right + 40 && r.top > sr.bottom; });
+      for (const n of col) { const t = txt(n); if (/^\d{1,2}\s+[а-яa-z]{3,}\.?\s+\d{4}$/i.test(t)) continue; }
+      unread = qsa(S.listUnread).filter(isVisible).filter((n) => { const r = n.getBoundingClientRect(); return r.left >= sr.left - 10 && r.right <= sr.right + 40 && r.width < 16; }).length;
     }
     return { unread, previews };
   }

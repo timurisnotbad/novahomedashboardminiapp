@@ -124,18 +124,72 @@ def ingest(payload: dict) -> dict:
                                 notify=not out and i == len(msgs) - 1, history=bool(m.get("history")))
         if r:
             n += 1
-    # the stay: remember it on the chat so templates and the booking link work
+    # the stay: remember it on the chat, name the chat after the guest, fill the
+    # guest card and link the chat to the calendar booking (apartment + check-in)
     with database.get_conn() as conn:
         c = conn.execute("SELECT id, name FROM inbox_chats WHERE jid = ?", (jid,)).fetchone()
+        if c and guest and guest != c["name"]:
+            conn.execute("UPDATE inbox_chats SET name = ? WHERE id = ?", (guest, c["id"]))
+            inbox._bump(conn)  # noqa: SLF001
         if c:
-            label = guest or c["name"]
-            if label and label != c["name"]:
-                conn.execute("UPDATE inbox_chats SET name = ?, rev = (SELECT COALESCE(MAX(rev), 0) + 1 FROM inbox_messages) WHERE id = ?", (label, c["id"]))
-            if reservation:
-                conn.execute("INSERT OR REPLACE INTO inbox_ext_meta (chat_id, reservation, guest, checkin, checkout, room, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                             (c["id"], reservation, guest, payload.get("checkin"), payload.get("checkout"), payload.get("room"),
-                              datetime.now().isoformat(timespec="seconds")))
-    return {"chat_id": c["id"] if c else None, "stored": n}
+            conn.execute("INSERT OR REPLACE INTO inbox_ext_meta (chat_id, reservation, guest, checkin, checkout, room, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (c["id"], reservation, guest, payload.get("checkin"), payload.get("checkout"), payload.get("room"),
+                          datetime.now().isoformat(timespec="seconds")))
+    linked = None
+    if c:
+        try:
+            linked = _enrich(c["id"], guest, reservation, payload)
+        except Exception:  # noqa: BLE001
+            logger.exception("booking enrich failed")
+    return {"chat_id": c["id"] if c else None, "stored": n, "booking_id": linked}
+
+
+def _apartment_code(room: str) -> str:
+    m = re.search(r"\b([A-Za-zА-Я]{1,4})\s*-?\s*(\d{2,4})\b", room or "")
+    return f"{m.group(1).upper()}-{m.group(2)}" if m else ""
+
+
+def _enrich(chat_id: int, guest: str, reservation: str, p: dict):
+    """Guest card from the Booking.com panel + link to the RealtyCalendar booking."""
+    from . import crm, crm_ext
+    cid = crm.ensure_client_for_chat(chat_id, guest or "Гость Booking.com", "Booking.com")
+    lines = [f"Booking.com № {reservation}" if reservation else "Booking.com"]
+    for key, label in (("guests", "Гостей"), ("total", "Сумма"), ("room", "Номер")):
+        if p.get(key):
+            lines.append(f"{label}: {p[key]}")
+    note = " · ".join(lines)
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT notes, lang, source FROM crm_clients WHERE id = ?", (cid,)).fetchone()
+        if cur:
+            notes = cur["notes"] or ""
+            if reservation and reservation not in notes:
+                notes = (notes + "\n" if notes else "") + note
+            raw_lang = (p.get("lang") or "").lower()
+            lang = cur["lang"] or next((code for key, code in (("рус", "RU"), ("russian", "RU"), ("англ", "EN"), ("english", "EN"), ("узб", "UZ"), ("uzbek", "UZ"),
+                                                                 ("казах", "KZ"), ("турец", "TR"), ("turkish", "TR"), ("кита", "ZH"), ("chinese", "ZH"), ("араб", "AR"), ("arabic", "AR"),
+                                                                 ("немец", "DE"), ("german", "DE"), ("франц", "FR"), ("french", "FR"), ("испан", "ES"), ("spanish", "ES"), ("корей", "KO"), ("korean", "KO"))
+                                        if key in raw_lang), raw_lang.replace("на ", "").strip()[:20])
+            conn.execute("UPDATE crm_clients SET notes = ?, lang = ?, source = COALESCE(NULLIF(source, ''), 'Booking.com'), updated_at = ? WHERE id = ?",
+                         (notes, lang, datetime.now().isoformat(timespec="seconds"), cid))
+        # already linked?
+        if conn.execute("SELECT 1 FROM crm_booking_chats WHERE chat_id = ?", (chat_id,)).fetchone():
+            return None
+        code = _apartment_code(p.get("room") or "")
+        bid = None
+        if code and p.get("checkin"):
+            r = conn.execute("SELECT id FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date = ? AND REPLACE(REPLACE(UPPER(apartment_name), ' ', ''), '-', '') LIKE ?",
+                             (p["checkin"], "%" + code.replace("-", "") + "%")).fetchone()
+            bid = r["id"] if r else None
+        if not bid and guest and p.get("checkin"):
+            r = conn.execute("SELECT id FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date = ? AND LOWER(client_name) = LOWER(?)", (p["checkin"], guest)).fetchone()
+            bid = r["id"] if r else None
+        if not bid and reservation:
+            r = conn.execute("SELECT id FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND short_notes LIKE ?", ("%" + reservation + "%",)).fetchone()
+            bid = r["id"] if r else None
+    if bid:
+        crm_ext.link_chat(bid, chat_id, "Booking.com")
+        return bid
+    return None
 
 
 def enqueue(payload: dict) -> dict:
