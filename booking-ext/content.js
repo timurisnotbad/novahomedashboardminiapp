@@ -1,40 +1,51 @@
-/* Content script in the Booking.com extranet (Сообщения). Reads the open
-   conversation and the inbox list, answers "scan" with what it found and "send"
-   by typing a reply into the composer. Selectors come from the CRM (/ext/config)
-   and can be adjusted there without reinstalling. */
+/* Content script in the Booking.com extranet (Сообщения → Гость).
+   Layout it reads (as of 10.2026):
+     left   — search «Введите имя или номер бронирования», sort select, the list
+              of conversations: guest name, date («10 окт. 2026»), preview, red dot;
+     middle — conversation: day separators («Сегодня», «1 окт. 2026»), guest
+              bubbles on the left, ours on the right («Доставлено 14:15»),
+              Booking's own template cards («Шаблон «Hello» был отправлен…»),
+              then the composer «Напишите сообщение здесь» / «Отправить»;
+     right  — the reservation panel: «Имя гостя:» value, «Номер бронирования:»,
+              «Заезд:», «Отъезд:», «Итого:», «Предпочитаемый язык:»,
+              «Количество гостей:», «2 номера:» + one line per unit.
+   Everything is read from visible text + geometry, never from class names
+   (Booking renames those every release). The CRM can still override the
+   few CSS selectors below via /ext/config. */
 (() => {
   let SEL = null, selAt = 0;
-  const txt = (el) => (el ? (el.innerText || el.textContent || "") : "").replace(/\s+/g, " ").trim();
-  const isVisible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const txt = (el) => norm(el ? (el.innerText || el.textContent || "") : "");
   const rx = (s) => new RegExp(s, "i");
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isVisible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const DEF = { search: "input[placeholder*='номер бронирования' i], input[placeholder*='booking number' i]",
+    composer: "textarea, [contenteditable='true']", sendButton: "button" };
+
+  // the page is «busy» while a person uses it: we never click around then
+  let lastInput = 0;
+  for (const ev of ["mousemove", "mousedown", "keydown", "wheel", "touchstart"]) document.addEventListener(ev, () => { lastInput = Date.now(); }, { capture: true, passive: true });
+  const busy = () => Date.now() - lastInput < 45000;
 
   async function selectors() {
     if (SEL && Date.now() - selAt < 60000) return SEL;
-    try { const r = await chrome.runtime.sendMessage({ type: "config" }); if (r && r.selectors) { SEL = r.selectors; selAt = Date.now(); } } catch (e) { /* keep old */ }
-    return SEL || {};
+    try { const r = await chrome.runtime.sendMessage({ type: "config" }); if (r && r.selectors) { SEL = Object.assign({}, DEF, r.selectors); selAt = Date.now(); } } catch (e) { /* keep old */ }
+    return SEL || DEF;
   }
   function qsa(sel, root) { try { return Array.from((root || document).querySelectorAll(sel)); } catch (e) { return []; } }
-  // ---- reservation panel: label → value by geometry (value sits right under or right of its label)
-  const LABELS = "Номер бронирования|Booking number|Reservation number|Имя гостя|Guest name|Заезд|Check-in|Отъезд|Выезд|Check-out|Итого|Total|Предпочитаемый язык|Preferred language|Количество гостей|Number of guests|номер:|Room|Unit";
-  function leaves(root) { return qsa("*", root || document).filter((n) => n.children.length === 0 && isVisible(n) && txt(n)); }
-  function labelValue(labelRe) {
-    const re = rx("^\\s*(" + labelRe + ")\\s*:?\\s*"), all = leaves(document);
-    const label = all.find((n) => re.test(txt(n)) && txt(n).length < 60);
-    if (!label) return "";
-    const own = txt(label).replace(re, "").trim();
-    if (own) return own;
-    const lr = label.getBoundingClientRect(), isLabel = rx("^(" + LABELS + ")\\s*:?$");
-    let best = null, bestD = 1e9;
-    for (const n of all) {
-      if (n === label || isLabel.test(txt(n))) continue;
-      const r = n.getBoundingClientRect();
-      const below = r.top >= lr.bottom - 2 && r.top - lr.bottom < 40 && Math.abs(r.left - lr.left) < 24;
-      const right = Math.abs(r.top - lr.top) < 10 && r.left >= lr.right - 2 && r.left - lr.right < 120;
-      if (!below && !right) continue;
-      const d = below ? (r.top - lr.bottom) + Math.abs(r.left - lr.left) : (r.left - lr.right);
-      if (d < bestD) { bestD = d; best = n; }
+
+  // ---- text nodes with geometry: the only thing we trust -------------------------
+  function nodes() {
+    const out = [], w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const t = norm(n.nodeValue); if (!t) continue;
+      const p = n.parentElement; if (!p || /^(SCRIPT|STYLE|NOSCRIPT|OPTION)$/.test(p.tagName)) continue;
+      const rg = document.createRange(); rg.selectNodeContents(n);
+      const r = rg.getBoundingClientRect(); if (r.width < 1 || r.height < 1) continue;
+      out.push({ t, r, el: p });
     }
-    return best ? txt(best) : "";
+    return out;
   }
   const RU_M = { "янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "май": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12 };
@@ -43,110 +54,208 @@
     if (!m || !RU_M[m[2]]) return "";
     return `${m[3]}-${String(RU_M[m[2]]).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   }
-  function rawPanel() {
-    // everything the reservation panel says, as text: the CRM shows it to a person
-    // under «Данные Booking.com» even when our label parsing misses something
-    const composer = qsa((SEL && SEL.composer) || "textarea, [contenteditable='true']").find(isVisible);
-    const cr = composer ? composer.getBoundingClientRect() : null;
-    const lines = [];
-    for (const n of leaves(document)) {
-      const r = n.getBoundingClientRect();
-      if (cr && r.right > cr.left - 30 && r.left < cr.right + 30) continue;  // the chat column itself
-      if (r.top < 40 || r.width > innerWidth * 0.9) continue;  // top bar / full-width banners
-      const t = txt(n); if (t.length < 2 || t.length > 160) continue;
-      lines.push(t);
-    }
-    return Array.from(new Set(lines)).join("\n").slice(0, 6000);
-  }
-  function panel() {
-    return { reservation: (labelValue("Номер бронирования|Booking number|Reservation number").match(/\d{6,}/) || [""])[0],
-      guest: labelValue("Имя гостя|Guest name"), checkin: isoDate(labelValue("Заезд|Check-in")), checkout: isoDate(labelValue("Отъезд|Выезд|Check-out")),
-      total: labelValue("Итого|Total"), lang: labelValue("Предпочитаемый язык|Preferred language"), guests: labelValue("Количество гостей|Number of guests"),
-      room: labelValue("\\d+ номер|\\d+ номера|Room|Unit"), raw: rawPanel(), url: location.href.slice(0, 300) };
-  }
-  // ---- messages: bubbles are the coloured blocks in the middle column; day separators give the dates
-  const STATUS = /^(Доставлено|Delivered|Прочитано|Read|Отправлено|Sent|Ответ не требуется|No reply needed|Ответить|Reply|Сегодня|Today|Вчера|Yesterday)$/i;
+  const DATE = /^(?:[а-яa-z]{2,3},\s*)?\d{1,2}\s+[а-яa-z]{3,}\.?\s+\d{4}$/i;         // «10 окт. 2026», «чт, 22 окт. 2026»
   const SEP = /^(Сегодня|Today|Вчера|Yesterday|\d{1,2}\s+[а-яa-z]{3,}\.?\s+\d{4})$/i;
-  function bubbleOf(leaf, colL, colR) {
-    let el = leaf;
-    for (let i = 0; i < 7 && el && el !== document.body; i++, el = el.parentElement) {
-      const cs = getComputedStyle(el), r = el.getBoundingClientRect();
-      const bg = cs.backgroundColor || "";
-      const painted = bg && !/rgba\(0, 0, 0, 0\)|transparent/.test(bg);
-      if (painted && r.width < (colR - colL) * 0.92 && r.width > 40) return el;
+  const TIME = /^\d{1,2}:\d{2}$/;
+  const STATUS = /^(Доставлено|Delivered|Прочитано|Read|Отправлено|Sent|Ответ не требуется|No reply needed|Ответить|Reply|Переведено|Translated|Показать оригинал|Show original|Перевести|Translate)$/i;
+  const TEMPLATE = /^(Шаблон|Template)\s+«?["“]?/i;
+  // banners and the composer sit below the last message: reading stops there
+  const NOISE = /^(Защитите свой аккаунт|Protect your account|Ответы в этом чате включают|Replies in this chat|Напишите сообщение здесь|Write a message|Изображения|Images|Шаблоны|Templates|Помощь с ответом|Отправить|Send)$/i;
+
+  // ---- the three columns, found by the search box and the composer ----------------
+  function layout(S) {
+    const search = qsa(S.search).find(isVisible), composer = qsa(S.composer).find(isVisible);
+    if (!search || !composer) return null;
+    const sr = search.getBoundingClientRect(), cr = composer.getBoundingClientRect();
+    return { search, composer, left: { l: sr.left - 20, r: sr.right + 20, top: sr.bottom }, mid: { l: cr.left - 30, r: cr.right + 12, bottom: cr.top - 4 }, right: { l: cr.right + 6 } };
+  }
+
+  // ---- reservation panel: «Label:» then its value(s) right below ---------------------
+  function panel(all, L) {
+    const col = all.filter((n) => n.r.left >= L.right.l).sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
+    const labelRe = /:\s*$/;
+    const get = (re) => {
+      const i = col.findIndex((n) => re.test(n.t) && n.t.includes(":") && n.t.length < 80);
+      if (i < 0) return "";
+      const own = (n) => n.t.replace(re, "").replace(/^[:\s]+/, "").trim();
+      const lab = col[i];
+      if (own(lab)) return own(lab);  // «Заезд: чт, 22 окт. 2026» in one node
+      const vals = [];
+      for (let k = i + 1; k < col.length && vals.length < 6; k++) {
+        const n = col[k];
+        if (n.r.top < lab.r.bottom - 4) continue;                                   // same row (the other sub-column's label)
+        if (Math.abs(n.r.left - lab.r.left) > 60) continue;                         // the other sub-column
+        if (labelRe.test(n.t) && n.t.length < 50) break;                            // next label in this sub-column
+        if (n.r.top - (vals.length ? lab.r.bottom + 200 : lab.r.bottom) > 70) break;  // too far down
+        if (/^(Посмотреть все детали|See all|Изменить|Edit)/i.test(n.t)) break;
+        vals.push(n.t);
+      }
+      return vals.join("; ");
+    };
+    const rooms = get(/^\d+\s+(номер|номера|номеров|room|rooms|unit|units)\s*:?$/i);
+    return { reservation: (get(/^(Номер бронирования|Booking number|Reservation number)/i).match(/\d{6,}/) || [""])[0],
+      guest: get(/^(Имя гостя|Guest name)/i), checkin: isoDate(get(/^(Заезд|Check-in)/i)), checkout: isoDate(get(/^(Отъезд|Выезд|Check-out)/i)),
+      total: get(/^(Итого|Total)/i), lang: get(/^(Предпочитаемый язык|Preferred language)/i), guests: get(/^(Количество гостей|Number of guests)/i),
+      room: rooms, raw: col.map((n) => n.t).join("\n").slice(0, 6000), url: location.href.slice(0, 300) };
+  }
+
+  // the thread scrolls inside its own box: its rect bounds what is really visible
+  function scrollBox(col) {
+    const anchors = col.filter((n) => SEP.test(n.t) || TIME.test(n.t) || /\d{1,2}:\d{2}$/.test(n.t)).concat(col);
+    for (const n of anchors.slice(0, 12)) {
+      let el = n.el;
+      for (let i = 0; i < 14 && el && el !== document.body; i++, el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        if (/(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 4) return el.getBoundingClientRect();
+      }
     }
     return null;
   }
-  function conversation(S) {
-    const composer = qsa(S.composer).find(isVisible);
-    const P = panel();
-    if (!composer) return null;
-    const cr = composer.getBoundingClientRect(); const colL = cr.left - 30, colR = cr.right + 30, colMid = (colL + colR) / 2;
-    const all = leaves(document).filter((n) => { const r = n.getBoundingClientRect(); return r.left >= colL && r.right <= colR && r.bottom < cr.top; });
-    const msgs = []; const seen = new Set(); let day = new Date().toISOString().slice(0, 10); let lastTime = "";
-    for (const n of all) {
-      const t = txt(n);
-      if (SEP.test(t)) { const d = /сегодня|today/i.test(t) ? new Date() : /вчера|yesterday/i.test(t) ? new Date(Date.now() - 864e5) : null; day = d ? d.toISOString().slice(0, 10) : (isoDate(t) || day); continue; }
-      const tm = t.match(/^(\d{1,2}:\d{2})$/); if (tm) { lastTime = tm[1]; if (msgs.length && !msgs[msgs.length - 1].time) msgs[msgs.length - 1].time = tm[1]; continue; }
-      if (STATUS.test(t) || t.length < 1) continue;
-      const b = bubbleOf(n, colL, colR); if (!b || seen.has(b)) continue;
-      if (b.querySelector("a, button, input, textarea") || /Защитите свой аккаунт|Protect your account/i.test(txt(b))) continue;
-      seen.add(b);
-      const text = txt(b).replace(/\s*\b\d{1,2}:\d{2}\b\s*$/, "").replace(/\s*(Доставлено|Delivered|Прочитано|Read|Отправлено|Sent)\s*$/i, "").trim();
-      if (!text || STATUS.test(text)) continue;
-      const r = b.getBoundingClientRect();
-      msgs.push({ dir: (r.left + r.right) / 2 > colMid ? "out" : "in", text, day, time: "" });
+
+  // ---- the open conversation: bubbles by position, time stamps close each message ----
+  function conversation(all, L) {
+    const P = panel(all, L);
+    let col = all.filter((n) => n.r.left >= L.mid.l && n.r.right <= L.mid.r && n.r.bottom <= L.mid.bottom && n.r.top > 40)
+      .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
+    // only the visible part of the scrolling thread: above the conversation title
+    // sit the site's menus, below the last bubble sit banners and the composer
+    const box = scrollBox(col);
+    if (box) col = col.filter((n) => n.r.top >= box.top - 1 && n.r.bottom <= box.bottom + 1);
+    else {
+      const titleBottom = col.length ? col[0].r.bottom : 0;
+      const noise = col.filter((n) => /^(Защитите свой аккаунт|Protect your account|Ответы в этом чате включают|Replies in this chat|Напишите сообщение здесь|Write a message)/i.test(n.t));
+      const noiseTop = noise.length ? Math.min(...noise.map((n) => n.r.top)) : L.mid.bottom;
+      col = col.filter((n) => n.r.top >= titleBottom - 1 && n.r.bottom <= noiseTop + 2);
     }
+    const mid = (L.mid.l + L.mid.r) / 2;
+    const msgs = []; let day = new Date().toISOString().slice(0, 10); let cur = null;
+    const flush = (time) => {
+      if (!cur) return;
+      const text = cur.lines.join("\n").trim();
+      if (text && !STATUS.test(text)) {
+        const dl = cur.l - L.mid.l, dr = L.mid.r - cur.r;
+        const out = cur.template || dr < dl;
+        msgs.push({ dir: out ? "out" : "in", text: cur.template ? text + " (отправлено автоматически Booking.com)" : text, day, time: time || "" });
+      }
+      cur = null;
+    };
+    let header = true;  // the guest's name above the first separator / bubble
+    for (const n of col) {
+      let t = n.t.replace(/^[•·\s]+|[•·\s]+$/g, "");
+      const tm = t.match(/^(.*?)\s*(\d{1,2}:\d{2})$/);  // «… 14:17», «Доставлено 14:15», «13:58 •»
+      if (tm && !SEP.test(t)) {
+        const body = tm[1].replace(/[•·\s.]+$/g, "").trim();
+        if (body && !STATUS.test(body)) {
+          if (!cur) cur = { lines: [], l: n.r.left, r: n.r.right, bottom: n.r.bottom, template: false };
+          if (TEMPLATE.test(body)) cur.template = true;
+          if (cur.lines.length && Math.abs(n.r.top - cur.lastTop) < 6) cur.lines[cur.lines.length - 1] += " " + body; else cur.lines.push(body);
+        }
+        header = false; flush(tm[2]); continue;
+      }
+      if (SEP.test(t)) { header = false; flush(""); const d = /сегодня|today/i.test(t) ? new Date() : /вчера|yesterday/i.test(t) ? new Date(Date.now() - 864e5) : null; day = d ? d.toISOString().slice(0, 10) : (isoDate(t) || day); continue; }
+      if (NOISE.test(t) || /^(Защитите свой аккаунт|Protect your account|Ответы в этом чате включают)/i.test(t)) { flush(""); break; }
+      if (STATUS.test(t)) continue;  // «Доставлено», «Ответить»… — not part of the text
+      header = false;
+      if (cur && n.r.top - cur.bottom > 150) flush("");  // a huge gap: a bubble without a time stamp (rare)
+      if (!cur) cur = { lines: [], l: n.r.left, r: n.r.right, bottom: n.r.bottom, template: false };
+      if (TEMPLATE.test(t)) cur.template = true;
+      const same = cur.lines.length && Math.abs(n.r.top - cur.lastTop) < 6;
+      if (same) cur.lines[cur.lines.length - 1] += " " + t; else cur.lines.push(t);
+      cur.lastTop = n.r.top; cur.l = Math.min(cur.l, n.r.left); cur.r = Math.max(cur.r, n.r.right); cur.bottom = n.r.bottom;
+    }
+    flush("");
     if (!msgs.length && !P.guest) return null;
-    return Object.assign(P, { messages: msgs.map((m) => ({ dir: m.dir, text: m.text, at: `${m.day}T${(m.time || "00:00").padStart(5, "0")}:00` })) });
+    return Object.assign(P, { messages: msgs.map((m) => ({ dir: m.dir, text: m.text.slice(0, 4000), at: `${m.day}T${(m.time || "00:00").padStart(5, "0")}:00` })) });
   }
-  function inboxList(S) {
-    const search = qsa(S.search).find(isVisible); let unread = 0; const previews = [];
-    if (search) {
-      const sr = search.getBoundingClientRect();
-      const col = leaves(document).filter((n) => { const r = n.getBoundingClientRect(); return r.left >= sr.left - 10 && r.right <= sr.right + 40 && r.top > sr.bottom; });
-      for (const n of col) { const t = txt(n); if (/^\d{1,2}\s+[а-яa-z]{3,}\.?\s+\d{4}$/i.test(t)) continue; }
-      unread = qsa(S.listUnread).filter(isVisible).filter((n) => { const r = n.getBoundingClientRect(); return r.left >= sr.left - 10 && r.right <= sr.right + 40 && r.width < 16; }).length;
+
+  // ---- left list: {guest, date, preview, unread} per conversation ---------------------
+  function list(all, L) {
+    const col = all.filter((n) => n.r.left >= L.left.l && n.r.right <= L.left.r + 10 && n.r.top > L.left.top + 40).sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
+    const items = [];
+    const dots = [];  // the red «unanswered» dots: tiny painted elements in the list column
+    for (const el of qsa("*")) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.width > 14 || r.height < 4 || r.height > 14 || r.left < L.left.l || r.right > L.left.r + 10 || r.top < L.left.top) continue;
+      const bg = getComputedStyle(el).backgroundColor.match(/\d+/g);
+      if (bg && +bg[0] > 150 && +bg[1] < 110 && +bg[2] < 110) dots.push(r);
     }
-    return { unread, previews };
+    for (let i = 0; i < col.length; i++) {
+      const n = col[i]; if (!DATE.test(n.t)) continue;
+      const name = col.slice(0, i).reverse().find((m) => Math.abs(m.r.top - n.r.top) < 8 && m.r.left < n.r.left && !DATE.test(m.t));
+      const preview = col.slice(i + 1).find((m) => m.r.top > n.r.bottom - 2 && m.r.top - n.r.bottom < 40 && !DATE.test(m.t));
+      if (!name) continue;
+      const top = name.r.top - 6, bottom = (preview ? preview.r.bottom : n.r.bottom) + 6;
+      const unread = dots.some((r) => r.top >= top && r.bottom <= bottom);
+      items.push({ guest: name.t, date: isoDate(n.t) || n.t, preview: preview ? preview.t : "", unread, el: name.el });
+    }
+    return items;
   }
+
+  function current(S) {
+    const L = layout(S); if (!L) return null;
+    const all = nodes();
+    return { L, all, conv: conversation(all, L), list: list(all, L) };
+  }
+
   async function scan() {
-    const S = await selectors(); if (!S || !S.composer) return { page: location.pathname, unread: 0 };
-    const out = { page: location.pathname.slice(0, 80), unread: 0, conversations: [] };
-    try { const li = inboxList(S); out.unread = li.unread; } catch (e) { /* ignore */ }
-    try { const c = conversation(S); if (c && c.messages.length) out.conversations.push(c); } catch (e) { out.error = String(e.message || e); }
+    const S = await selectors();
+    const out = { page: location.pathname.slice(0, 80), unread: 0, conversations: [], list: [], busy: busy() };
+    try {
+      const c = current(S); if (!c) return out;
+      out.list = c.list.map((i) => ({ guest: i.guest, date: i.date, preview: i.preview, unread: i.unread }));
+      out.unread = c.list.filter((i) => i.unread).length;
+      if (c.conv && c.conv.messages.length) out.conversations.push(c.conv);
+      out.debug = c.all.filter((n) => n.r.left >= c.L.mid.l && n.r.right <= c.L.mid.r && n.r.bottom <= c.L.mid.bottom).slice(0, 120).map((n) => `${Math.round(n.r.left)},${Math.round(n.r.top)} ${n.t.slice(0, 80)}`).join("\n");
+    } catch (e) { out.error = String(e.message || e); }
     return out;
   }
+
+  // open a conversation from the list (by guest name / reservation number) and read it
   async function openConversation(item, S) {
-    const search = qsa(S.search).find(isVisible); if (!search) return false;
-    const q = item.reservation && /^\d{6,}$/.test(item.reservation) ? item.reservation : item.guest;
-    if (!q) return false;
-    setNativeValue(search, q); search.dispatchEvent(new Event("input", { bubbles: true }));
-    await sleep(1500);
-    const it = qsa(S.listItem).filter(isVisible).find((n) => rx(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(txt(n))) || qsa(S.listItem).filter(isVisible)[0];
-    if (!it) return false;
-    it.click(); await sleep(1500);
-    const guest = labelValue(S.guestLabel), res = labelValue(S.reservationLabel);
-    return (item.reservation && res && res.replace(/\D/g, "") === item.reservation.replace(/\D/g, "")) || (item.guest && guest && guest.toLowerCase() === item.guest.toLowerCase()) || (!item.reservation && !!guest);
+    const c = current(S); if (!c) return false;
+    let it = c.list.find((i) => item.guest && i.guest.toLowerCase() === String(item.guest).toLowerCase());
+    if (!it) {  // not in the visible list: search for it
+      const q = item.reservation && /^\d{6,}$/.test(String(item.reservation)) ? String(item.reservation) : item.guest;
+      if (!q) return false;
+      setNativeValue(c.L.search, q); c.L.search.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(1800);
+      const c2 = current(S); if (!c2) return false;
+      it = c2.list.find((i) => item.guest && i.guest.toLowerCase() === String(item.guest).toLowerCase()) || c2.list[0];
+      if (!it) return false;
+    }
+    it.el.click(); await sleep(2200);
+    const c3 = current(S);
+    const P = c3 && c3.conv ? c3.conv : {};
+    return (item.reservation && P.reservation && String(P.reservation) === String(item.reservation)) || (item.guest && P.guest && P.guest.toLowerCase() === String(item.guest).toLowerCase());
   }
+  async function open(item) {
+    if (busy()) return { ok: false, busy: true };
+    const S = await selectors();
+    const ok = await openConversation(item, S);
+    const r = await scan();
+    return Object.assign(r, { ok });
+  }
+
   function setNativeValue(el, value) {
     const d = Object.getOwnPropertyDescriptor(el.__proto__, "value") || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value") || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
     if (d && d.set) d.set.call(el, value); else el.value = value;
   }
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function send(item) {
     const S = await selectors();
-    const cur = { reservation: labelValue(S.reservationLabel), guest: labelValue(S.guestLabel) };
-    const same = (item.reservation && cur.reservation && cur.reservation.replace(/\D/g, "") === String(item.reservation).replace(/\D/g, "")) || (!item.reservation && item.guest && cur.guest && cur.guest.toLowerCase() === item.guest.toLowerCase());
+    const c = current(S); if (!c) return { ok: false, error: "страница сообщений не открыта" };
+    const P = c.conv || {};
+    const same = (item.reservation && P.reservation && String(P.reservation) === String(item.reservation)) || (!item.reservation && item.guest && P.guest && P.guest.toLowerCase() === item.guest.toLowerCase());
     if (!same && !(await openConversation(item, S))) return { ok: false, error: "не нашёл разговор с гостем в экстранете" };
     const composer = qsa(S.composer).find(isVisible); if (!composer) return { ok: false, error: "нет поля ввода" };
     composer.focus();
     if (composer.isContentEditable) { composer.textContent = item.text; composer.dispatchEvent(new InputEvent("input", { bubbles: true, data: item.text, inputType: "insertText" })); }
     else { setNativeValue(composer, item.text); composer.dispatchEvent(new Event("input", { bubbles: true })); composer.dispatchEvent(new Event("change", { bubbles: true })); }
-    await sleep(400);
-    const btn = qsa(S.sendButton).filter(isVisible).find((b) => !b.disabled && /отправить|send/i.test(txt(b) + (b.getAttribute("aria-label") || ""))) || qsa(S.sendButton).filter(isVisible).find((b) => !b.disabled);
-    if (!btn) return { ok: false, error: "кнопка «Отправить» не найдена" };
-    btn.click(); await sleep(1500);
+    await sleep(500);
+    const cr = composer.getBoundingClientRect();
+    const btn = qsa("button, [role='button']").filter(isVisible).filter((b) => b.getBoundingClientRect().top >= cr.bottom - 4 && b.getBoundingClientRect().top - cr.bottom < 120)
+      .find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true" && /^(отправить|send)$/i.test(txt(b) + (b.getAttribute("aria-label") || "")));
+    if (!btn) return { ok: false, error: "кнопка «Отправить» не найдена (или не активна)" };
+    btn.click(); await sleep(1800);
     return { ok: true };
   }
   function snapshot() {
@@ -155,6 +264,7 @@
   }
   chrome.runtime.onMessage.addListener((m, s, reply) => {
     if (m.type === "scan") { scan().then(reply); return true; }
+    if (m.type === "open") { open(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }
     if (m.type === "send") { send(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }
     if (m.type === "snapshot") { snapshot(); reply({ ok: true }); }
   });

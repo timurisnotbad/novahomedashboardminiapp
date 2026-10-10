@@ -343,12 +343,23 @@ def ext_ping(payload: dict, _=Depends(_ext_auth)):  # noqa: B008
 @public.post("/ext/messages")
 def ext_messages(payload: dict, _=Depends(_ext_auth)):  # noqa: B008
     from .. import booking_ext
-    try:
-        convs = payload.get("conversations") if isinstance(payload.get("conversations"), list) else [payload]
-        out = [booking_ext.ingest(c) for c in convs if isinstance(c, dict)]
-        return {"ok": True, "results": out}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    convs = payload.get("conversations") if isinstance(payload.get("conversations"), list) else [payload]
+    out, errors = [], []
+    for c in convs:
+        if not isinstance(c, dict):
+            continue
+        try:
+            out.append(booking_ext.ingest(c))
+        except ValueError as exc:
+            errors.append(str(exc))
+    if isinstance(payload.get("opened"), dict):
+        booking_ext.mark_seen(payload["opened"])
+    booking_ext.set_debug(payload.get("debug") or "")
+    just_read = {str(c.get("guest") or "").strip().lower() for c in convs if isinstance(c, dict)}
+    want = booking_ext.wanted(payload.get("list") or [], skip=just_read) if not payload.get("busy") and isinstance(payload.get("list"), list) else []
+    if errors and not out and not want:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    return {"ok": True, "results": out, "open": want, "errors": errors}
 
 
 @public.get("/ext/outbox")

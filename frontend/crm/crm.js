@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=63&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=64&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -626,8 +626,10 @@
           ${admin ? `<details class="small" style="margin-top:8px"><summary>Установка и ключ</summary><ol class="muted" style="margin:6px 0 0 18px">
             <li>В папке программы есть папка <b>booking-ext</b>. В Chrome откройте <span class="mono">chrome://extensions</span>, включите «Режим разработчика», нажмите «Загрузить распакованное расширение» и выберите папку booking-ext.</li>
             <li>Нажмите на значок расширения → «Настройки»: адрес CRM <span class="mono">${esc((bk.hook_url || "").replace(/\/api\/inbox\/ext$/, "") || location.origin)}</span>, ключ <span class="mono">${esc(bk.token || "")}</span>.</li>
-            <li>Откройте в Chrome экстранет Booking.com → Сообщения и оставьте вкладку открытой. Статус выше станет зелёным в течение минуты.</li>
+            <li>Откройте в Chrome экстранет Booking.com → Сообщения и оставьте вкладку открытой. Статус выше станет зелёным в течение минуты. Пока страницей никто не пользуется, расширение само открывает неотвеченные разговоры по очереди и читает их.</li>
+            <li>После каждого обновления CRM: chrome://extensions → ⟳ на карточке расширения, иначе Chrome работает со старой версией (нужна 1.4+).</li>
             <li>Если сообщения не читаются: в меню расширения нажмите «Снимок страницы» и пришлите файл разработчику — селекторы ниже подстроятся без переустановки.</li></ol>
+            ${bk.debug ? `<details style="margin-top:8px"><summary class="muted small">Что расширение видит в открытом разговоре (разбор страницы${bk.debug_at ? ", " + esc(dtShort(bk.debug_at)) : ""})</summary><pre class="mono small" style="white-space:pre-wrap;max-height:260px;overflow:auto;background:#F3F4F6;padding:8px;border-radius:8px">${esc(bk.debug)}</pre></details>` : ""}
             <label class="lbl" style="margin-top:8px">Селекторы страницы (JSON, для настройки)</label><textarea class="field mono" id="bk-sel" rows="6">${esc(JSON.stringify(bk.selectors || {}, null, 1))}</textarea>
             <div style="margin-top:6px"><button class="btn sm" id="bk-sel-save">Сохранить селекторы</button></div></details>` : ""}</div>`;
       $("main").innerHTML = `<div class="page-head"><h1>Каналы</h1></div><div class="page-sub">Откуда приходят сообщения в «Сообщения». Все каналы попадают в один список чатов, карточка клиента создаётся сама.</div>

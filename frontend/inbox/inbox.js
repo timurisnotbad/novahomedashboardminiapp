@@ -169,23 +169,26 @@
     const b = $("conv-booking");
     const stay = !c.booking && c.bk_stay ? c.bk_stay : null;
     const stayDates = stay && stay.checkin && stay.checkout ? `${esc(dm(stay.checkin))}–${esc(dm(stay.checkout))}` : "";
-    const stayText = stay ? `<span class="ib-stay">Booking.com${stayDates ? ": " + stayDates : ""}${stay.room ? " · " + esc(stay.room) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
+    const roomShort = stay && stay.room ? ((stay.room.match(/[A-Za-zА-Я]{1,2}-?\d{2,4}/g) || []).join(", ") || stay.room.slice(0, 40)) : "";
+    const stayText = stay ? `<span class="ib-stay">Booking.com${stayDates ? ": " + stayDates : ""}${roomShort ? " · " + esc(roomShort) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
     const bkBtn = c.channel === "bk" ? `<button class="ib-link ib-bkinfo" id="bk-info" title="Все данные гостя и брони из экстранета">ℹ️ Данные Booking</button>` : "";
     const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
-    b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
     $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
     loadStatuses();
     const stNames = (statuses || []).map((s) => s.name);
     if (c.client_status && !stNames.includes(c.client_status)) stNames.push(c.client_status);
-    st.innerHTML = `<option value="">— статус —</option>` + stNames.map((n) => `<option value="${esc(n)}" ${n === c.client_status ? "selected" : ""}>${esc(n)}</option>`).join("");
+    st.innerHTML = `<option value="">Статус</option>` + stNames.map((n) => `<option value="${esc(n)}" ${n === c.client_status ? "selected" : ""}>${esc(n)}</option>`).join("");
     const col = ((statuses || []).find((s) => s.name === c.client_status) || {}).color;
-    st.style.background = col ? col + "22" : ""; st.style.color = col || "";
+    st.classList.toggle("empty", !c.client_status); st.classList.toggle("has", !!(c.client_status && col));
+    st.style.backgroundColor = col ? col + "22" : ""; st.style.color = col || "";
     const sel = $("assignee");
     const names = Array.from(new Set(S.agents.concat(c.assignee ? [c.assignee] : [])));
-    sel.innerHTML = `<option value="">— ничей —</option>` + names.map((n) =>
-      `<option value="${esc(n)}" ${n === c.assignee ? "selected" : ""}>👤 ${esc(n)}</option>`).join("");
+    sel.innerHTML = `<option value="">Ответственный</option>` + names.map((n) =>
+      `<option value="${esc(n)}" ${n === c.assignee ? "selected" : ""}>${esc(n)}</option>`).join("");
+    sel.classList.toggle("empty", !c.assignee);
   }
 
   function msgHtml(m) {
