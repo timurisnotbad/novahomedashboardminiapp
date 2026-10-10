@@ -12,6 +12,17 @@ async function api(path, opts) {
   return r.json();
 }
 async function extranetTabs() { return chrome.tabs.query({ url: "https://admin.booking.com/*" }); }
+// A tab opened before the extension was (re)loaded has no content script yet
+// («Receiving end does not exist»): inject it and try again.
+async function ask(tabId, msg) {
+  try { return await chrome.tabs.sendMessage(tabId, msg); }
+  catch (e) {
+    if (!/Receiving end does not exist|Could not establish connection/i.test(String(e.message || e))) throw e;
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    await new Promise((r) => setTimeout(r, 500));
+    return chrome.tabs.sendMessage(tabId, msg);
+  }
+}
 async function post(r, opened) {
   return api("/messages", { method: "POST", body: JSON.stringify({ conversations: r.conversations || [], list: r.list || [], opened: opened || null, debug: r.debug || "", busy: !!r.busy }) });
 }
@@ -24,13 +35,13 @@ async function tick() {
   try {
     for (const t of tabs) {
       try {
-        const r = await chrome.tabs.sendMessage(t.id, { type: "scan" });
+        const r = await ask(t.id, { type: "scan" });
         if (!r) continue;
         state = Object.assign(state, { page: r.page, unread: r.unread, error: r.error || "" });
         const ans = await post(r);
         // read the conversations the CRM asks for — only while the page is idle
         for (const item of (ans.open || []).slice(0, 3)) {
-          const o = await chrome.tabs.sendMessage(t.id, { type: "open", item });
+          const o = await ask(t.id, { type: "open", item });
           if (!o || o.busy) { state.error = o && o.busy ? "страницей пользуются — обход отложен" : state.error; break; }
           await post(o, Object.assign({}, item, { ok: !!o.ok }));
         }
@@ -40,7 +51,7 @@ async function tick() {
     const out = await api("/outbox");
     for (const o of out) {
       let ok = false, error = "нет открытой вкладки экстранета";
-      for (const t of tabs) { try { const r = await chrome.tabs.sendMessage(t.id, { type: "send", item: o }); if (r && r.ok) { ok = true; error = ""; break; } error = (r && r.error) || error; } catch (e) { error = String(e.message || e); } }
+      for (const t of tabs) { try { const r = await ask(t.id, { type: "send", item: o }); if (r && r.ok) { ok = true; error = ""; break; } error = (r && r.error) || error; } catch (e) { error = String(e.message || e); } }
       await api("/outbox/" + o.id, { method: "POST", body: JSON.stringify({ ok, error }) });
     }
     await chrome.storage.local.set({ last: new Date().toISOString(), lastError: state.error || "" });
@@ -48,6 +59,9 @@ async function tick() {
   finally { ticking = false; }
 }
 chrome.alarms.create("tick", { periodInMinutes: 0.25 });
+chrome.runtime.onInstalled.addListener(async () => {  // (re)loaded: refresh the content script in open extranet tabs
+  for (const t of await extranetTabs()) { try { await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }); } catch (e) { /* tab not ready */ } }
+});
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === "tick") tick(); });
 chrome.runtime.onMessage.addListener((m, s, reply) => {
   if (m.type === "config") { api("/config").then(reply).catch((e) => reply({ error: String(e.message || e) })); return true; }

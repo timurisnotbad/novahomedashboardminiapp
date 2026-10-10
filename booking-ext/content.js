@@ -13,6 +13,7 @@
    (Booking renames those every release). The CRM can still override the
    few CSS selectors below via /ext/config. */
 (() => {
+  if (window.__novaBk) { try { chrome.runtime.onMessage.removeListener(window.__novaBk); } catch (e) { /* ignore */ } }
   let SEL = null, selAt = 0;
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
   const txt = (el) => norm(el ? (el.innerText || el.textContent || "") : "");
@@ -262,10 +263,11 @@
     const html = "<!doctype html>\n" + document.documentElement.outerHTML.replace(/<script[\s\S]*?<\/script>/gi, "");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = "booking-extranet-snapshot.html"; a.click();
   }
-  chrome.runtime.onMessage.addListener((m, s, reply) => {
+  window.__novaBk = (m, s, reply) => {
     if (m.type === "scan") { scan().then(reply); return true; }
     if (m.type === "open") { open(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }
     if (m.type === "send") { send(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }
     if (m.type === "snapshot") { snapshot(); reply({ ok: true }); }
-  });
+  };
+  chrome.runtime.onMessage.addListener(window.__novaBk);
 })();
