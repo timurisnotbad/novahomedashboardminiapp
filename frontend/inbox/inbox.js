@@ -167,7 +167,9 @@
     const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
     $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
     const b = $("conv-booking");
-    b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : '<span class="ib-muted">Бронь не привязана</span>'}</span><button class="ib-link" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : "Привязать бронь"}</button></div>` + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    const stay = !c.booking && c.bk_stay ? c.bk_stay : null;
+    const stayText = stay ? `<span class="ib-stay">Booking.com: ${stay.checkin ? esc(dm(stay.checkin)) : "?"}–${stay.checkout ? esc(dm(stay.checkout)) : "?"}${stay.room ? " · " + esc(stay.room) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
+    b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></div>` + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
     $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
@@ -609,13 +611,15 @@
     $("modal").classList.remove("hidden");
     $("modal-card").innerHTML = "<p>Загрузка…</p>";
     const when = (b) => b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "прошлая";
-    const row = (b, pinned) => `<div class="ib-tpl"><div class="ib-tpl__body"><b>${esc(b.apartment)} · ${esc(dm(b.checkin))}–${esc(dm(b.checkout))}</b><span>${esc(b.guest || "гость")}${b.phone ? " · +" + esc(b.phone) : ""} · ${when(b)} · ${esc(b.source || "")}</span></div>
+    const row = (b, pinned) => `<div class="ib-tpl ${b.strong ? "strong" : ""}"><div class="ib-tpl__body"><b>${esc(b.apartment)} · ${esc(dm(b.checkin))}–${esc(dm(b.checkout))}</b><span>${esc(b.guest || "гость")}${b.phone ? " · +" + esc(b.phone) : ""} · ${when(b)} · ${esc(b.source || "")}</span>${b.reason ? `<span class="ib-reason">${b.strong ? "✓" : "~"} ${esc(b.reason)}</span>` : ""}</div>
       ${pinned ? `<button class="ib-btn danger" data-bk-unlink="${b.id}">Отвязать</button>` : `<button class="ib-btn primary" data-bk-link="${b.id}">Привязать</button>`}</div>`;
     let d;
     try { d = await req(`/chats/${id}/bookings`); } catch (e) { toast(e.message); closeModal(); return; }
     $("modal-card").innerHTML = `<h3>Бронь гостя</h3>
       <p>Бронь из RealtyCalendar, к которой относится этот чат. Данные брони подтягиваются из календаря и обновляются сами. В карточке брони чат появится в списке «Чаты по этой брони».</p>
+      ${d.stay ? `<div class="ib-stay-box">Booking.com говорит: <b>${d.stay.checkin ? esc(dm(d.stay.checkin)) : "?"}–${d.stay.checkout ? esc(dm(d.stay.checkout)) : "?"}</b>${d.stay.room ? " · " + esc(d.stay.room) : ""}${d.stay.reservation ? " · № " + esc(d.stay.reservation) : ""}<br><span class="ib-muted">Номер и даты в Booking могут отличаться от календаря — сверьте и выберите бронь вручную.</span></div>` : ""}
       ${d.pinned.length ? `<div class="ib-sec">Привязано</div>${d.pinned.map((b) => row(b, true)).join("")}` : ""}
+      ${(d.candidates || []).length ? `<div class="ib-sec">Похоже на эту бронь</div>${d.candidates.map((b) => row(b, false)).join("")}` : d.stay ? `<p class="ib-muted">В календаре нет броней с заездом ${d.stay.checkin ? esc(dm(d.stay.checkin)) : "в этот день"} — найдите вручную ниже.</p>` : ""}
       ${d.suggested.length ? `<div class="ib-sec">По номеру телефона</div>${d.suggested.map((b) => row(b, false)).join("")}` : ""}
       <div class="ib-sec">Найти в календаре</div>
       <input class="ib-field" id="bk-q" placeholder="Гость, телефон, квартира или дата (12.10)" autocomplete="off" />

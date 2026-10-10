@@ -125,7 +125,7 @@ def ingest(payload: dict) -> dict:
         if r:
             n += 1
     # the stay: remember it on the chat, name the chat after the guest, fill the
-    # guest card and link the chat to the calendar booking (apartment + check-in)
+    # guest card; the calendar booking is only suggested (see candidates())
     with database.get_conn() as conn:
         c = conn.execute("SELECT id, name FROM inbox_chats WHERE jid = ?", (jid,)).fetchone()
         if c and guest and guest != c["name"]:
@@ -171,25 +171,64 @@ def _enrich(chat_id: int, guest: str, reservation: str, p: dict):
                                         if key in raw_lang), raw_lang.replace("на ", "").strip()[:20])
             conn.execute("UPDATE crm_clients SET notes = ?, lang = ?, source = COALESCE(NULLIF(source, ''), 'Booking.com'), updated_at = ? WHERE id = ?",
                          (notes, lang, datetime.now().isoformat(timespec="seconds"), cid))
-        # already linked?
-        if conn.execute("SELECT 1 FROM crm_booking_chats WHERE chat_id = ?", (chat_id,)).fetchone():
-            return None
-        code = _apartment_code(p.get("room") or "")
-        bid = None
-        if code and p.get("checkin"):
-            r = conn.execute("SELECT id FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date = ? AND REPLACE(REPLACE(UPPER(apartment_name), ' ', ''), '-', '') LIKE ?",
-                             (p["checkin"], "%" + code.replace("-", "") + "%")).fetchone()
-            bid = r["id"] if r else None
-        if not bid and guest and p.get("checkin"):
-            r = conn.execute("SELECT id FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date = ? AND LOWER(client_name) = LOWER(?)", (p["checkin"], guest)).fetchone()
-            bid = r["id"] if r else None
-        if not bid and reservation:
-            r = conn.execute("SELECT id FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND short_notes LIKE ?", ("%" + reservation + "%",)).fetchone()
-            bid = r["id"] if r else None
-    if bid:
-        crm_ext.link_chat(bid, chat_id, "Booking.com")
-        return bid
+    # Linking to the calendar booking is half-manual on purpose: Booking.com often
+    # shows another room than the calendar and manual edits in RealtyCalendar do not
+    # reach Booking — so we only *suggest* candidates, a person confirms in the chat.
     return None
+
+
+_REASONS = {"res": "№ брони Booking в примечании календаря", "room": "совпали номер и дата заезда",
+            "name": "совпали имя гостя и дата заезда", "date": "та же дата заезда", "guest": "то же имя гостя"}
+
+
+def stay(chat_id: int) -> dict | None:
+    """What Booking.com says about the stay (for the chat header / booking picker)."""
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT reservation, guest, checkin, checkout, room FROM inbox_ext_meta WHERE chat_id = ?", (chat_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def candidates(chat_id: int, limit: int = 6) -> list[dict]:
+    """Calendar bookings that look like this Booking.com conversation, best first,
+    each with a human reason. Nothing is linked automatically."""
+    from . import crm
+    m = stay(chat_id)
+    if not m:
+        return []
+    found: dict[int, str] = {}
+
+    def add(rows, reason):
+        for r in rows:
+            found.setdefault(r["id"], reason)
+
+    with database.get_conn() as conn:
+        live = "COALESCE(is_delete, 0) = 0"
+        if m.get("reservation"):
+            add(conn.execute(f"SELECT id FROM bookings WHERE {live} AND short_notes LIKE ?",  # noqa: S608
+                             ("%" + m["reservation"] + "%",)).fetchall(), "res")
+        code = _apartment_code(m.get("room") or "")
+        if code and m.get("checkin"):
+            add(conn.execute(f"SELECT id FROM bookings WHERE {live} AND begin_date = ? AND REPLACE(REPLACE(UPPER(apartment_name), ' ', ''), '-', '') LIKE ?",  # noqa: S608
+                             (m["checkin"], "%" + code.replace("-", "") + "%")).fetchall(), "room")
+        if m.get("guest") and m.get("checkin"):
+            add(conn.execute(f"SELECT id FROM bookings WHERE {live} AND begin_date = ? AND LOWER(client_name) = LOWER(?)",  # noqa: S608
+                             (m["checkin"], m["guest"])).fetchall(), "name")
+        if m.get("checkin"):
+            add(conn.execute(f"SELECT id FROM bookings WHERE {live} AND begin_date = ? ORDER BY apartment_name", (m["checkin"],)).fetchall(), "date")  # noqa: S608
+        if m.get("guest") and len(found) < limit:
+            last = m["guest"].split()[-1].lower()
+            if len(last) >= 3:
+                add(conn.execute(f"SELECT id FROM bookings WHERE {live} AND end_date >= date('now', '-30 day') AND LOWER(client_name) LIKE ? ORDER BY begin_date",  # noqa: S608
+                                 ("%" + last + "%",)).fetchall(), "guest")
+        out = []
+        for bid, reason in list(found.items())[:limit]:
+            r = conn.execute("SELECT * FROM bookings WHERE id = ?", (bid,)).fetchone()
+            if r:
+                b = crm._booking_out(dict(r))  # noqa: SLF001
+                b["reason"] = _REASONS[reason]
+                b["strong"] = reason in ("res", "room", "name")
+                out.append(b)
+    return out
 
 
 def enqueue(payload: dict) -> dict:

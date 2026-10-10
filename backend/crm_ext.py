@@ -160,9 +160,14 @@ def chat_bookings(chat_id: int) -> dict:
     phone = chat.get("phone") or ""
     suggested = [b for b in (crm.client_bookings(phone) if len(phone) >= 7 else []) if b["id"] not in pinned_ids]
     suggested.sort(key=lambda b: (0 if b["checkout"] >= today else 1, b["checkin"] if b["checkout"] >= today else "0000"))
-    for b in pinned + suggested:
+    candidates, stay = [], None
+    if chat.get("channel") == "bk":
+        from . import booking_ext
+        stay = booking_ext.stay(chat_id)
+        candidates = [b for b in booking_ext.candidates(chat_id) if b["id"] not in pinned_ids]
+    for b in pinned + suggested + candidates:
         b["when"] = "now" if b["checkin"] <= today <= b["checkout"] else "next" if b["checkin"] > today else "past"
-    return {"pinned": pinned, "suggested": suggested[:10]}
+    return {"pinned": pinned, "suggested": suggested[:10], "candidates": candidates, "stay": stay}
 
 
 def bookings_search(q: str, limit: int = 20) -> list[dict]:

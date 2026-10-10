@@ -223,3 +223,11 @@ textarea.ib-field { resize:vertical; min-height:80px; }
 .ib-receipt { color:var(--label-2); position:relative; }
 .ib-receipt::after { content:""; position:absolute; top:7px; right:7px; width:8px; height:8px; border-radius:50%; background:var(--tint); }
 .ib-chat__eye { font-size:11px; color:var(--label-2); margin-left:4px; }
+
+/* Booking.com chat: what the extranet says vs the calendar */
+.ib-stay { color:var(--label); font-weight:600; }
+.ib-link.attn { color:#B7791F; font-weight:700; }
+.ib-stay-box { background:#FFF8E6; border:1px solid #F3D9A0; border-radius:10px; padding:8px 12px; font-size:13px; margin:6px 0 4px; line-height:1.4; }
+.ib-tpl.strong { border-color:#6FBF73; background:#F3FBF3; }
+.ib-reason { display:block; font-size:12px; color:#2E7D32; margin-top:2px; }
+.ib-tpl:not(.strong) .ib-reason { color:var(--label-2); }

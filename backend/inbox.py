@@ -338,6 +338,12 @@ def _chat_out(r) -> dict:
                      "guest": b["client_name"], "when": b["when"], "pinned": bool(pb),
                      "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5], "default_times": _default_times(),
                      "nights": b.get("days_count"), "amount": b.get("amount")} if b else None)
+    if c["channel"] == "bk" and not pb:
+        # Booking.com chat without a confirmed calendar booking: show what Booking says
+        # and let a person pick the calendar booking (rooms/dates differ too often to guess)
+        with database.get_conn() as conn:
+            m = conn.execute("SELECT reservation, checkin, checkout, room FROM inbox_ext_meta WHERE chat_id = ?", (c["id"],)).fetchone()
+        c["bk_stay"] = dict(m) if m else None
     return c
 
 
