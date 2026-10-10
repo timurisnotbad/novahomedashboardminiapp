@@ -753,9 +753,9 @@ def bridge_logout() -> None:
 
 
 def mark_read(chat_id: int) -> None:
-    """Opening a chat clears OUR unread counter only. The guest keeps seeing the
-    messages as unread until someone answers or presses «прочитано» (send_receipt):
-    a colleague looking at a chat must not read as «we saw it and ignore you»."""
+    """Explicit «handled» without a reply (not called when a chat is merely
+    opened: the unread badge means «needs an answer» and stays until someone
+    answers or presses ✓✓)."""
     with database.get_conn() as conn:
         r = conn.execute("SELECT unread FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
         if not r or not r["unread"]:
@@ -775,7 +775,7 @@ def send_receipt(chat_id: int, how: str = "button") -> bool:
             return False
         ids = [x["wa_id"] for x in conn.execute(
             "SELECT wa_id FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 30", (chat_id,)).fetchall()]
-        conn.execute("UPDATE inbox_chats SET receipt_pending = 0, receipt_info = ?, rev = ? WHERE id = ?",
+        conn.execute("UPDATE inbox_chats SET receipt_pending = 0, unread = 0, receipt_info = ?, rev = ? WHERE id = ?",
                      (f"{how}|{_now()}", _bump(conn), chat_id))
     threading.Thread(target=_safe_read, args=(r["channel"] or "wa", r["jid"], ids), daemon=True).start()
     return True

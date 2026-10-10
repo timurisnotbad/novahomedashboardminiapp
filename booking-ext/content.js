@@ -26,7 +26,7 @@
   // the page is «busy» while a person uses it: we never click around then
   let lastInput = 0;
   for (const ev of ["mousemove", "mousedown", "keydown", "wheel", "touchstart"]) document.addEventListener(ev, () => { lastInput = Date.now(); }, { capture: true, passive: true });
-  const busy = () => Date.now() - lastInput < 45000;
+  const busy = () => Date.now() - lastInput < 20000;
 
   async function selectors() {
     if (SEL && Date.now() - selAt < 60000) return SEL;
@@ -263,6 +263,24 @@
     const html = "<!doctype html>\n" + document.documentElement.outerHTML.replace(/<script[\s\S]*?<\/script>/gi, "");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = "booking-extranet-snapshot.html"; a.click();
   }
+  // watch the page: every 4 s (and on DOM changes) re-read; when the open thread or
+  // the list changed, hand it to the background at once — no waiting for the alarm
+  let lastSig = "", pushing = false, dirty = true;
+  try { new MutationObserver(() => { dirty = true; }).observe(document.body, { childList: true, subtree: true, characterData: true }); } catch (e) { /* ignore */ }
+  async function watch() {
+    if (pushing || !dirty) return;
+    dirty = false; pushing = true;
+    try {
+      const r = await scan();
+      const sig = JSON.stringify([r.list, (r.conversations[0] || {}).reservation, (r.conversations[0] || {}).guest, ((r.conversations[0] || {}).messages || []).map((m) => m.dir + m.at + m.text.slice(-40))]);
+      if (sig !== lastSig && (r.list.length || r.conversations.length)) { lastSig = sig; await chrome.runtime.sendMessage({ type: "push", scan: r }); }
+    } catch (e) { /* background asleep: the alarm will catch up */ }
+    finally { pushing = false; }
+  }
+  if (window.__novaBkTimer) clearInterval(window.__novaBkTimer);
+  window.__novaBkTimer = setInterval(watch, 4000);
+  setTimeout(watch, 1500);
+
   window.__novaBk = (m, s, reply) => {
     if (m.type === "scan") { scan().then(reply); return true; }
     if (m.type === "open") { open(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }

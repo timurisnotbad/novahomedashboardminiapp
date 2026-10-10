@@ -58,12 +58,25 @@ async function tick() {
   } catch (e) { await chrome.storage.local.set({ lastError: String(e.message || e) }); }
   finally { ticking = false; }
 }
-chrome.alarms.create("tick", { periodInMinutes: 0.25 });
+chrome.alarms.create("tick", { periodInMinutes: 0.5 });  // fallback; changes are pushed by the page within seconds
 chrome.runtime.onInstalled.addListener(async () => {  // (re)loaded: refresh the content script in open extranet tabs
   for (const t of await extranetTabs()) { try { await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }); } catch (e) { /* tab not ready */ } }
 });
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === "tick") tick(); });
+// the content script saw a change: deliver it now, then read what the CRM asks for
+async function pushed(tabId, r) {
+  try {
+    const ans = await post(r);
+    for (const item of (ans.open || []).slice(0, 3)) {
+      const o = await ask(tabId, { type: "open", item });
+      if (!o || o.busy) break;
+      await post(o, Object.assign({}, item, { ok: !!o.ok }));
+    }
+    await chrome.storage.local.set({ last: new Date().toISOString(), lastError: "" });
+  } catch (e) { await chrome.storage.local.set({ lastError: String(e.message || e) }); }
+}
 chrome.runtime.onMessage.addListener((m, s, reply) => {
+  if (m.type === "push" && s.tab) { pushed(s.tab.id, m.scan).then(() => reply({ ok: true })); return true; }
   if (m.type === "config") { api("/config").then(reply).catch((e) => reply({ error: String(e.message || e) })); return true; }
   if (m.type === "tick") { tick().then(() => reply({ ok: true })); return true; }
 });

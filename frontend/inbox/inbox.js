@@ -279,7 +279,6 @@
       S.noOlder = d.messages.length < 60;
       renderHead();
       renderMsgs("bottom");
-      if (d.chat.unread) markRead(id);
       repoll();  // the waiting poll does not know about this chat yet
     } catch (e) {
       toast(e.message);
@@ -287,11 +286,8 @@
     if (window.innerWidth > 760) $("text").focus();
   }
 
-  function markRead(id) {
-    const c = S.chats.get(id);
-    if (c) { c.unread = 0; renderList(); }
-    req(`/chats/${id}/read`, { method: "POST" }).catch(() => {});
-  }
+  // Opening a chat does NOT clear its unread badge: the badge means «needs an
+  // answer» and goes away only when someone replies or presses ✓✓ («обработано»).
 
   async function loadOlder() {
     if (!S.open || S.loadingOlder || S.noOlder || !S.msgs.length) return;
@@ -486,7 +482,6 @@
         mergeMsgs(d.messages);
         renderMsgs();
         const c = S.chats.get(S.open.id);
-        if (c && c.unread && document.visibilityState === "visible") markRead(S.open.id);
       }
       if (d.chats.length) {
         renderList();
@@ -802,7 +797,7 @@
       try {
         const r = await req(`/chats/${S.open.id}/receipt`, { method: "POST" });
         if (r.chat) { S.chats.set(r.chat.id, r.chat); S.open = r.chat; renderHead(); renderList(); }
-        toast(r.sent ? "Гость увидит, что сообщения прочитаны" : r.note ? "Уже " + r.note : "Нечего отмечать: новых сообщений от гостя нет");
+        toast(r.sent ? "Отмечено обработанным: гость увидит «прочитано»" : r.note ? "Уже " + r.note : "Нечего отмечать: новых сообщений от гостя нет");
       } catch (err) { toast(err.message); }
     });
 
@@ -893,7 +888,6 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         pollNow();
-        if (S.open && (S.chats.get(S.open.id) || {}).unread) markRead(S.open.id);
       }
     });
     document.addEventListener("keydown", (e) => {
