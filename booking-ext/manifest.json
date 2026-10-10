@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Nova Home CRM — Booking.com messages",
+  "version": "1.0",
+  "description": "Передаёт сообщения гостей из экстранета Booking.com в Nova Home CRM и отправляет ответы из CRM.",
+  "permissions": ["storage", "alarms", "scripting"],
+  "host_permissions": ["https://admin.booking.com/*", "http://localhost/*", "http://127.0.0.1/*", "https://*/*"],
+  "background": { "service_worker": "bg.js" },
+  "content_scripts": [{ "matches": ["https://admin.booking.com/*"], "js": ["content.js"], "run_at": "document_idle" }],
+  "action": { "default_popup": "popup.html", "default_title": "Nova Home CRM" },
+  "options_page": "popup.html"
+}

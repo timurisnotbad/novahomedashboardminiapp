@@ -114,7 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_inbox_chat_lid ON inbox_chats(lid);
 #   tg    — Telegram, the company's own account          backend/tg_channels.py
 #   tgbot — Telegram bot for guests                      backend/tg_channels.py
 CHANNELS = {"wa": "WhatsApp", "wac": "WhatsApp", "wz": "WhatsApp", "wzig": "Instagram", "wztg": "Telegram",
-            "ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram-бот"}
+            "ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram-бот", "bk": "Booking.com"}
 WA_LIKE = ("wa", "wac", "wz")  # the same phone number through different transports = one chat
 STATUS_ORDER = {"failed": -1, "pending": 0, "sent": 1, "delivered": 2, "read": 3}
 PREVIEW = {
@@ -634,6 +634,16 @@ def store_contacts(items: list[dict]) -> None:
                              (nm, _bump(conn), r["id"]))
 
 
+def mark_failed(wa_id: str, error: str) -> None:
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT id, chat_id FROM inbox_messages WHERE wa_id = ?", (wa_id,)).fetchone()
+        if not r:
+            return
+        rev = _bump(conn)
+        conn.execute("UPDATE inbox_messages SET status = 'failed', error = ?, rev = ? WHERE id = ?", (error[:300], rev, r["id"]))
+        conn.execute("UPDATE inbox_chats SET last_status = 'failed', rev = ? WHERE id = ?", (rev, r["chat_id"]))
+
+
 def store_ack(wa_id: str, status: str) -> None:
     with database.get_conn() as conn:
         r = conn.execute("SELECT id, chat_id, status FROM inbox_messages WHERE wa_id = ?", (wa_id,)).fetchone()
@@ -788,11 +798,14 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
         dup = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ? AND id != ?", (res["id"], mid)).fetchone()
         if dup:  # the echo from WhatsApp got stored first: keep ours (it has the author)
             conn.execute("DELETE FROM inbox_messages WHERE id = ?", (dup["id"],))
-        conn.execute(
-            "UPDATE inbox_messages SET wa_id = ?, status = CASE WHEN status IN ('delivered', 'read') "
-            "THEN status ELSE 'sent' END, rev = ? WHERE id = ?", (res["id"], rev, mid))
-        conn.execute("UPDATE inbox_chats SET last_status = 'sent', rev = ? WHERE id = ? AND last_status = 'pending'",
-                     (rev, chat_id))
+        if res.get("status") == "pending":  # handed to the Booking.com extension: confirmed later
+            conn.execute("UPDATE inbox_messages SET wa_id = ?, rev = ? WHERE id = ?", (res["id"], rev, mid))
+        else:
+            conn.execute(
+                "UPDATE inbox_messages SET wa_id = ?, status = CASE WHEN status IN ('delivered', 'read') "
+                "THEN status ELSE 'sent' END, rev = ? WHERE id = ?", (res["id"], rev, mid))
+            conn.execute("UPDATE inbox_chats SET last_status = 'sent', rev = ? WHERE id = ? AND last_status = 'pending'",
+                         (rev, chat_id))
         row = conn.execute("SELECT * FROM inbox_messages WHERE id = ?", (mid,)).fetchone()
     return _msg_out(row)
 
@@ -826,6 +839,9 @@ def _dispatch_send(channel: str, payload: dict) -> dict:
         if channel == "tgbot":
             from . import tg_channels
             return tg_channels.bot_send(payload)
+        if channel == "bk":
+            from . import booking_ext
+            return booking_ext.enqueue(payload)
     except BridgeError:
         raise
     except Exception as exc:  # noqa: BLE001

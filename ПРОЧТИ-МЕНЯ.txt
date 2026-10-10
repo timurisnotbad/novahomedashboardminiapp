@@ -53,3 +53,6 @@ CRM (браузер):       WEBAPP_URL/crm/   — первый вход созд
 1. diagnose.bat — внизу окна список найденных проблем.
 2. Логи: logs\server.log, logs\bot.log, logs\bot-error.log.
 3. Подробности по каждому симптому — README.md, раздел «Если что-то не работает».
+
+Booking.com (сообщения гостей): папка booking-ext — расширение Chrome, см. booking-ext/README.txt
+  и CRM → Каналы → Booking.com → «Установка и ключ».

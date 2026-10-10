@@ -314,6 +314,51 @@ def del_template(tid: int, user: dict = Depends(inbox_user)):  # noqa: B008
     return {"ok": True}
 
 
+# ---- Booking.com Chrome extension ------------------------------------------------
+def _ext_auth(x_ext_token: str = Header(default="")):  # noqa: B008
+    from .. import booking_ext
+    if not hmac.compare_digest(x_ext_token or "", booking_ext.token()):
+        raise HTTPException(status_code=403, detail="bad extension token")
+    return True
+
+
+@public.get("/ext/config")
+def ext_config(_=Depends(_ext_auth)):  # noqa: B008
+    from .. import booking_ext, config as cfg
+    return {"selectors": booking_ext.selectors(), "version": cfg.APP_VERSION, "poll": 15}
+
+
+@public.post("/ext/ping")
+def ext_ping(payload: dict, _=Depends(_ext_auth)):  # noqa: B008
+    from .. import booking_ext
+    booking_ext.ping(payload or {})
+    return {"ok": True}
+
+
+@public.post("/ext/messages")
+def ext_messages(payload: dict, _=Depends(_ext_auth)):  # noqa: B008
+    from .. import booking_ext
+    try:
+        convs = payload.get("conversations") if isinstance(payload.get("conversations"), list) else [payload]
+        out = [booking_ext.ingest(c) for c in convs if isinstance(c, dict)]
+        return {"ok": True, "results": out}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@public.get("/ext/outbox")
+def ext_outbox(_=Depends(_ext_auth)):  # noqa: B008
+    from .. import booking_ext
+    return booking_ext.outbox()
+
+
+@public.post("/ext/outbox/{oid}")
+def ext_outbox_done(oid: int, payload: dict, _=Depends(_ext_auth)):  # noqa: B008
+    from .. import booking_ext
+    booking_ext.outbox_done(oid, bool(payload.get("ok")), payload.get("error") or "")
+    return {"ok": True}
+
+
 # ---- bridge & media ---------------------------------------------------------
 @public.post("/hook")
 async def hook(request: Request, x_inbox_secret: str = Header(default="")):  # noqa: B008

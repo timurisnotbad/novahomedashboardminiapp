@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=58&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=59&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -618,7 +618,20 @@
         : tgStep === "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Пароль двухэтапной защиты</label><input class="field" id="tg-pass" type="password" /></div><div><button class="btn primary" id="tg-sign-pass">Войти</button></div></div>`
         : `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Номер телефона аккаунта</label><input class="field" id="tg-phone" type="tel" placeholder="+998 90 123 45 67" /></div><div><button class="btn primary" id="tg-send">Получить код</button></div></div>`;
       const wzChan = (c) => `<span class="tag ${c.state === "active" ? "green" : "orange"}">${esc(c.transport || "")}${c.plainId ? " · " + esc(c.plainId) : ""}${c.state && c.state !== "active" ? " · " + esc(c.state) : ""}</span>`;
+      const bk = d.booking_ext || {};
+      const bkBlock = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <div><h3>Booking.com — расширение для Chrome</h3>${state(bk.alive ? true : (bk.last_ping ? false : null), bk.alive ? `Расширение на связи · версия ${esc(bk.version || "")} · непрочитанных в экстранете: ${bk.unread || 0}` : bk.last_ping ? `Нет связи с ${esc(dtShort(bk.last_ping))} — откройте экстранет в Chrome` : "Расширение ещё не подключалось")}
+            <div class="muted small">Сообщения гостей Booking.com читаются из открытой вкладки экстранета на офисном компьютере и приходят сюда как канал Booking.com. Ответы из CRM расширение отправляет в экстранете. Чатов: ${bk.chats || 0}${bk.pending ? ` · в очереди на отправку: ${bk.pending}` : ""}.</div>
+            ${bk.errors && bk.errors.length ? `<div class="small bad" style="margin-top:4px">Последняя ошибка: ${esc(bk.errors[0])}</div>` : ""}</div></div>
+          ${admin ? `<details class="small" style="margin-top:8px"><summary>Установка и ключ</summary><ol class="muted" style="margin:6px 0 0 18px">
+            <li>В папке программы есть папка <b>booking-ext</b>. В Chrome откройте <span class="mono">chrome://extensions</span>, включите «Режим разработчика», нажмите «Загрузить распакованное расширение» и выберите папку booking-ext.</li>
+            <li>Нажмите на значок расширения → «Настройки»: адрес CRM <span class="mono">${esc((bk.hook_url || "").replace(/\/api\/inbox\/ext$/, "") || location.origin)}</span>, ключ <span class="mono">${esc(bk.token || "")}</span>.</li>
+            <li>Откройте в Chrome экстранет Booking.com → Сообщения и оставьте вкладку открытой. Статус выше станет зелёным в течение минуты.</li>
+            <li>Если сообщения не читаются: в меню расширения нажмите «Снимок страницы» и пришлите файл разработчику — селекторы ниже подстроятся без переустановки.</li></ol>
+            <label class="lbl" style="margin-top:8px">Селекторы страницы (JSON, для настройки)</label><textarea class="field mono" id="bk-sel" rows="6">${esc(JSON.stringify(bk.selectors || {}, null, 1))}</textarea>
+            <div style="margin-top:6px"><button class="btn sm" id="bk-sel-save">Сохранить селекторы</button></div></details>` : ""}</div>`;
       $("main").innerHTML = `<div class="page-head"><h1>Каналы</h1></div><div class="page-sub">Откуда приходят сообщения в «Сообщения». Все каналы попадают в один список чатов, карточка клиента создаётся сама.</div>
+        ${bkBlock}
         <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
           <div><h3>Wazzup — WhatsApp по API</h3>${state(wz.configured ? (wz.ok && wz.webhook_ok !== false) : null, !wz.configured ? "Не настроен" : !wz.ok ? "Ошибка: " + esc(wz.error || "") : wz.webhook_ok === false ? "Ключ работает, вебхук не подключён: " + esc(wz.webhook_error || "") : wz.webhook_ok ? "Подключён · вебхук зарегистрирован" : "Подключён · проверяю вебхук…")}
             <div class="muted small">Основной канал WhatsApp: номер живёт в Wazzup, CRM получает входящие и отвечает через их API. Чатов: ${wz.chats || 0}.</div>
@@ -657,6 +670,7 @@
           <div class="muted small">Уведомления о новых сообщениях из всех каналов (${d.telegram_bot.notify_targets.length ? "чатов: " + d.telegram_bot.notify_targets.length : "выключены"}); ответ на уведомление уходит гостю.</div></div>
         <div class="card"><h3>Booking.com · Airbnb</h3><div class="muted small">Брони приходят через RealtyCalendar («Интеграции»). Сообщения гостей — в приложениях площадок.</div></div>`;
       const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+      on("bk-sel-save", async () => { try { await post("/channels/booking_ext/selectors", { text: $("bk-sel").value }); toast("Селекторы сохранены — расширение подхватит их в течение минуты"); } catch (err) { toast(err.message); } });
       on("wz-hook", async (e) => { e.target.disabled = true; try { const r = await post("/channels/wazzup/webhook"); toast("Вебхук подключён: " + r.url); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
       on("wa-off", async () => { if (!confirm("Отключить WhatsApp? Для возврата нужно будет снова сканировать QR.")) return; try { await post("/channels/whatsapp/logout"); toast("Отключено"); render(); } catch (err) { toast(err.message); } });
       on("tg-send", async (e) => { e.target.disabled = true; try { await post("/channels/telegram/send_code", { phone: val("tg-phone") }); tgStep = "code"; toast("Код отправлен в Telegram"); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });

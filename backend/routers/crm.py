@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import config, crm, crm_amo, crm_ext, database, docs, inbox, meta_api, rc_push, rc_sync, tg_channels, wazzup
+from .. import booking_ext, config, crm, crm_amo, crm_ext, database, docs, inbox, meta_api, rc_push, rc_sync, tg_channels, wazzup
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -439,6 +439,18 @@ def push_settings(payload: NotifyIn, user: dict = Depends(admin_user)):  # noqa:
 
 
 # ---- documents (PDF) & email ----------------------------------------------------
+class SelectorsIn(BaseModel):
+    text: str
+
+
+@router.post("/channels/booking_ext/selectors")
+def set_ext_selectors(payload: SelectorsIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return booking_ext.set_selectors(payload.text)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"JSON не разобран: {exc}") from exc
+
+
 @router.get("/company")
 def get_company(user: dict = Depends(current_user)):  # noqa: B008
     return docs.company()
@@ -879,6 +891,7 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
             "SELECT channel, COUNT(*) FROM inbox_chats GROUP BY channel").fetchall()}
     return {
         "wazzup": wazzup.status(),
+        "booking_ext": booking_ext.status(),
         "whatsapp": {**st, "chats": counts.get("wa", 0)},
         "whatsapp_cloud": {**meta_api.wa_status(), "chats": counts.get("wac", 0)},
         "instagram": {**meta_api.ig_status(), "chats": counts.get("ig", 0)},

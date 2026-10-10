@@ -59,6 +59,8 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-av.ch-wztg::after, .ib-chan.ch-wztg,
 .ib-av.ch-tg::after, .ib-av.ch-tgbot::after { background:#2AABEE url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='white' d='M3.5 11.3l15.6-6.1c.8-.3 1.5.2 1.2 1.3L17.7 18c-.2.8-.7 1-1.4.6l-3.9-2.9-1.9 1.8c-.2.2-.4.4-.8.4l.3-4 7.2-6.5c.3-.3-.1-.4-.5-.2L8 13l-3.8-1.2c-.8-.3-.8-.8.3-1.2z'/%3E%3C/svg%3E") center/10px no-repeat; }
 .ib-av.ch-tgbot::after { background-color:#1F7ACB; }
+.ib-av.ch-bk::after { background:#003580 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='5' y='18' font-size='16' font-family='Arial' font-weight='700' fill='white'%3EB%3C/text%3E%3C/svg%3E") center/12px no-repeat; }
+.ib-chan.ch-bk { background:#003580; }
 .ib-chan { display:inline-block; padding:0 7px; border-radius:6px; font-size:12px; font-weight:600; color:#fff; background:#25D366; }
 .ib-chan.ch-ig { background:linear-gradient(45deg, #F77737, #D62976, #962FBF); }
 .ib-chan.ch-tg, .ib-chan.ch-tgbot { background:#2AABEE; }
