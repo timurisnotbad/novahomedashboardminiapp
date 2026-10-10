@@ -179,6 +179,69 @@ if not STAFF_KEY and BOT_TOKEN:
     STAFF_KEY = _hashlib.sha256(("staff:" + BOT_TOKEN).encode()).hexdigest()[:24]
 
 
+# ---------------------------------------------------------------------------
+# «Чаты» — shared WhatsApp inbox (our own Wazzup). The WhatsApp connection
+# lives in wa-bridge/ (Node.js, QR login); the server stores the chats and
+# serves the inbox page at /inbox/.
+# ---------------------------------------------------------------------------
+WA_BRIDGE_URL = (os.environ.get("WA_BRIDGE_URL", "").strip()
+                 or f"http://127.0.0.1:{_int_env('WA_BRIDGE_PORT', 8100)}").rstrip("/")
+# Shared secret between the bridge and the server; derived from the bot token
+# when not set (wa-bridge/bridge.mjs applies the same rule).
+INBOX_SECRET = os.environ.get("INBOX_SECRET", "").strip()
+if not INBOX_SECRET:
+    import hashlib as _hashlib
+    INBOX_SECRET = (_hashlib.sha256(("inbox:" + BOT_TOKEN).encode()).hexdigest()[:32]
+                    if BOT_TOKEN else "dev-inbox")
+INBOX_MEDIA_DIR = Path(os.environ.get("INBOX_MEDIA_DIR", "").strip() or BASE_DIR / "data" / "inbox_media")
+# Who may work in the inbox besides the owners: Telegram ids / @usernames.
+# Empty = every active employee registered in the bot (/staff).
+INBOX_USERS = [t for t in os.environ.get("INBOX_USERS", "").replace(",", " ").split() if t]
+# Where "new WhatsApp message" alerts go (a reply to the alert in Telegram is
+# sent back to the guest). Empty = the owners' private chats; "0" = off.
+INBOX_NOTIFY_CHAT_IDS = _parse_chat_ids(os.environ.get("INBOX_NOTIFY_CHAT_IDS", ""))
+INBOX_NOTIFY_OFF = os.environ.get("INBOX_NOTIFY_CHAT_IDS", "").strip() == "0"
+
+
+# ---- Wazzup (wazzup24.ru) — the paid WhatsApp connection: Интеграция с CRM → Ключ API
+WAZZUP_API_KEY = os.environ.get("WAZZUP_API_KEY", "").strip()
+WAZZUP_CHANNEL_ID = os.environ.get("WAZZUP_CHANNEL_ID", "").strip()  # optional: which Wazzup channel sends WhatsApp (default: first active)
+
+# ---- Official channels through Meta (WhatsApp Cloud API + Instagram Direct)
+# One webhook for both: {WEBAPP_URL}/api/inbox/meta/webhook, verify token below.
+META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "").strip()
+META_APP_SECRET = os.environ.get("META_APP_SECRET", "").strip()      # signature check of webhooks
+META_GRAPH = os.environ.get("META_GRAPH_URL", "https://graph.facebook.com/v21.0").rstrip("/")  # overridable for tests
+WA_CLOUD_TOKEN = os.environ.get("WA_CLOUD_TOKEN", "").strip()        # system user / permanent token
+WA_CLOUD_PHONE_ID = os.environ.get("WA_CLOUD_PHONE_ID", "").strip()  # Phone number ID
+IG_PAGE_TOKEN = os.environ.get("IG_PAGE_TOKEN", "").strip()          # Page access token (pages_messaging + instagram_manage_messages)
+IG_ACCOUNT_ID = os.environ.get("IG_ACCOUNT_ID", "").strip()          # Instagram professional account id (optional, for the status page)
+
+# ---- Telegram as a guest channel
+TG_API_ID = _int_env("TG_API_ID", 0)                                  # my.telegram.org → API development tools
+TG_API_HASH = os.environ.get("TG_API_HASH", "").strip()
+TG_GUEST_BOT_TOKEN = os.environ.get("TG_GUEST_BOT_TOKEN", "").strip() # a second bot guests write to (optional)
+DATA_DIR = BASE_DIR / "data"
+
+# CRM (/crm/): the first administrator can be set here; otherwise the setup
+# page in the browser asks for one on first open.
+CRM_ADMIN_EMAIL = os.environ.get("CRM_ADMIN_EMAIL", "").strip().lower()
+# ---- email from the CRM (invoices, confirmations): any SMTP, Gmail app password works
+SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
+SMTP_PORT = _int_env("SMTP_PORT", 587)
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+SMTP_FROM = os.environ.get("SMTP_FROM", "").strip()
+SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "Nova Home").strip()
+CRM_ADMIN_PASSWORD = os.environ.get("CRM_ADMIN_PASSWORD", "").strip()
+
+
+def inbox_notify_targets() -> list[int]:
+    if INBOX_NOTIFY_OFF:
+        return []
+    return [i for i in INBOX_NOTIFY_CHAT_IDS if i] or list(OWNER_TELEGRAM_IDS)
+
+
 def notify_targets() -> list[int]:
     seen: list[int] = []
     for i in list(OWNER_TELEGRAM_IDS) + NOTIFY_CHAT_IDS:
@@ -302,4 +365,4 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "34"
+APP_VERSION = "66"

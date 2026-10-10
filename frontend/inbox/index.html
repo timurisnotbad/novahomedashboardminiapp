@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Чаты · Nova Home</title>
+  <link rel="stylesheet" href="inbox.css?v=66" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="ib" class="ib">
+    <!-- chat list -->
+    <aside class="ib-side">
+      <header class="ib-side__head">
+        <div class="ib-brand">
+          <h1>Чаты</h1>
+          <button id="wa-state" class="wa-state" title="Подключение WhatsApp"><i></i><span>…</span></button>
+        </div>
+        <div class="ib-me" id="me-name"></div>
+      </header>
+      <div class="ib-search">
+        <input id="search" type="search" placeholder="Поиск: имя, номер, апартамент" autocomplete="off" />
+        <button id="new-chat" class="ib-icon" title="Новый чат">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="ib-filters" id="filters">
+        <button data-only="all" class="is-on">Все</button>
+        <button data-only="unread">Непрочитанные <b id="unread-total"></b></button>
+        <button data-only="mine">Мои</button>
+      </div>
+      <div id="chat-list" class="ib-list"></div>
+    </aside>
+
+    <!-- conversation -->
+    <main class="ib-main" id="main">
+      <div class="ib-empty" id="empty">
+        <div class="ib-empty__ic">💬</div>
+        <p>Выберите чат слева</p>
+        <small>Все сообщения WhatsApp вашей команды — в одном месте</small>
+      </div>
+      <section class="ib-conv hidden" id="conv">
+        <header class="ib-conv__head">
+          <button class="ib-icon ib-back" id="back" title="Назад">
+            <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <div class="ib-conv__who">
+            <div class="ib-conv__title" id="conv-title"></div>
+            <div class="ib-conv__sub" id="conv-sub"></div>
+          </div>
+          <select id="cl-status" class="ib-assignee ib-status" title="Статус клиента"></select>
+          <select id="assignee" class="ib-assignee" title="Ответственный"></select>
+          <button class="ib-icon ib-receipt hidden" id="receipt" title="Обработано: снять метку «нужен ответ» и показать гостю две галочки. Пока вы не ответите или не нажмёте сюда, чат остаётся непрочитанным для всей команды и гость видит сообщения непрочитанными">
+            <svg viewBox="0 0 24 24"><path d="M2.5 12.5l4 4L15 8"/><path d="M9 16.5l1.5 1.5L22 7"/></svg>
+          </button>
+          <button class="ib-icon" id="rename" title="Карточка гостя: имя, телефон, email, соцсети, особенности">
+            <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
+          </button>
+        </header>
+        <div class="ib-booking hidden" id="conv-booking"></div>
+        <div class="ib-msgs" id="msgs"></div>
+        <div class="ib-reply hidden" id="reply-bar">
+          <div><b>Ответ на:</b> <span id="reply-text"></span></div>
+          <button class="ib-icon" id="reply-cancel"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+        <footer class="ib-compose">
+          <button class="ib-icon" id="attach" title="Файл / фото">
+            <svg viewBox="0 0 24 24"><path d="M20 11.5l-8.2 8.2a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>
+          </button>
+          <button class="ib-icon" id="tpl-btn" title="Шаблоны ответов">
+            <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M14 8l-4 8"/></svg>
+          </button>
+          <textarea id="text" rows="1" placeholder="Введите сообщение…"></textarea>
+          <button class="ib-send" id="send" title="Отправить">
+            <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg>
+          </button>
+          <input type="file" id="file" class="hidden" />
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <!-- modal (connection / templates / new chat) -->
+  <div id="modal" class="ib-modal hidden">
+    <div class="ib-modal__back" data-close></div>
+    <div class="ib-modal__card" id="modal-card"></div>
+  </div>
+  <div id="toast" class="ib-toast hidden"></div>
+  <div id="denied" class="ib-denied hidden">
+    <div>
+      <div class="ib-empty__ic">🔒</div>
+      <h2>Нет доступа</h2>
+      <p>Откройте чаты по своей ссылке: напишите боту команду <b>/chats</b>.</p>
+    </div>
+  </div>
+
+  <script src="/js/phone.js?v=66"></script>
+  <script src="inbox.js?v=66"></script>
+</body>
+</html>

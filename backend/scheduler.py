@@ -34,6 +34,34 @@ def _job():
         reminders.check_booking_changes()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Booking-change check failed: %s", exc)
+    try:
+        from . import crm, crm_amo, crm_ext
+        crm.import_clients()  # every guest from the calendar and the chats has a card
+        crm_amo.backfill_deals()  # every chat is a lead on the board
+        n = crm_ext.sync_deals_from_bookings()  # deals follow their bookings
+        crm_ext.ensure_flow_stages()
+        crm_ext.booking_flow()  # ...and move along the stay: ожидает оплаты → забронировано → заселён → выехал
+        if n:
+            logger.info("CRM deals refreshed from bookings: %s", n)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CRM deal sync failed: %s", exc)
+
+
+def _notify_job():
+    try:
+        from . import inbox
+        inbox.notify_pending()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Inbox notifications failed: %s", exc)
+
+
+def _auto_messages_job():
+    try:
+        from . import crm_ext
+        crm_ext.run_auto_rules()
+        crm_ext.run_task_messages()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Auto messages failed: %s", exc)
 
 
 def _reminder_job():
@@ -41,6 +69,12 @@ def _reminder_job():
         reminders.check_due_tasks()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Reminder check failed: %s", exc)
+    try:
+        from . import crm
+        crm.auto_tasks()
+        crm.auto_checklists()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CRM auto tasks failed: %s", exc)
 
 
 def start() -> None:
@@ -70,6 +104,22 @@ def start() -> None:
         hour=22,
         minute=0,
         id="evening_summary",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _notify_job,
+        "interval",
+        minutes=1,
+        id="inbox_notify",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _auto_messages_job,
+        "interval",
+        minutes=5,
+        id="auto_messages",
         max_instances=1,
         coalesce=True,
     )

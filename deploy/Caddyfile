@@ -1,0 +1,4 @@
+{$CRM_DOMAIN} {
+	encode gzip
+	reverse_proxy nova:8000
+}

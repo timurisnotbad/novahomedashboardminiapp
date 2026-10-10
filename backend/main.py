@@ -6,11 +6,14 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, database, logsetup, rc_sync, reminders, scheduler
+from . import auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
+from .routers import crm as crm_router
+from .routers import inbox as inbox_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logsetup.setup("server")  # everything also goes to logs/server.log
@@ -29,6 +32,7 @@ async def _initial_sync() -> None:
         logger.info("Initial sync: %s bookings (demo=%s)", count, config.DEMO_MODE)
         # seed the booking baseline so we don't announce the whole calendar
         await loop.run_in_executor(None, reminders.check_booking_changes)
+        await loop.run_in_executor(None, crm.auto_tasks)  # today's check-in/out tasks in the CRM
     except Exception as exc:  # noqa: BLE001
         logger.warning("Initial sync failed: %s", exc)
 
@@ -36,7 +40,20 @@ async def _initial_sync() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
+    inbox.init_db()
+    crm.init_db()
+    crm_ext.init_db()
+    crm_amo.init_db()
+    rc_push.init_db()
+    docs.init_db()
+    webpush.init_db()
+    booking_ext.init_db()
     scheduler.start()
+    if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
+        logger.warning("META_APP_SECRET is empty: webhook signatures are not checked — set it in .env")
+    wazzup.start()              # Wazzup: check the key, register the webhook (background)
+    await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
+    tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
     scheduler.shutdown()
@@ -54,6 +71,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=1500)  # chat lists / bookings grids shrink 5-10x over the tunnel
+
 # API routers — every data endpoint requires a legitimate dashboard user
 # (see auth.access_guard); owner-only routers add their own stricter guard.
 for r in (dashboard.router, bookings.router, cleaning.router,
@@ -61,6 +80,15 @@ for r in (dashboard.router, bookings.router, cleaning.router,
           tasks.router, prices.router, penalties.router, payroll.router,
           payrecon.router, control.router):
     app.include_router(r, prefix=config.API_PREFIX, dependencies=[Depends(auth.access_guard)])
+
+
+# «Чаты» (shared WhatsApp inbox): its own guard — personal links from /chats
+# work in any browser and sign replies with the operator's name; the bridge
+# hook and signed media links carry no user headers.
+app.include_router(inbox_router.router, prefix=config.API_PREFIX)
+app.include_router(inbox_router.public, prefix=config.API_PREFIX)
+# Nova Home CRM (/crm/): cookie session, its own guards inside the router
+app.include_router(crm_router.router, prefix=config.API_PREFIX)
 
 
 @app.middleware("http")

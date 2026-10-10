@@ -97,13 +97,43 @@ def _headers() -> dict:
     }
 
 
-def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
+def refresh_booking(bid: int) -> None:
+    """Re-read one booking's apartment for its dates (seconds, not a full sync)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    rows = fetch_bookings(d0, d1, [cur["apartment_id"]])
+    if rows:
+        database.upsert_bookings(rows)
+
+
+RAW_EXTRA = ("apartment_name", "client_name", "client_phone", "client_email", "client_phone2")
+
+
+def fetch_raw_event(bid: int) -> dict | None:
+    """The calendar's own full object for one booking (for a full-object PUT)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return None
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    for ev in fetch_bookings(d0, d1, [cur["apartment_id"]]):
+        if ev.get("id") == bid:
+            return {k: v for k, v in ev.items() if k not in RAW_EXTRA}
+    return None
+
+
+def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = None) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 
     Dates are sent as DD.MM.YYYY and apartment_ids as a comma-separated string,
     exactly as the RC API expects.
     """
-    apt_ids = ",".join(str(i) for i in config.APARTMENTS.keys())
+    apt_ids = ",".join(str(i) for i in (apartment_ids or config.APARTMENTS.keys()))
     params = {
         "apartment_ids": apt_ids,
         "begin_date": date_from.strftime("%d.%m.%Y"),
@@ -134,6 +164,17 @@ def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
                 logger.warning("RC event %s without dates skipped", event.get("id"))
                 continue
             client = event.get("client") or {}
+            if not event.get("prepayment"):
+                for k in ("paid", "payed", "paid_amount", "payments_sum", "payed_amount", "total_paid"):
+                    if isinstance(event.get(k), (int, float)) and event[k]:
+                        event["prepayment"] = event[k]
+                        break
+                pays = event.get("payments")
+                if isinstance(pays, list) and pays and not event.get("prepayment"):
+                    try:
+                        event["prepayment"] = sum(float(p.get("amount") or p.get("sum") or 0) for p in pays if isinstance(p, dict))
+                    except (TypeError, ValueError):
+                        pass
             bookings.append({
                 **event,
                 "apartment_id": apt_id,

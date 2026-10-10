@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#2563EB" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Nova CRM" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <title>Nova Home CRM</title>
+  <link rel="stylesheet" href="crm.css?v=66" />
+</head>
+<body>
+  <!-- login / first-run setup -->
+  <div id="auth" class="auth hidden">
+    <form class="auth__card" id="auth-form" autocomplete="on">
+      <h1>Nova Home CRM</h1>
+      <p id="auth-sub">Войдите, чтобы продолжить</p>
+      <div id="auth-name-row" class="hidden">
+        <label>Имя</label>
+        <input class="field" id="auth-name" value="Администратор" />
+      </div>
+      <label>Email</label>
+      <input class="field" id="auth-email" type="email" autocomplete="username" required />
+      <label>Пароль</label>
+      <input class="field" id="auth-pass" type="password" autocomplete="current-password" required minlength="6" />
+      <div class="auth__err hidden" id="auth-err"></div>
+      <button class="btn primary wide" id="auth-btn" type="submit">Войти</button>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="side">
+      <div class="side__brand">Nova Home CRM</div>
+      <nav class="side__nav" id="nav">
+        <a href="#home" data-r="home">Главная</a>
+        <a href="#messages" data-r="messages">Сообщения <b class="pill hidden" id="nav-unread"></b></a>
+        <a href="#deals" data-r="deals">Сделки</a>
+        <a href="#clients" data-r="clients">Клиенты</a>
+        <a href="#tasks" data-r="tasks">Задачи <b class="pill soft hidden" id="nav-tasks"></b></a>
+        <a href="#bookings" data-r="bookings">Брони</a>
+        <a href="#revenue" data-r="revenue">Выручка</a>
+        <a href="#auto" data-r="auto">Автосообщения</a>
+        <a href="#channels" data-r="channels">Каналы</a>
+        <a href="#integrations" data-r="integrations">Интеграции</a>
+        <a href="#commands" data-r="commands">Быстрые команды</a>
+        <a href="#fields" data-r="fields" class="admin-only">Поля карточек</a>
+        <a href="#pipelines" data-r="pipelines" class="admin-only">Воронки</a>
+        <a href="#users" data-r="users" class="admin-only">Пользователи</a>
+      </nav>
+      <div class="side__me">
+        <div class="side__me-name" id="me-name"></div>
+        <div class="side__me-mail" id="me-mail"></div>
+        <a href="#" id="me-pass">Сменить пароль</a> · <a href="#" id="logout">Выйти</a>
+        <div class="side__notif"><label><input type="checkbox" id="notif-sound" checked /> Звук</label> <a href="#" id="notif-allow">Уведомления на этом устройстве</a> <small id="notif-state" class="muted"></small></div>
+      </div>
+      <button class="side__burger" id="burger" aria-label="Меню">☰</button>
+    </aside>
+    <main class="main" id="main"></main>
+  </div>
+  <!-- phones: bottom tab bar (hidden on desktop by CSS) -->
+  <nav class="tabbar hidden" id="tabbar">
+    <a href="#home" data-r="home"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5"/><path d="M6 9.5V20h4v-5h4v5h4V9.5"/></svg>Главная</a>
+    <a href="#messages" data-r="messages"><svg viewBox="0 0 24 24"><path d="M4.5 18.8l1.1-3.4A7.6 7.6 0 1 1 8.7 18z"/></svg>Чаты<b class="pill hidden" id="tab-unread"></b></a>
+    <a href="#deals" data-r="deals"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="5" height="14" rx="1.5"/><rect x="9.5" y="5" width="5" height="9" rx="1.5"/><rect x="15.5" y="5" width="5" height="12" rx="1.5"/></svg>Сделки</a>
+    <a href="#tasks" data-r="tasks"><svg viewBox="0 0 24 24"><path d="M9.5 7h10M9.5 12h10M9.5 17h10"/><path d="M4 6.6l1 1 1.7-2.1M4 11.6l1 1 1.7-2.1M4 16.6l1 1 1.7-2.1"/></svg>Задачи<b class="pill hidden" id="tab-tasks"></b></a>
+    <a href="#bookings" data-r="bookings"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.6"/><path d="M3.5 9.5h17M8 3.5v3M16 3.5v3"/></svg>Брони</a>
+  </nav>
+
+  <div id="modal" class="modal hidden"><div class="modal__back" data-close></div><div class="modal__card" id="modal-card"></div></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="popup" class="popup hidden"><b id="popup-title"></b><span id="popup-text"></span><small id="popup-sub"></small></div>
+
+  <script src="/js/phone.js?v=66"></script>
+  <script src="picker.js?v=66"></script>
+  <script src="crm.js?v=66"></script>
+</body>
+</html>
