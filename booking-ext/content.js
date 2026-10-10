@@ -43,11 +43,26 @@
     if (!m || !RU_M[m[2]]) return "";
     return `${m[3]}-${String(RU_M[m[2]]).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   }
+  function rawPanel() {
+    // everything the reservation panel says, as text: the CRM shows it to a person
+    // under «Данные Booking.com» even when our label parsing misses something
+    const composer = qsa((SEL && SEL.composer) || "textarea, [contenteditable='true']").find(isVisible);
+    const cr = composer ? composer.getBoundingClientRect() : null;
+    const lines = [];
+    for (const n of leaves(document)) {
+      const r = n.getBoundingClientRect();
+      if (cr && r.right > cr.left - 30 && r.left < cr.right + 30) continue;  // the chat column itself
+      if (r.top < 40 || r.width > innerWidth * 0.9) continue;  // top bar / full-width banners
+      const t = txt(n); if (t.length < 2 || t.length > 160) continue;
+      lines.push(t);
+    }
+    return Array.from(new Set(lines)).join("\n").slice(0, 6000);
+  }
   function panel() {
     return { reservation: (labelValue("Номер бронирования|Booking number|Reservation number").match(/\d{6,}/) || [""])[0],
       guest: labelValue("Имя гостя|Guest name"), checkin: isoDate(labelValue("Заезд|Check-in")), checkout: isoDate(labelValue("Отъезд|Выезд|Check-out")),
       total: labelValue("Итого|Total"), lang: labelValue("Предпочитаемый язык|Preferred language"), guests: labelValue("Количество гостей|Number of guests"),
-      room: labelValue("\\d+ номер|\\d+ номера|Room|Unit") };
+      room: labelValue("\\d+ номер|\\d+ номера|Room|Unit"), raw: rawPanel(), url: location.href.slice(0, 300) };
   }
   // ---- messages: bubbles are the coloured blocks in the middle column; day separators give the dates
   const STATUS = /^(Доставлено|Delivered|Прочитано|Read|Отправлено|Sent|Ответ не требуется|No reply needed|Ответить|Reply|Сегодня|Today|Вчера|Yesterday)$/i;

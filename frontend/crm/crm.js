@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=62&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=63&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -1188,7 +1188,9 @@
   // ---- boot --------------------------------------------------------------------------
   async function badges() {
     try {
-      const d = await get("/badges");
+      // long-poll: answered at once on a new message, otherwise held ~25 s
+      const d = await get(`/badges?rev=${badges.rev || 0}${badges.rev && document.visibilityState === "visible" ? "&wait=25" : ""}`);
+      badges.rev = d.rev || 0;
       $("nav-unread").textContent = d.unread || "";
       $("nav-unread").classList.toggle("hidden", !d.unread);
       $("nav-tasks").textContent = d.my_open_tasks || "";
@@ -1203,9 +1205,10 @@
         }
         lastSeenMsg = Math.max(lastSeenMsg || 0, d.latest.id);
       } else if (lastSeenMsg === null) lastSeenMsg = 0;
-    } catch (e) { /* ignore */ }
+      badges.failed = false;
+    } catch (e) { badges.failed = true; }
     clearTimeout(boot.t);
-    boot.t = setTimeout(badges, document.visibilityState === "visible" ? 5000 : 15000);
+    boot.t = setTimeout(badges, badges.failed ? 5000 : document.visibilityState === "visible" ? 300 : 15000);
   }
   async function boot() {
     $("auth").classList.add("hidden");

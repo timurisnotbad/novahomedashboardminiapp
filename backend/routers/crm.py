@@ -144,8 +144,16 @@ def home(user: dict = Depends(current_user)):  # noqa: B008
 
 
 @router.get("/badges")
-def badges(user: dict = Depends(current_user)):  # noqa: B008
-    """Sidebar counters + the latest incoming message (sound / popup in the shell)."""
+async def badges(rev: int = 0, wait: float = 0, user: dict = Depends(current_user)):  # noqa: B008
+    """Sidebar counters + the latest incoming message (sound / popup in the shell).
+    With rev+wait the request is held until the inbox changes (long-poll)."""
+    from starlette.concurrency import run_in_threadpool
+    if wait > 0 and rev > 0:
+        await inbox.wait_for_change(rev, wait)
+    return await run_in_threadpool(_badges, user)
+
+
+def _badges(user: dict) -> dict:
     with database.get_conn() as conn:
         unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
         mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ?", (user["id"],)).fetchone()[0]
@@ -157,7 +165,7 @@ def badges(user: dict = Depends(current_user)):  # noqa: B008
         latest = {"id": last["id"], "chat_id": last["chat_id"], "at": last["at"], "channel": inbox.CHANNELS.get(last["channel"] or "wa", "WhatsApp"),
                   "title": last["name"] or last["push_name"] or (("+" + last["phone"]) if last["phone"] else "Гость"),
                   "text": inbox._preview(last["kind"], last["text"])}  # noqa: SLF001
-    return {"unread": unread, "my_open_tasks": mine, "latest": latest}
+    return {"unread": unread, "my_open_tasks": mine, "latest": latest, "rev": inbox.rev_hint()}
 
 
 # ---- pipelines & fields -------------------------------------------------------

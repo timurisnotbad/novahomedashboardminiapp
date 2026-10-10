@@ -55,6 +55,7 @@ DEFAULT_SELECTORS = {
 def init_db() -> None:
     with database.get_conn() as conn:
         conn.executescript(SCHEMA)
+    migrate_meta()
 
 
 def token() -> str:
@@ -105,8 +106,9 @@ def _jid(reservation: str, guest: str) -> str:
 
 def ingest(payload: dict) -> dict:
     """One conversation from the page: {reservation, guest, checkin, checkout, room, messages:[{id?, dir, text, at?}]}."""
-    guest = (payload.get("guest") or "").strip()
-    reservation = str(payload.get("reservation") or "").strip()
+    payload = _normalize(payload)
+    guest = payload["guest"]
+    reservation = payload["reservation"]
     if not guest and not reservation:
         raise ValueError("Нет гостя и номера брони")
     jid = _jid(reservation, guest)
@@ -132,9 +134,11 @@ def ingest(payload: dict) -> dict:
             conn.execute("UPDATE inbox_chats SET name = ? WHERE id = ?", (guest, c["id"]))
             inbox._bump(conn)  # noqa: SLF001
         if c:
-            conn.execute("INSERT OR REPLACE INTO inbox_ext_meta (chat_id, reservation, guest, checkin, checkout, room, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            conn.execute("INSERT OR REPLACE INTO inbox_ext_meta (chat_id, reservation, guest, checkin, checkout, room, updated_at, guests, total, lang, raw, url) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (c["id"], reservation, guest, payload.get("checkin"), payload.get("checkout"), payload.get("room"),
-                          datetime.now().isoformat(timespec="seconds")))
+                          datetime.now().isoformat(timespec="seconds"), payload.get("guests"), payload.get("total"), payload.get("lang"),
+                          (payload.get("raw") or "")[:6000], (payload.get("url") or "")[:300]))
     linked = None
     if c:
         try:
@@ -142,6 +146,43 @@ def ingest(payload: dict) -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("booking enrich failed")
     return {"chat_id": c["id"] if c else None, "stored": n, "booking_id": linked}
+
+
+_MONTHS = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "май": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+           "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+
+
+def norm_date(s) -> str:
+    """'2026-10-25' / 'вс, 25 окт. 2026' / '25 октября 2026' / 'Sun, 25 Oct 2026' / '25.10.2026' → ISO, else ''."""
+    s = str(s or "").strip().lower()
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        return m.group(0)
+    m = re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    m = re.search(r"(\d{1,2})\s+([а-яa-z]{3})[а-яa-z]*\.?\s+(\d{4})", s)
+    if m and m.group(2) in _MONTHS:
+        return f"{m.group(3)}-{_MONTHS[m.group(2)]:02d}-{int(m.group(1)):02d}"
+    m = re.search(r"([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})", s)  # Oct 25, 2026
+    if m and m.group(1) in _MONTHS:
+        return f"{m.group(3)}-{_MONTHS[m.group(1)]:02d}-{int(m.group(2)):02d}"
+    return ""
+
+
+def _normalize(p: dict) -> dict:
+    """Whatever version of the extension sent it: clean fields or nothing."""
+    out = dict(p or {})
+    out["reservation"] = (re.search(r"\d{6,}", str(p.get("reservation") or "")) or [""])[0] if p.get("reservation") else ""
+    g = re.sub(r"\s+", " ", str(p.get("guest") or "")).strip()
+    out["guest"] = "" if (not g or re.search(r"\d{5,}", g) or len(g) > 80) else g
+    out["checkin"], out["checkout"] = norm_date(p.get("checkin")), norm_date(p.get("checkout"))
+    room = re.sub(r"\s+", " ", str(p.get("room") or "")).strip()
+    out["room"] = room[:80] if room and room not in ("1", "0") else ""
+    for k in ("guests", "total", "lang"):
+        v = re.sub(r"\s+", " ", str(p.get(k) or "")).strip()
+        out[k] = v[:60]
+    return out
 
 
 def _apartment_code(room: str) -> str:
@@ -154,6 +195,8 @@ def _enrich(chat_id: int, guest: str, reservation: str, p: dict):
     from . import crm, crm_ext
     cid = crm.ensure_client_for_chat(chat_id, guest or "Гость Booking.com", "Booking.com")
     lines = [f"Booking.com № {reservation}" if reservation else "Booking.com"]
+    if p.get("checkin") and p.get("checkout"):
+        lines.append(f"{p['checkin'][8:10]}.{p['checkin'][5:7]}–{p['checkout'][8:10]}.{p['checkout'][5:7]}")
     for key, label in (("guests", "Гостей"), ("total", "Сумма"), ("room", "Номер")):
         if p.get(key):
             lines.append(f"{label}: {p[key]}")
@@ -182,10 +225,14 @@ _REASONS = {"res": "№ брони Booking в примечании календ�
 
 
 def stay(chat_id: int) -> dict | None:
-    """What Booking.com says about the stay (for the chat header / booking picker)."""
+    """What Booking.com says about the stay (for the chat header / booking picker / «Данные Booking.com»)."""
     with database.get_conn() as conn:
-        r = conn.execute("SELECT reservation, guest, checkin, checkout, room FROM inbox_ext_meta WHERE chat_id = ?", (chat_id,)).fetchone()
-    return dict(r) if r else None
+        r = conn.execute("SELECT * FROM inbox_ext_meta WHERE chat_id = ?", (chat_id,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["checkin"], d["checkout"] = norm_date(d.get("checkin")), norm_date(d.get("checkout"))
+    return d
 
 
 def candidates(chat_id: int, limit: int = 6) -> list[dict]:
@@ -285,7 +332,21 @@ CREATE TABLE IF NOT EXISTS inbox_ext_meta (
     checkin TEXT,
     checkout TEXT,
     room TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    guests TEXT,
+    total TEXT,
+    lang TEXT,
+    raw TEXT,
+    url TEXT
 );
 """
 SCHEMA += META_SCHEMA
+
+
+def migrate_meta() -> None:
+    with database.get_conn() as conn:
+        conn.executescript(META_SCHEMA)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_ext_meta)").fetchall()]
+        for col in ("guests", "total", "lang", "raw", "url"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE inbox_ext_meta ADD COLUMN {col} TEXT")

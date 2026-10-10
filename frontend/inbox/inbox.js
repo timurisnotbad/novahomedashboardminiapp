@@ -168,8 +168,11 @@
     $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
     const b = $("conv-booking");
     const stay = !c.booking && c.bk_stay ? c.bk_stay : null;
-    const stayText = stay ? `<span class="ib-stay">Booking.com: ${stay.checkin ? esc(dm(stay.checkin)) : "?"}–${stay.checkout ? esc(dm(stay.checkout)) : "?"}${stay.room ? " · " + esc(stay.room) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
-    b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></div>` + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    const stayDates = stay && stay.checkin && stay.checkout ? `${esc(dm(stay.checkin))}–${esc(dm(stay.checkout))}` : "";
+    const stayText = stay ? `<span class="ib-stay">Booking.com${stayDates ? ": " + stayDates : ""}${stay.room ? " · " + esc(stay.room) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
+    const bkBtn = c.channel === "bk" ? `<button class="ib-link ib-bkinfo" id="bk-info" title="Все данные гостя и брони из экстранета">ℹ️ Данные Booking</button>` : "";
+    const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
+    b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
     $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
@@ -274,6 +277,7 @@
       renderHead();
       renderMsgs("bottom");
       if (d.chat.unread) markRead(id);
+      repoll();  // the waiting poll does not know about this chat yet
     } catch (e) {
       toast(e.message);
     }
@@ -446,13 +450,24 @@
   // ---- polling ---------------------------------------------------------------------
   let pollTimer = null;
   let polling = false;
+  let pollCtl = null;  // the long-poll in flight: aborted when another chat is opened
   let lastIncoming = null;
+  function repoll() { if (pollCtl) { try { pollCtl.abort(); } catch (e) { /* ignore */ } } else pollNow(); }
   async function pollNow() {
     if (polling) return;
     polling = true;
     clearTimeout(pollTimer);
+    const since = S.rev, reqChat = S.open ? S.open.id : null;
+    pollCtl = typeof AbortController !== "undefined" ? new AbortController() : null;
     try {
-      const d = await req(`/poll?since=${S.rev}${S.open ? "&chat=" + S.open.id : ""}`);
+      // long-poll: the server answers at once when something changed, otherwise
+      // holds the request up to 25 s — far fewer round trips over the tunnel
+      const d = await req(`/poll?since=${since}${reqChat ? "&chat=" + reqChat : ""}${since && document.visibilityState === "visible" ? "&wait=25" : ""}`, pollCtl ? { signal: pollCtl.signal } : undefined);
+      if (S.open && S.open.id !== reqChat && d.chats.some((c) => c.id === S.open.id)) {
+        // another chat was opened while this request waited: its new messages are
+        // not in this answer — keep `since` so the next poll (with the chat) brings them
+        d.rev = since;
+      }
       if (d.rev < S.rev) {  // DB was reset — start over
         S.rev = 0;
         S.chats.clear();
@@ -475,13 +490,17 @@
         if (S.open && d.chats.some((c) => c.id === S.open.id)) renderHead();
       }
       if (ping) beep();
+      pollFailed = false;
     } catch (e) {
+      pollFailed = !(e && e.name === "AbortError");
       if (e.status === 403) { $("denied").classList.remove("hidden"); return; }
     } finally {
+      pollCtl = null;
       polling = false;
-      pollTimer = setTimeout(pollNow, document.visibilityState === "visible" ? 2500 : 10000);
+      pollTimer = setTimeout(pollNow, pollFailed ? 4000 : document.visibilityState === "visible" ? 300 : 10000);
     }
   }
+  let pollFailed = false;
 
   const EMBED = /[?&]embed=1/.test(location.search);
   function beep() {
@@ -650,6 +669,27 @@
     };
   }
 
+  // ---- everything Booking.com told us about the stay --------------------------------
+  async function openBookingInfo() {
+    if (!S.open) return;
+    const id = S.open.id;
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let d;
+    try { d = await req(`/chats/${id}/bookings`); } catch (e) { toast(e.message); closeModal(); return; }
+    const st = d.stay || {};
+    const rowsDef = [["Номер брони", st.reservation], ["Гость", st.guest], ["Заезд", st.checkin ? dm(st.checkin) + "." + st.checkin.slice(0, 4) : ""], ["Выезд", st.checkout ? dm(st.checkout) + "." + st.checkout.slice(0, 4) : ""],
+      ["Номер / объект", st.room], ["Гостей", st.guests], ["Сумма", st.total], ["Язык", st.lang], ["Обновлено", st.updated_at ? st.updated_at.replace("T", " ").slice(0, 16) : ""]];
+    const rows = rowsDef.filter((r) => r[1]).map((r) => `<div class="ib-kv"><span>${esc(r[0])}</span><b>${esc(r[1])}</b></div>`).join("");
+    $("modal-card").innerHTML = `<h3>Данные Booking.com</h3>
+      <p class="ib-muted" style="font-size:13px">Что расширение прочитало в экстранете. Если чего-то не хватает или поле разобрано неверно — ниже весь текст панели брони как есть.</p>
+      ${rows || '<p class="ib-muted">Расширение пока не передало данные брони — откройте этот разговор в экстранете, оно дочитает их за минуту.</p>'}
+      ${st.url ? `<p style="font-size:13px"><a href="${esc(st.url)}" target="_blank" rel="noopener">Открыть в экстранете ↗</a></p>` : ""}
+      ${st.raw ? `<details class="ib-raw"><summary>Весь текст панели брони</summary><pre>${esc(st.raw)}</pre></details>` : ""}
+      <div class="ib-row"><button class="ib-btn primary" id="bk-info-pick">${d.pinned.length ? "Изменить бронь в календаре" : "Выбрать бронь в календаре"}</button><button class="ib-btn" data-close>Закрыть</button></div>`;
+    $("bk-info-pick").onclick = () => openBookingPick();
+  }
+
   async function openNewChat() {
     $("modal").classList.remove("hidden");
     $("modal-card").innerHTML = "<p>Загрузка…</p>";
@@ -743,6 +783,7 @@
     });
     $("conv-booking").addEventListener("click", (e) => {
       if (e.target.id === "bk-pick") { openBookingPick(); return; }
+      if (e.target.id === "bk-info") { openBookingInfo(); return; }
       const a = e.target.closest("[data-bk-open]");
       if (a) {
         e.preventDefault();
@@ -758,7 +799,7 @@
       try {
         const r = await req(`/chats/${S.open.id}/receipt`, { method: "POST" });
         if (r.chat) { S.chats.set(r.chat.id, r.chat); S.open = r.chat; renderHead(); renderList(); }
-        toast(r.sent ? "Гость увидит, что сообщения прочитаны" : "Нечего отмечать");
+        toast(r.sent ? "Гость увидит, что сообщения прочитаны" : r.note ? "Уже " + r.note : "Нечего отмечать: новых сообщений от гостя нет");
       } catch (err) { toast(err.message); }
     });
 

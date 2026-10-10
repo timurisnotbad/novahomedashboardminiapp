@@ -94,8 +94,12 @@ def chats(q: str = "", only: str = "all", user: dict = Depends(inbox_user)):  # 
 
 
 @router.get("/poll")
-def poll(since: int = 0, chat: int | None = None, user: dict = Depends(inbox_user)):  # noqa: B008
-    return inbox.poll(since, chat)
+async def poll(since: int = 0, chat: int | None = None, wait: float = 0, user: dict = Depends(inbox_user)):  # noqa: B008
+    """`wait` > 0: hold the request until something changes (long-poll)."""
+    from starlette.concurrency import run_in_threadpool
+    if wait > 0 and since > 0:
+        await inbox.wait_for_change(since, wait)
+    return await run_in_threadpool(inbox.poll, since, chat)
 
 
 @router.get("/chats/{chat_id}")
@@ -115,8 +119,9 @@ def read(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
 @router.post("/chats/{chat_id}/receipt")
 def receipt(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
     """«Прочитано» for the guest: read receipt to WhatsApp / Telegram."""
-    sent = inbox.send_receipt(chat_id)
-    return {"ok": True, "sent": sent, "chat": inbox.get_chat(chat_id)}
+    sent = inbox.send_receipt(chat_id, "button")
+    c = inbox.get_chat(chat_id)
+    return {"ok": True, "sent": sent, "chat": c, "note": None if sent else (c or {}).get("receipt")}
 
 
 @router.patch("/chats/{chat_id}")

@@ -109,6 +109,10 @@ async def _on_raw(update) -> None:
         from telethon.tl import types as t
         if isinstance(update, t.UpdateReadHistoryOutbox) and isinstance(update.peer, t.PeerUser):
             await asyncio.get_event_loop().run_in_executor(None, _mark_read, update.peer.user_id, update.max_id)
+        elif isinstance(update, t.UpdateReadHistoryInbox) and isinstance(update.peer, t.PeerUser):
+            # this account read the guest's messages somewhere else (phone, Telegram
+            # Desktop): the guest already sees two ticks — record who did it
+            await asyncio.get_event_loop().run_in_executor(None, inbox.receipt_external, f"tg:{update.peer.user_id}", "Telegram на телефоне/компьютере")
     except Exception:  # noqa: BLE001
         logger.exception("telegram read receipt failed")
 

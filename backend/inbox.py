@@ -134,6 +134,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN receipt_pending INTEGER DEFAULT 0")  # guest not yet shown «read»
         if "notify_stage" not in ccols:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN notify_stage INTEGER DEFAULT 9")  # 0 new → 1 pushed → 2 escalated; 9 answered
+        if "receipt_info" not in ccols:
+            conn.execute("ALTER TABLE inbox_chats ADD COLUMN receipt_info TEXT")  # who showed the guest «read», and when
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -155,9 +157,39 @@ def _local(iso: str | None) -> str:
         return _now()
 
 
+_mem_rev = {"rev": -1, "read_at": 0.0}  # last rev this process wrote — lets /poll wait without hitting the DB
+
+
 def _bump(conn) -> int:
     conn.execute("UPDATE inbox_rev SET rev = rev + 1 WHERE id = 1")
-    return conn.execute("SELECT rev FROM inbox_rev WHERE id = 1").fetchone()[0]
+    rev = conn.execute("SELECT rev FROM inbox_rev WHERE id = 1").fetchone()[0]
+    _mem_rev["rev"] = max(_mem_rev["rev"], rev)
+    return rev
+
+
+def rev_hint() -> int:
+    """Cheap current rev: in-memory, re-read from the DB every 5 s in case someone
+    else (a script, a second process) wrote to it."""
+    if time.time() - _mem_rev["read_at"] > 5 or _mem_rev["rev"] < 0:
+        try:
+            _mem_rev["rev"] = max(_mem_rev["rev"], current_rev())
+        except Exception:  # noqa: BLE001
+            pass
+        _mem_rev["read_at"] = time.time()
+    return _mem_rev["rev"]
+
+
+async def wait_for_change(since: int, timeout: float) -> None:
+    """Long-poll: return as soon as the inbox rev moves past `since`, or after
+    `timeout` seconds. One request every 25 s instead of one every 2.5 s — on a
+    Cloudflare tunnel that is the difference between «лагает» and «мгновенно»."""
+    import asyncio
+    deadline = time.time() + max(0.0, min(timeout, 30.0))
+    while time.time() < deadline:
+        if rev_hint() > since:
+            await asyncio.sleep(0.15)  # let the writing transaction commit
+            return
+        await asyncio.sleep(0.4)
 
 
 def current_rev() -> int:
@@ -327,6 +359,21 @@ def _default_times() -> list:
         return ["14:00", "11:00"]
 
 
+def _receipt_text(c: dict) -> str | None:
+    """Human line for the chat header: what the guest sees and who caused it."""
+    if c.get("last_dir") != "in" and not c.get("receipt_pending"):
+        return None
+    if c.get("receipt_pending"):
+        return "гость видит «не прочитано»"
+    info = (c.get("receipt_info") or "").split("|")
+    if len(info) < 2:
+        return None
+    when = info[1][11:16]
+    if info[0] == "device":
+        return f"прочитано на другом устройстве ({info[2] if len(info) > 2 else 'телефон'}) {when}"
+    return f"прочитано: {RECEIPT_HOW.get(info[0], info[0])} {when}"
+
+
 def _chat_out(r) -> dict:
     c = dict(r)
     c["channel"] = c.get("channel") or "wa"
@@ -338,6 +385,7 @@ def _chat_out(r) -> dict:
                      "guest": b["client_name"], "when": b["when"], "pinned": bool(pb),
                      "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5], "default_times": _default_times(),
                      "nights": b.get("days_count"), "amount": b.get("amount")} if b else None)
+    c["receipt"] = _receipt_text(c)
     if c["channel"] == "bk" and not pb:
         # Booking.com chat without a confirmed calendar booking: show what Booking says
         # and let a person pick the calendar booking (rooms/dates differ too often to guess)
@@ -715,18 +763,34 @@ def mark_read(chat_id: int) -> None:
         conn.execute("UPDATE inbox_chats SET unread = 0, rev = ? WHERE id = ?", (_bump(conn), chat_id))
 
 
-def send_receipt(chat_id: int) -> bool:
+RECEIPT_HOW = {"reply": "ответ из CRM", "button": "кнопка ✓✓ в CRM", "device": "другое устройство"}
+
+
+def send_receipt(chat_id: int, how: str = "button") -> bool:
     """Tell the guest's messenger we read the chat (two blue ticks). Called when
-    we answer, or by the «✓✓» button in the chat header."""
+    we answer (how='reply'), or by the «✓✓» button in the chat header."""
     with database.get_conn() as conn:
         r = conn.execute("SELECT jid, channel, receipt_pending FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
         if not r or not r["receipt_pending"]:
             return False
         ids = [x["wa_id"] for x in conn.execute(
             "SELECT wa_id FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 30", (chat_id,)).fetchall()]
-        conn.execute("UPDATE inbox_chats SET receipt_pending = 0, rev = ? WHERE id = ?", (_bump(conn), chat_id))
+        conn.execute("UPDATE inbox_chats SET receipt_pending = 0, receipt_info = ?, rev = ? WHERE id = ?",
+                     (f"{how}|{_now()}", _bump(conn), chat_id))
     threading.Thread(target=_safe_read, args=(r["channel"] or "wa", r["jid"], ids), daemon=True).start()
     return True
+
+
+def receipt_external(jid: str, where: str) -> None:
+    """The messenger says *we* read this chat on another device (the phone, Telegram
+    Desktop…): the guest already sees «read», nothing for the CRM to send — but
+    the team should see that it was not the CRM."""
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT id, receipt_pending FROM inbox_chats WHERE jid = ?", (jid,)).fetchone()
+        if not r or not r["receipt_pending"]:
+            return
+        conn.execute("UPDATE inbox_chats SET receipt_pending = 0, receipt_info = ?, rev = ? WHERE id = ?",
+                     (f"device|{_now()}|{where}", _bump(conn), r["id"]))
 
 
 def _safe_read(channel, jid, ids) -> None:
@@ -758,7 +822,7 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
     if not text and not media:
         raise BridgeError("Пустое сообщение")
     try:
-        send_receipt(chat_id)  # answering = we have read it
+        send_receipt(chat_id, "reply")  # answering = we have read it
     except Exception:  # noqa: BLE001
         pass
     kind = "text"
