@@ -95,8 +95,9 @@
     } else if (kind === "date") {
       const dayW = wheel(Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: String(i + 1) })), state.d - 1, (v) => { state.d = v; paintTitle(); });
       const monW = wheel(MONTHS_FULL.map((n, i) => ({ value: i, label: n })), state.m, (v) => { state.m = v; state.d = Math.min(state.d, dim(state.y, state.m)); paintTitle(); });
-      const years = []; for (let y = now.getFullYear() - 3; y <= now.getFullYear() + 3; y++) years.push({ value: y, label: String(y) });
-      const yrW = wheel(years, years.findIndex((x) => x.value === state.y), (v) => { state.y = v; paintTitle(); });
+      // any year: birthdays go back a century, bookings a few years ahead
+      const years = []; for (let y = now.getFullYear() + 5; y >= 1920; y--) years.push({ value: y, label: String(y) });
+      const yrW = wheel(years, years.findIndex((x) => x.value === state.y), (v) => { state.y = v; state.d = Math.min(state.d, dim(state.y, state.m)); paintTitle(); });
       cols.push(dayW, monW, yrW);
     } else if (kind === "month") {
       const monW = wheel(MONTHS_FULL.map((n, i) => ({ value: i, label: n })), state.m, (v) => { state.m = v; paintTitle(); });
