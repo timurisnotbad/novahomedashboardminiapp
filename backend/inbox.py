@@ -129,8 +129,11 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_msg_chat_at ON inbox_messages(chat_id, at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_chat_last ON inbox_chats(last_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_chat_phone ON inbox_chats(phone)")
-        if "receipt_pending" not in [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]:
+        ccols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]
+        if "receipt_pending" not in ccols:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN receipt_pending INTEGER DEFAULT 0")  # guest not yet shown «read»
+        if "notify_stage" not in ccols:
+            conn.execute("ALTER TABLE inbox_chats ADD COLUMN notify_stage INTEGER DEFAULT 9")  # 0 new → 1 pushed → 2 escalated; 9 answered
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -524,7 +527,9 @@ def _touch_chat(conn, chat_id: int, at: str, direction: str, kind: str, text: st
         conn.execute("UPDATE inbox_chats SET unread = unread + ?, rev = ? WHERE id = ?",
                      (unread_inc, rev, chat_id))
     if direction == "in" and unread_inc:
-        conn.execute("UPDATE inbox_chats SET receipt_pending = 1 WHERE id = ?", (chat_id,))
+        conn.execute("UPDATE inbox_chats SET receipt_pending = 1, notify_stage = CASE WHEN notify_stage = 9 THEN 0 ELSE notify_stage END WHERE id = ?", (chat_id,))
+    elif direction == "out":
+        conn.execute("UPDATE inbox_chats SET notify_stage = 9 WHERE id = ?", (chat_id,))
 
 
 def store_message(m: dict, notify: bool = False, history: bool = False) -> dict | None:
@@ -582,7 +587,9 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
                     m.get("text") or "", "sent" if out else None,
                     0 if (out or history) else 1)
     if notify and not out and not history:
-        _alert(chat_id, m)
+        st = _notify_settings()
+        if st["delay"] == 0:  # «сразу»: push + Telegram right now, in the background
+            threading.Thread(target=_notify_chat, args=(chat_id, 1, st), daemon=True).start()
         # auto-replies (first message / off hours) — in the background
         threading.Thread(target=_auto_incoming, args=(chat_id, is_first), daemon=True).start()
     return {"chat_id": chat_id}
@@ -995,6 +1002,66 @@ def _alert(chat_id: int, m: dict) -> None:
             logger.exception("inbox alert failed")
 
     threading.Thread(target=run, daemon=True).start()
+
+
+def _notify_settings() -> dict:
+    try:
+        from . import crm
+        return {"delay": int(crm.get_setting("notify_delay", "2") or 0), "escalate": int(crm.get_setting("notify_escalate", "10") or 0),
+                "push": crm.get_setting("notify_push", "1") == "1", "telegram": crm.get_setting("notify_telegram", "1") == "1"}
+    except Exception:  # noqa: BLE001
+        return {"delay": 0, "escalate": 10, "push": True, "telegram": True}
+
+
+def notify_pending() -> int:
+    """Every minute: a guest message nobody answered for `delay` minutes → push to
+    the responsible manager (everyone when unassigned) + Telegram alert; still
+    unanswered after `escalate` more minutes → push to all admins again, marked ⚠️."""
+    st = _notify_settings()
+    now = datetime.now()
+    with database.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, last_at, notify_stage, assignee, unread FROM inbox_chats WHERE unread > 0 AND last_dir = 'in' AND notify_stage < 2").fetchall()]
+    n = 0
+    for c in rows:
+        try:
+            age = (now - datetime.fromisoformat(c["last_at"])).total_seconds() / 60
+        except (TypeError, ValueError):
+            continue
+        stage = c["notify_stage"] or 0
+        if stage == 0 and age >= st["delay"]:
+            _notify_chat(c["id"], 1, st)
+            n += 1
+        elif stage == 1 and st["escalate"] > 0 and age >= st["delay"] + st["escalate"]:
+            _notify_chat(c["id"], 2, st)
+            n += 1
+    return n
+
+
+def _notify_chat(chat_id: int, stage: int, st: dict) -> None:
+    from . import crm, webpush
+    c = get_chat(chat_id)
+    if not c:
+        return
+    with database.get_conn() as conn:
+        conn.execute("UPDATE inbox_chats SET notify_stage = ? WHERE id = ?", (stage, chat_id))
+        last = conn.execute("SELECT kind, text FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 1", (chat_id,)).fetchone()
+    body = _preview(last["kind"] if last else "text", last["text"] if last else "") or "Новое сообщение"
+    who = c["title"] + (f" · {c['booking']['apartment']}" if c.get("booking") else "")
+    title = (f"⚠️ Без ответа {st['delay'] + st['escalate']} мин · " if stage == 2 else "") + f"{c.get('channel_name') or 'Чат'} · {who}"
+    url = f"/crm/#messages/{chat_id}"
+    if st["push"]:
+        users = crm.list_users()
+        if stage == 2:
+            uids = [u["id"] for u in users if u["role"] == "admin" and u["active"]]
+        else:
+            uids = [u["id"] for u in users if u["active"] and u["name"] == c.get("assignee")] or [u["id"] for u in users if u["active"]]
+        try:
+            webpush.send_to(uids, title, body, url, tag=f"nh-{chat_id}")
+        except Exception:  # noqa: BLE001
+            logger.exception("push notify failed")
+    if st["telegram"]:
+        _alert(chat_id, {"kind": last["kind"] if last else "text", "text": (("⚠️ без ответа · " if stage == 2 else "") + (last["text"] if last else ""))})
 
 
 def chat_for_alert(tg_chat_id: int, tg_msg_id: int) -> int | None:

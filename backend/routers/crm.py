@@ -380,6 +380,64 @@ def client_chat(cid: int, payload: dict | None = None, user: dict = Depends(curr
     return {"chat_id": chat["id"]}
 
 
+# ---- push notifications (phones & computers) ----------------------------------------
+@router.get("/push")
+def push_status(user: dict = Depends(current_user)):  # noqa: B008
+    return docs_push_status(user)
+
+
+def docs_push_status(user: dict) -> dict:
+    from .. import webpush
+    st = webpush.status(user["id"])
+    st.update({"delay": crm.get_setting("notify_delay", "2"), "escalate": crm.get_setting("notify_escalate", "10"),
+               "push": crm.get_setting("notify_push", "1") == "1", "telegram": crm.get_setting("notify_telegram", "1") == "1"})
+    return st
+
+
+@router.post("/push/subscribe")
+def push_subscribe(payload: dict, request: Request, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import webpush
+    try:
+        n = webpush.subscribe(user["id"], payload.get("subscription") or payload, request.headers.get("user-agent", ""))
+    except ValueError as exc:
+        _bad(exc)
+    return {"ok": True, "mine": n}
+
+
+@router.post("/push/unsubscribe")
+def push_unsubscribe(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import webpush
+    webpush.unsubscribe(user["id"], payload.get("endpoint") or "")
+    return {"ok": True}
+
+
+@router.post("/push/test")
+def push_test(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import webpush
+    n = webpush.send_to([user["id"]], "Nova Home CRM", "Уведомления на этом устройстве работают", "/crm/#messages", "nh-test")
+    return {"sent": n}
+
+
+class NotifyIn(BaseModel):
+    delay: int | None = None
+    escalate: int | None = None
+    push: bool | None = None
+    telegram: bool | None = None
+
+
+@router.post("/push/settings")
+def push_settings(payload: NotifyIn, user: dict = Depends(admin_user)):  # noqa: B008
+    if payload.delay is not None:
+        crm.set_setting("notify_delay", str(max(0, min(payload.delay, 120))))
+    if payload.escalate is not None:
+        crm.set_setting("notify_escalate", str(max(0, min(payload.escalate, 240))))
+    if payload.push is not None:
+        crm.set_setting("notify_push", "1" if payload.push else "0")
+    if payload.telegram is not None:
+        crm.set_setting("notify_telegram", "1" if payload.telegram else "0")
+    return {"ok": True}
+
+
 # ---- documents (PDF) & email ----------------------------------------------------
 @router.get("/company")
 def get_company(user: dict = Depends(current_user)):  # noqa: B008

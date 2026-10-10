@@ -47,6 +47,14 @@ def _job():
         logger.warning("CRM deal sync failed: %s", exc)
 
 
+def _notify_job():
+    try:
+        from . import inbox
+        inbox.notify_pending()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Inbox notifications failed: %s", exc)
+
+
 def _auto_messages_job():
     try:
         from . import crm_ext
@@ -96,6 +104,14 @@ def start() -> None:
         hour=22,
         minute=0,
         id="evening_summary",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _notify_job,
+        "interval",
+        minutes=1,
+        id="inbox_notify",
         max_instances=1,
         coalesce=True,
     )

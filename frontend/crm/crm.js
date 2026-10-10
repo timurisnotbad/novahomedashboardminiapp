@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=56&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=57&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -674,6 +674,7 @@
     const d = await get("/integrations");
     d.company = await get("/company").catch(() => ({ name: "", phone: "", email: "", website: "", address: "", inn: "", bank: "", note: "", currency: "USD" }));
     d.email = await get("/email").catch(() => ({ configured: false, log: [] }));
+    d.push = await get("/push").catch(() => ({ delay: 2, escalate: 10, push: true, telegram: true, mine: 0, total: 0 }));
     const rc = d.realtycalendar;
     $("main").innerHTML = `<div class="page-head"><h1>Интеграции</h1></div>
       <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
@@ -696,6 +697,11 @@
         <div class="muted small" style="margin-top:4px">Письма с PDF-счётом, квитанцией или подтверждением уходят из карточки брони и из карточки клиента.</div>
         ${d.email.configured ? `<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input class="field" id="em-test" type="email" placeholder="Адрес для тестового письма" style="flex:1;min-width:200px" /><button class="btn" id="em-test-go">Отправить тест</button></div>` : ""}
         ${d.email.log && d.email.log.length ? `<table class="table" style="margin-top:8px"><thead><tr><th>Когда</th><th>Кому</th><th>Тема</th><th>Статус</th></tr></thead><tbody>${d.email.log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td class="small">${esc(l.to_addr)}</td><td class="small">${esc(l.subject || "")}</td><td class="${l.status === "sent" ? "ok" : "bad"} small">${l.status === "sent" ? "отправлено" : esc((l.error || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table>` : ""}</div>
+      <div class="card"><h3>Уведомления о сообщениях</h3>
+        <div class="muted small">Гость написал → в браузере сразу звук и всплывашка. Если через <b>N минут</b> никто не ответил, на телефоны и компьютеры ответственного (или всех, если ответственного нет) приходит push, и в Telegram владельцу уходит сообщение. Если ответа нет ещё через <b>M минут</b>, push с пометкой ⚠️ приходит всем администраторам. 0 в первом поле — слать сразу.</div>
+        <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Push через, мин</label><input class="field" id="n-delay" type="number" min="0" max="120" value="${esc(d.push.delay)}" style="width:110px" ${S.me.role !== "admin" ? "disabled" : ""} /></div><div><label class="lbl">Эскалация ещё через, мин</label><input class="field" id="n-esc" type="number" min="0" max="240" value="${esc(d.push.escalate)}" style="width:110px" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
+          <label style="display:flex;gap:6px;align-items:center;padding-bottom:10px"><input type="checkbox" id="n-push" ${d.push.push ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Push на устройства</label><label style="display:flex;gap:6px;align-items:center;padding-bottom:10px"><input type="checkbox" id="n-tg" ${d.push.telegram ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Telegram владельцу</label><button class="btn" id="n-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div>
+        <div class="muted small" style="margin-top:8px">Устройств с включёнными push: ${d.push.total}, из них ваших: ${d.push.mine}. Включить на этом устройстве: ссылка «Уведомления на этом устройстве» под вашим именем в меню. iPhone: сначала добавить CRM на экран «Домой» (Поделиться → На экран «Домой»), затем открыть с экрана и включить. <button class="btn sm" id="n-test">Тест на мои устройства</button></div></div>
       <div class="card"><h3>Время заезда и выезда</h3><div class="muted small">Стандартное время дома. Подставляется везде, где в брони время не указано: план подготовки, чек-листы, напоминания гостю, документы.</div>
         <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Заезд с</label><input class="field" id="i-ci" type="time" value="${esc(d.settings.checkin_time || "14:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><div><label class="lbl">Выезд до</label><input class="field" id="i-co" type="time" value="${esc(d.settings.checkout_time || "11:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><button class="btn" id="i-times" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div></div>
       <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
@@ -711,6 +717,8 @@
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("co-save").addEventListener("click", async () => { try { await post("/company", { brand: val("co-brand"), tagline: val("co-tagline"), accent: val("co-accent"), legal: val("co-legal"), property: val("co-property"), signer: val("co-signer"), signer_title: val("co-signer_title"), name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); } catch (err) { toast(err.message); } });
     const et = $("em-test-go"); if (et) et.addEventListener("click", async (e) => { e.target.disabled = true; try { await post("/email", { to: val("em-test"), subject: "Nova Home CRM — тест", text: "Письмо из CRM работает." }); toast("Тестовое письмо отправлено"); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+    $("n-save").addEventListener("click", async () => { try { await post("/push/settings", { delay: parseInt(val("n-delay"), 10), escalate: parseInt(val("n-esc"), 10), push: $("n-push").checked, telegram: $("n-tg").checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("n-test").addEventListener("click", async () => { try { const r = await post("/push/test"); toast(r.sent ? `Отправлено на ${r.sent} устр.` : "У вас нет устройств с включёнными push"); } catch (err) { toast(err.message); } });
     $("i-times").addEventListener("click", async () => { try { await post("/integrations/settings", { checkin_time: val("i-ci"), checkout_time: val("i-co") }); S.times = [val("i-ci"), val("i-co")]; toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-rcc").addEventListener("change", async (e) => { try { await post("/integrations/settings", { rc_sync_clients: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
@@ -1127,11 +1135,40 @@
       try { const n = new Notification(`${m.channel} · ${m.title}`, { body: m.text || "", tag: "nh-" + m.chat_id }); n.onclick = () => { window.focus(); location.hash = `#messages/${m.chat_id}`; n.close(); }; } catch (e) { /* ignore */ }
     }
   }
-  $("notif-allow").addEventListener("click", (e) => {
+  // ---- push notifications on this device (phone or computer) ------------------------------
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  async function pushRegistration() { if (!("serviceWorker" in navigator)) return null; try { return await navigator.serviceWorker.register("/crm/sw.js", { scope: "/crm/" }); } catch (e) { return null; } }
+  async function pushState() {
+    const el = $("notif-state"); if (!el) return;
+    if (!("PushManager" in window) || !("serviceWorker" in navigator)) { el.textContent = isIOS && !standalone ? "· на iPhone: добавьте сайт на экран «Домой»" : "· не поддерживается"; return; }
+    const reg = await pushRegistration(); const sub = reg ? await reg.pushManager.getSubscription() : null;
+    el.textContent = sub ? "· включены ✓" : (Notification.permission === "denied" ? "· запрещены в браузере" : "");
+  }
+  async function enablePush() {
+    if (isIOS && !standalone) { toast("На iPhone: Поделиться → «На экран “Домой”», откройте CRM с экрана и нажмите снова"); return; }
+    if (!("PushManager" in window) || !("serviceWorker" in navigator)) { toast("Этот браузер не поддерживает push-уведомления"); return; }
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { toast("Уведомления запрещены в браузере"); return; }
+    const reg = await pushRegistration(); if (!reg) { toast("Не удалось запустить service worker"); return; }
+    const st = await get("/push");
+    const key = Uint8Array.from(atob(st.key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - st.key.length % 4) % 4)), (c) => c.charCodeAt(0));
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    await post("/push/subscribe", { subscription: sub.toJSON() });
+    toast("Уведомления на этом устройстве включены"); pushState();
+    try { await post("/push/test"); } catch (e) { /* ignore */ }
+  }
+  async function disablePush() {
+    const reg = await pushRegistration(); const sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (sub) { await post("/push/unsubscribe", { endpoint: sub.endpoint }); await sub.unsubscribe(); }
+    toast("Уведомления на этом устройстве выключены"); pushState();
+  }
+  $("notif-allow").addEventListener("click", async (e) => {
     e.preventDefault();
-    if (!("Notification" in window)) { toast("Браузер не поддерживает уведомления"); return; }
-    Notification.requestPermission().then((p) => toast(p === "granted" ? "Всплывающие уведомления включены" : "Уведомления запрещены в браузере"));
+    try { const reg = await pushRegistration(); const sub = reg ? await reg.pushManager.getSubscription() : null; if (sub && confirm("Выключить уведомления на этом устройстве?")) return disablePush(); await enablePush(); } catch (err) { toast(err.message); }
   });
+  window.NHPush = { enable: enablePush, disable: disablePush, state: pushState };
   try { $("notif-sound").checked = localStorage.getItem("nh_sound") !== "0"; } catch (e) { /* ignore */ }
   $("notif-sound").addEventListener("change", (e) => { try { localStorage.setItem("nh_sound", e.target.checked ? "1" : "0"); } catch (err) { /* ignore */ } });
   // ---- boot --------------------------------------------------------------------------
@@ -1166,6 +1203,7 @@
     $("me-mail").textContent = S.me.email;
     S.users = await get("/users").catch(() => []);
     try { const ss = await get("/session"); if (ss && ss.times) S.times = ss.times; } catch (e) { /* defaults stay */ }
+    pushState();
     navigate();
     badges();
   }
