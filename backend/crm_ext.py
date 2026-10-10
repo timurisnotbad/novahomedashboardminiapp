@@ -604,12 +604,30 @@ def auto_log(limit: int = 100) -> list[dict]:
 RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
 
 
-def fill(text: str, booking: dict | None, chat: dict | None) -> str:
+def guest_lang(chat: dict | None) -> str:
+    """Language code from the guest card (RU / EN / DE …), '' when unknown."""
+    if not chat:
+        return ""
+    try:
+        with database.get_conn() as conn:
+            r = conn.execute("SELECT lang FROM crm_clients WHERE chat_id = ? OR (? != '' AND phone LIKE ?) ORDER BY CASE WHEN chat_id = ? THEN 0 ELSE 1 END LIMIT 1",
+                             (chat["id"], chat.get("phone") or "", "%" + (chat.get("phone") or "")[-9:], chat["id"])).fetchone()
+        return (r["lang"] or "").strip().upper()[:2] if r else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+EN_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+
+def fill(text: str, booking: dict | None, chat: dict | None, lang: str = "ru") -> str:
+    en = lang == "en"
+
     def d(s):
         if not s:
             return ""
         dt = date.fromisoformat(s[:10])
-        return f"{dt.day} {RU_MONTHS[dt.month - 1]}"
+        return f"{dt.day} {EN_MONTHS[dt.month - 1]}" if en else f"{dt.day} {RU_MONTHS[dt.month - 1]}"
     name = ""
     if booking and booking.get("guest"):
         name = booking["guest"]
@@ -622,11 +640,19 @@ def fill(text: str, booking: dict | None, chat: dict | None) -> str:
     t_out = (b.get("departure_time") or dco)[:5]
     vals = {"имя": name, "объект": b.get("apartment") or "", "заезд": d(b.get("checkin")), "выезд": d(b.get("checkout")),
             "дата заезда": d(b.get("checkin")), "дата выезда": d(b.get("checkout")),
-            "время заезда": t_in, "время выезда": t_out, "заезд время": f"{d(b.get('checkin'))} в {t_in}" if b.get("checkin") else "",
-            "выезд время": f"{d(b.get('checkout'))} до {t_out}" if b.get("checkout") else "",
+            "время заезда": t_in, "время выезда": t_out, "заезд время": f"{d(b.get('checkin'))} {'at' if en else 'в'} {t_in}" if b.get("checkin") else "",
+            "выезд время": f"{d(b.get('checkout'))} {'by' if en else 'до'} {t_out}" if b.get("checkout") else "",
             "ночей": str(b.get("nights") or ""), "сумма": f"{b.get('amount') or 0:g}", "долг": f"{b.get('debt') or 0:g}",
             "оплачено": f"{b.get('paid') or 0:g}", "телефон": ("+" + b["phone"]) if b.get("phone") else ""}
-    return re.sub(r"\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}", lambda m: vals.get(m.group(1), m.group(0)), text)
+    apt = (b.get("apartment") or "").strip().upper()
+    vals["блок"] = (f"Block {apt[0]}" if en else f"блок {apt[0]}") if apt[:1] in ("A", "B") else ""
+    try:
+        from . import docs
+        co = docs.company()
+        vals["адрес"], vals["телефон компании"] = co.get("address") or "", co.get("phone") or ""
+    except Exception:  # noqa: BLE001
+        vals["адрес"], vals["телефон компании"] = "", ""
+    return re.sub(r"\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон|блок|адрес|телефон компании)\}", lambda m: vals.get(m.group(1), m.group(0)), text)
 
 
 def _log(conn, rule, booking_id, chat, text, status, error, dedupe) -> bool:
@@ -777,7 +803,11 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
     chat, why = (None, "у задачи нет брони")
     if b:
         chat, why = _chat_for_booking(b, {"channel": "auto", "only_if_chat": True})
-    text = fill(t["auto_text"], b, chat)
+    # the guest's language: EN text for everyone who is not RU / UZ (card «язык», else chat)
+    text_src, lang = t["auto_text"], "ru"
+    if t["auto_text_en"] and chat and guest_lang(chat) not in ("RU", "UZ", ""):
+        text_src, lang = t["auto_text_en"], "en"
+    text = fill(text_src, b, chat, lang)
     status, error = "sent", None
     if not chat:
         status, error = "skipped", why or "нет чата с гостем"

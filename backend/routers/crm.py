@@ -738,24 +738,37 @@ def booking_checklist(bid: int, payload: dict | None = None, user: dict = Depend
 
 @router.get("/checklist")
 def checklist_settings(user: dict = Depends(current_user)):  # noqa: B008
-    text = crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)
-    return {"text": text, "default": crm.DEFAULT_CHECKLIST, "items": crm.parse_checklist(text),
-            "auto": crm.get_setting("auto_checklist", "1") == "1"}
+    return {"steps": crm.steps(), "default": crm.DEFAULT_STEPS, "auto": crm.get_setting("auto_checklist", "1") == "1",
+            "vars": ["имя", "объект", "блок", "заезд время", "выезд время", "время заезда", "время выезда", "дата заезда", "дата выезда", "ночей", "сумма", "долг", "оплачено", "телефон", "адрес", "телефон компании"]}
 
 
 class ChecklistIn(BaseModel):
-    text: str | None = None
+    steps: list | None = None
     auto: bool | None = None
+    reset: bool | None = None
 
 
 @router.post("/checklist")
 def set_checklist(payload: ChecklistIn, user: dict = Depends(admin_user)):  # noqa: B008
-    if payload.text is not None:
-        crm.set_setting("booking_checklist", payload.text.strip())
+    if payload.reset:
+        crm.set_setting("booking_steps", "")
+        crm.set_setting("booking_checklist", "")
+    elif payload.steps is not None:
+        crm.save_steps(payload.steps)
     if payload.auto is not None:
         crm.set_setting("auto_checklist", "1" if payload.auto else "0")
-    text = crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)
-    return {"ok": True, "items": crm.parse_checklist(text)}
+    return {"ok": True, "steps": crm.steps()}
+
+
+@router.post("/checklist/preview")
+def checklist_preview_text(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    """How a step's message reads for a real booking (the next check-in by default)."""
+    with database.get_conn() as conn:
+        bid = payload.get("booking_id")
+        r = conn.execute("SELECT * FROM bookings WHERE id = ?", (bid,)).fetchone() if bid else conn.execute(
+            "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date >= date('now') ORDER BY begin_date LIMIT 1").fetchone()
+    b = crm._booking_out(dict(r)) if r else None  # noqa: SLF001
+    return {"text": crm_ext.fill(str(payload.get("text") or ""), b, None), "booking": b and {"id": b["id"], "apartment": b["apartment"], "guest": b["guest"]}}
 
 
 @router.patch("/bookings/{bid}")
@@ -975,7 +988,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
                      "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
                      "checkin_time": crm.default_times()[0], "checkout_time": crm.default_times()[1],
                      "auto_checklist": crm.get_setting("auto_checklist", "1") == "1",
-                     "checklist": crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST)},
+                     "steps": crm.steps()},
     }
 
 

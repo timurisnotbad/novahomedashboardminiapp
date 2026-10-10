@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=64&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=65&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -722,11 +722,11 @@
         <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Заезд с</label><input class="field" id="i-ci" type="time" value="${esc(d.settings.checkin_time || "14:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><div><label class="lbl">Выезд до</label><input class="field" id="i-co" type="time" value="${esc(d.settings.checkout_time || "11:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><button class="btn" id="i-times" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div></div>
       <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
-      <div class="card"><h3>Чек-лист брони</h3>
-        <div class="muted small">Шаблон задач по каждой брони (кнопка «Чек-лист» в карточке брони или автоматически для новых броней). Одна строка — одна задача: <span class="mono">Текст | заезд -1 15:00 | сообщение гостю</span>. Точка отсчёта: <b>заезд</b>, <b>выезд</b>, <b>сегодня</b> или <b>сразу</b>; потом сдвиг в днях и время (без времени — время заезда/выезда из брони). Если после второй | написан текст, это <b>сообщение</b>: в назначенное время CRM сама отправит его гостю в чат (WhatsApp или Telegram, привязанный к брони или найденный по номеру) и закроет задачу. Нет чата или ошибка — задача остаётся менеджеру с кнопкой «Отправить сейчас». Переменные: {имя} {объект} {заезд время} {выезд время} {время заезда} {время выезда} {ночей} {сумма} {долг}.</div>
-        <textarea class="field mono" id="i-cl" rows="16" style="margin-top:8px" ${S.me.role !== "admin" ? "disabled" : ""}>${esc(d.settings.checklist || "")}</textarea>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><button class="btn" id="i-cl-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить шаблон</button><button class="btn link" id="i-cl-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартный</button>
-          <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать чек-лист автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
+      <div class="card" id="steps-card"><h3>Этапы заезда гостя</h3>
+        <div class="muted small">Сценарий по каждой брони: что сделать и что написать гостю на каждом этапе. Шаги с текстом CRM отправляет гостю сама в назначенное время (в чат WhatsApp / Telegram / Booking, привязанный к брони или найденный по номеру) и закрывает задачу; шаги без текста — задачи менеджеру. Гостю с языком не RU/UZ в карточке уходит английский вариант. Переменные: <span class="mono">{имя} {объект} {блок} {заезд время} {выезд время} {время заезда} {время выезда} {ночей} {сумма} {долг} {телефон компании} {адрес}</span>. Текст в [квадратных скобках] — заполните один раз: ключи, Wi-Fi, ссылка на отзыв.</div>
+        <div id="steps-list" style="margin-top:10px"></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap"><button class="btn" id="steps-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить этапы</button><button class="btn sm" id="steps-add" ${S.me.role !== "admin" ? "disabled" : ""}>＋ Добавить этап</button><button class="btn link" id="steps-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартные</button>
+          <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать этапы автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
       <div class="card"><h3>Telegram Mini App</h3><div class="small ${d.telegram.configured ? "ok" : "bad"}">${d.telegram.configured ? "Бот настроен" : "BOT_TOKEN не задан"}</div><div class="muted small">${esc(d.telegram.webapp_url || "")}</div></div>
       <div class="card"><h3>Healthchecks.io</h3><div class="small ${d.healthchecks.configured ? "ok" : "muted"}">${d.healthchecks.configured ? "Подключён" : "Не настроен — уведомления о выключенном компьютере не придут"}</div></div>`;
     $("i-sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); navigate(); } catch (err) { toast(err.message); navigate(); } });
@@ -739,8 +739,7 @@
     $("i-rcc").addEventListener("change", async (e) => { try { await post("/integrations/settings", { rc_sync_clients: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
-    $("i-cl-save").addEventListener("click", async () => { try { const r = await post("/integrations/settings", { checklist: $("i-cl").value }); toast(`Сохранено: ${r.items.length} задач в чек-листе`); } catch (err) { toast(err.message); } });
-    $("i-cl-reset").addEventListener("click", async () => { try { const c = await get("/checklist"); $("i-cl").value = c.default; await post("/integrations/settings", { checklist: c.default }); toast("Стандартный шаблон восстановлен"); } catch (err) { toast(err.message); } });
+    stepsEditor(d.settings.steps || []);
   };
 
   // ---- quick commands ------------------------------------------------------------
@@ -990,6 +989,46 @@
       const dd = e.target.closest("[data-ddel]"); if (dd) { if (confirm("Удалить документ?")) { await del(`/documents/${dd.dataset.ddel}`); renderBookingDocs(b); } return; }
       const dm = e.target.closest("[data-dmail]"); if (dm) { const d = list.find((x) => x.id === parseInt(dm.dataset.dmail, 10)); emailForm({ to: (b.client && b.client.email) || d.data.email || "", booking_id: b.id, client_id: b.client ? b.client.id : null, doc: d, subject: `${d.title} ${d.number} · Nova Home`, text: `${(b.guest || "").split(" ")[0] ? (b.guest || "").split(" ")[0] + ", " : ""}${d.lang === "en" ? "hello!\n\nPlease find attached: " : "здравствуйте!\n\nВо вложении: "}${d.title} ${d.number}.\n${b.apartment} · ${dShort(b.checkin)} – ${dShort(b.checkout)}\n\n${d.lang === "en" ? "Best regards,\nNova Home" : "С уважением,\nNova Home"}`, after: () => renderBookingDocs(b) }); }
     };
+  }
+
+  // ---- Этапы заезда гостя: the step editor on the Integrations page -----------------
+  function stepsEditor(initial) {
+    const ro = S.me.role !== "admin";
+    let steps = initial.map((x) => Object.assign({}, x));
+    const ANCH = [["now", "сразу при создании"], ["checkin", "заезд"], ["checkout", "выезд"], ["today", "сегодня"]];
+    const when = (st) => st.anchor === "now" ? "сразу после создания брони" : `${st.anchor === "checkin" ? "заезд" : st.anchor === "checkout" ? "выезд" : "сегодня"}${st.offset ? (st.offset > 0 ? " +" : " ") + st.offset + " дн." : ""}${st.time ? " в " + st.time : st.anchor === "today" ? "" : " (время из брони)"}`;
+    const render = () => {
+      $("steps-list").innerHTML = steps.map((st, i) => `<div class="step ${st.enabled ? "" : "off"}" data-i="${i}">
+        <div class="step__head"><span class="step__n">${i + 1}</span><input class="field step__title" data-f="title" value="${esc(st.title)}" placeholder="Что сделать" ${ro ? "disabled" : ""} />
+          <span class="step__tools"><button class="btn sm" data-up="${i}" title="Выше" ${ro || !i ? "disabled" : ""}>↑</button><button class="btn sm" data-down="${i}" title="Ниже" ${ro || i === steps.length - 1 ? "disabled" : ""}>↓</button><label class="step__on" title="Включён"><input type="checkbox" data-f="enabled" ${st.enabled ? "checked" : ""} ${ro ? "disabled" : ""} /></label><button class="btn sm danger" data-del="${i}" title="Удалить" ${ro ? "disabled" : ""}>✕</button></span></div>
+        <div class="step__when"><span class="muted small">Когда:</span><select class="field" data-f="anchor" ${ro ? "disabled" : ""}>${ANCH.map((a) => `<option value="${a[0]}" ${a[0] === st.anchor ? "selected" : ""}>${a[1]}</option>`).join("")}</select>
+          <input class="field" data-f="offset" type="number" min="-30" max="30" value="${st.offset || 0}" title="Сдвиг в днях: −1 = за день до, +1 = через день" ${ro || st.anchor === "now" ? "disabled" : ""} /><span class="muted small">дн.</span>
+          <input class="field" data-f="time" type="time" value="${esc(st.time || "")}" title="Пусто — время заезда/выезда из брони" ${ro || st.anchor === "now" ? "disabled" : ""} /><span class="muted small step__hint">→ ${esc(when(st))}</span></div>
+        <div class="step__msgs"><div><label class="lbl">Сообщение гостю (RU) <span class="muted">— пусто: просто задача менеджеру</span></label><textarea class="field" data-f="message" rows="${st.message ? 4 : 2}" placeholder="Пусто — CRM ничего не отправляет, задача остаётся менеджеру" ${ro ? "disabled" : ""}>${esc(st.message || "")}</textarea></div>
+          <div><label class="lbl">English <span class="muted">— для гостей с другим языком</span></label><textarea class="field" data-f="message_en" rows="${st.message ? 4 : 2}" placeholder="Если пусто — уйдёт русский текст" ${ro ? "disabled" : ""}>${esc(st.message_en || "")}</textarea></div></div>
+        ${st.message ? `<div class="step__prev"><button class="btn link sm" data-prev="${i}">Как это прочитает гость →</button><span class="small muted" id="step-prev-${i}"></span></div>` : ""}
+      </div>`).join("") || '<p class="muted">Этапов нет — добавьте первый.</p>';
+    };
+    const read = () => {
+      $("steps-list").querySelectorAll(".step").forEach((el) => {
+        const st = steps[parseInt(el.dataset.i, 10)];
+        el.querySelectorAll("[data-f]").forEach((f) => { st[f.dataset.f] = f.type === "checkbox" ? f.checked : f.type === "number" ? parseInt(f.value || "0", 10) : f.value; });
+      });
+    };
+    render();
+    $("steps-list").addEventListener("change", (e) => { read(); if (e.target.dataset.f === "anchor" || e.target.dataset.f === "enabled" || e.target.dataset.f === "offset" || e.target.dataset.f === "time") render(); });
+    $("steps-list").addEventListener("click", async (e) => {
+      const up = e.target.closest("[data-up]"), dn = e.target.closest("[data-down]"), del = e.target.closest("[data-del]"), pv = e.target.closest("[data-prev]");
+      if (!up && !dn && !del && !pv) return;
+      read();
+      if (up) { const i = +up.dataset.up; [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; render(); }
+      if (dn) { const i = +dn.dataset.down; [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]]; render(); }
+      if (del) { if (confirm("Удалить этап «" + steps[+del.dataset.del].title + "»?")) { steps.splice(+del.dataset.del, 1); render(); } }
+      if (pv) { const i = +pv.dataset.prev; try { const r = await post("/checklist/preview", { text: steps[i].message }); $("step-prev-" + i).textContent = (r.booking ? `[${r.booking.apartment}, ${r.booking.guest}] ` : "") + r.text; } catch (err) { toast(err.message); } }
+    });
+    $("steps-add").addEventListener("click", () => { read(); steps.push({ title: "", anchor: "checkin", offset: 0, time: "", enabled: true, message: "", message_en: "" }); render(); $("steps-list").querySelector(".step:last-child .step__title").focus(); });
+    $("steps-save").addEventListener("click", async () => { read(); try { const r = await post("/checklist", { steps }); steps = r.steps; render(); toast(`Сохранено: ${r.steps.length} этапов`); } catch (err) { toast(err.message); } });
+    $("steps-reset").addEventListener("click", async () => { if (!confirm("Вернуть стандартные этапы Nova Home? Ваши правки будут потеряны.")) return; try { const r = await post("/checklist", { reset: true }); steps = r.steps; render(); toast("Стандартные этапы восстановлены"); } catch (err) { toast(err.message); } });
   }
 
   // «Задачи по брони»: the island inside the booking card — checklist + own tasks

@@ -380,3 +380,19 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 
 .task__msg { font-size:12.5px; color:var(--label-2); background:#F9FAFB; border-left:2px solid var(--blue); padding:4px 8px; margin:4px 0; white-space:pre-wrap; border-radius:0 6px 6px 0; }
 .task__title .btn.sm { padding:2px 8px; font-size:12px; vertical-align:middle; margin-left:4px; }
+
+/* Этапы заезда гостя — the step editor */
+.step { border:1px solid var(--sep); border-radius:12px; padding:10px 12px; margin-bottom:10px; background:var(--card); }
+.step.off { opacity:.55; }
+.step__head { display:flex; gap:8px; align-items:center; }
+.step__n { width:26px; height:26px; border-radius:50%; background:var(--blue); color:#fff; font-weight:700; font-size:13px; display:grid; place-items:center; flex:none; }
+.step__title { flex:1; min-width:0; font-weight:600; margin:0; }
+.step__tools { display:flex; gap:4px; align-items:center; flex:none; }
+.step__on { display:flex; align-items:center; padding:0 4px; }
+.step__when { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+.step__when .field { margin:0; width:auto; } .step__when input[type=number] { width:70px; } .step__when input[type=time] { width:110px; }
+.step__msgs { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px; }
+.step__msgs textarea { margin:0; font-size:13.5px; line-height:1.4; }
+.step__prev { margin-top:6px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+.btn.danger { color:#B91C1C; }
+@media (max-width: 760px) { .step__msgs { grid-template-columns:1fr; } .step__when .step__hint { flex-basis:100%; } }

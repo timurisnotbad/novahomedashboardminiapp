@@ -170,7 +170,7 @@ def init_db() -> None:
         if "fields" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
         tcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_tasks)").fetchall()]
-        for col in ("auto_text", "auto_status"):
+        for col in ("auto_text", "auto_status", "auto_text_en"):
             if col not in tcols:
                 conn.execute(f"ALTER TABLE crm_tasks ADD COLUMN {col} TEXT")  # noqa: S608
         if "booking_id" not in tcols:
@@ -1099,6 +1099,71 @@ DEFAULT_CHECKLIST = """# Одна строка = одна задача:  Тек�
 Поблагодарить и пожелать хорошей дороги | выезд 0 11:30 | {имя}, спасибо, что выбрали Nova Home! Хорошей дороги. Если что-то было не так — напишите нам, нам важно это знать.
 Попросить отзыв | выезд +1 15:00 | {имя}, будем очень благодарны за отзыв о проживании на площадке, где вы бронировали, и в Google Картах: ... Это помогает нам становиться лучше. До новых встреч!"""
 
+# ---- stages of a stay (v2): structured steps, RU + EN text, stored as JSON ----
+# Real Nova Home data (Nest One): the texts below are the defaults the owner tunes
+# in Интеграции → «Этапы заезда гостя». [в квадратных скобках] = fill in once.
+DEFAULT_STEPS = [
+    {"title": "Подтвердить бронь гостю", "anchor": "now", "offset": 0, "time": "", "enabled": True,
+     "message": "{имя}, здравствуйте! Это Nova Home Apartments (Nest One, Ташкент). Ваша бронь подтверждена: {объект}, заезд {заезд время}, выезд {выезд время}, {ночей} ноч. Если появятся вопросы — пишите сюда, мы на связи 24/7.",
+     "message_en": "Hello {имя}! This is Nova Home Apartments (Nest One, Tashkent). Your booking is confirmed: {объект}, check-in {заезд время}, check-out {выезд время}, {ночей} night(s). If you have any questions, just message us here — we are available 24/7."},
+    {"title": "Узнать время приезда", "anchor": "checkin", "offset": -1, "time": "15:00", "enabled": True,
+     "message": "{имя}, добрый день! Завтра ждём вас в {объект}. Подскажите, во сколько примерно приедете и откуда (самолёт, поезд, авто)? Заезд с {время заезда}; если нужно раньше — напишите, постараемся подстроиться. Нужен ли трансфер из аэропорта / с вокзала?",
+     "message_en": "Hello {имя}! We are expecting you tomorrow at {объект}. What time will you arrive, and how (plane, train, car)? Check-in starts at {время заезда}; if you need an earlier check-in, let us know and we will try to arrange it. Do you need an airport / railway station transfer?"},
+    {"title": "Отправить инструкцию по заселению", "anchor": "checkin", "offset": 0, "time": "10:00", "enabled": True,
+     "message": "{имя}, инструкция по заселению в {объект}:\n📍 Nest One, Ташкент — {блок}.\n🅰️ Блок A: вход со стороны улицы Ислама Каримова, рядом с табличкой NOVA HOME.\n🅱️ Блок B: западное здание комплекса, вход со стороны улицы Янги Тошкент.\n🔑 Ключи и карта доступа: [где получить / код сейфа].\n📶 Wi-Fi: [название сети] / [пароль].\n⏰ Заезд с {время заезда}. Если что-то не получается — звоните {телефон компании}, поможем.",
+     "message_en": "{имя}, your check-in instructions for {объект}:\n📍 Nest One, Tashkent — {блок}.\n🅰️ Block A: entrance from Islam Karimov Street, next to the NOVA HOME sign.\n🅱️ Block B: western building of the complex, entrance from Yangi Toshkent Street.\n🔑 Keys and access card: [where to collect / safe code].\n📶 Wi-Fi: [network] / [password].\n⏰ Check-in from {время заезда}. If anything goes wrong, call {телефон компании} — we will help."},
+    {"title": "Принять паспорт и заполнить данные гостя", "anchor": "checkin", "offset": 0, "time": "", "enabled": True, "message": "", "message_en": ""},
+    {"title": "Принять оплату (остаток {долг} $)", "anchor": "checkin", "offset": 0, "time": "", "enabled": True, "message": "", "message_en": ""},
+    {"title": "Спросить, как прошло заселение", "anchor": "checkin", "offset": 0, "time": "19:00", "enabled": True,
+     "message": "{имя}, как прошло заселение? Всё ли в порядке в квартире? Напомню, что в Nest One для гостей: смотровая площадка на 48 этаже блока A (10:00–20:00), спортзал на 28 этаже блока A (6:00–20:00), парк на 2 этаже блока A — круглосуточно, вход по карте от лифта. Если что-то нужно — напишите, решим.",
+     "message_en": "{имя}, how was your check-in? Is everything fine in the apartment? A reminder of the Nest One facilities: observation deck on the 48th floor of Block A (10 AM – 8 PM), gym on the 28th floor of Block A (6 AM – 8 PM), private park on the 2nd floor of Block A — open 24/7; use your elevator access card. If you need anything, just message us."},
+    {"title": "Напомнить о выезде", "anchor": "checkout", "offset": -1, "time": "20:00", "enabled": True,
+     "message": "{имя}, напоминаем: завтра выезд до {время выезда}. Ключи и карту доступа оставьте, пожалуйста, [где оставить]. Если нужно задержаться — напишите заранее, посмотрим, что можно сделать. Нужен ли трансфер в аэропорт?",
+     "message_en": "{имя}, a reminder: check-out tomorrow by {время выезда}. Please leave the keys and the access card [where to leave them]. If you need a late check-out, let us know in advance and we will see what we can do. Do you need a transfer to the airport?"},
+    {"title": "Проверить квартиру после выезда и вернуть депозит", "anchor": "checkout", "offset": 0, "time": "", "enabled": True, "message": "", "message_en": ""},
+    {"title": "Поблагодарить и попросить отзыв", "anchor": "checkout", "offset": 0, "time": "13:00", "enabled": True,
+     "message": "{имя}, спасибо, что выбрали Nova Home! Хорошей дороги. Будем очень благодарны за отзыв на площадке, где вы бронировали, и в Google Картах: [ссылка]. Если что-то было не так — напишите нам, нам важно это знать. До новых встреч!",
+     "message_en": "{имя}, thank you for staying with Nova Home! Have a safe trip. We would be very grateful for a review on the platform you booked with and on Google Maps: [link]. If anything was not right, please tell us — it matters to us. See you again!"},
+]
+
+
+def steps() -> list[dict]:
+    """The stages of a stay as configured (JSON setting), else the legacy text
+    template converted, else the defaults."""
+    raw = get_setting("booking_steps", "")
+    if raw:
+        try:
+            items = json.loads(raw)
+            if isinstance(items, list):
+                return [_step_norm(x) for x in items if isinstance(x, dict) and (x.get("title") or "").strip()]
+        except ValueError:
+            pass
+    legacy = get_setting("booking_checklist", "")
+    if legacy and legacy.strip() != DEFAULT_CHECKLIST.strip() and legacy.strip() != OLD_CHECKLIST_V42.strip():
+        return [_step_norm({**it, "message": it.get("message", "")}) for it in parse_checklist(legacy)]
+    return [dict(x) for x in DEFAULT_STEPS]
+
+
+def _step_norm(x: dict) -> dict:
+    a = str(x.get("anchor") or "checkin").lower()
+    anchor = "checkin" if a in ("заезд", "checkin") else "checkout" if a in ("выезд", "checkout") else "now" if a in ("сразу", "now") else "today" if a in ("сегодня", "today") else "checkin"
+    t = str(x.get("time") or "").strip()
+    if t and not re.match(r"^\d{1,2}:\d{2}$", t):
+        t = ""
+    try:
+        off = int(x.get("offset") or 0)
+    except (TypeError, ValueError):
+        off = 0
+    return {"title": str(x.get("title") or "").strip()[:200], "anchor": anchor, "offset": max(-30, min(30, off)), "time": t,
+            "enabled": bool(x.get("enabled", True)), "message": str(x.get("message") or "").strip()[:3000], "message_en": str(x.get("message_en") or "").strip()[:3000]}
+
+
+def save_steps(items: list) -> list[dict]:
+    norm = [_step_norm(x) for x in items if isinstance(x, dict) and (x.get("title") or "").strip()]
+    set_setting("booking_steps", json.dumps(norm, ensure_ascii=False))
+    return norm
+
+
 _CL_RE = re.compile(r"^(?P<title>.+?)\s*\|\s*(?P<anchor>заезд|выезд|сегодня|сразу|checkin|checkout|today|now)\s*(?P<off>[+-]?\d+)?\s*(?P<time>\d{1,2}:\d{2})?\s*(?:\|\s*(?P<msg>.+))?$", re.I)
 
 
@@ -1121,7 +1186,9 @@ def parse_checklist(text: str) -> list[dict]:
 
 
 def checklist_preview(text: str | None = None) -> list[dict]:
-    return parse_checklist(get_setting("booking_checklist", DEFAULT_CHECKLIST) if text is None else text)
+    if text is not None:
+        return parse_checklist(text)
+    return [x for x in steps() if x.get("enabled", True)]
 
 
 def _cl_due(item: dict, b: dict) -> str:
@@ -1157,8 +1224,8 @@ def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force:
             key = f"cl:{bid}:{hashlib.sha1(it['title'].lower().encode()).hexdigest()[:10]}"
             title = crm_ext.fill(it["title"], bo, None)
             cur = conn.execute(
-                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id, auto_text) "
-                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)", (title, _cl_due(it, b), assignee_uid or uid, cid, uid, _now(), key, bid, it.get("message") or None))
+                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id, auto_text, auto_text_en) "
+                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)", (title, _cl_due(it, b), assignee_uid or uid, cid, uid, _now(), key, bid, it.get("message") or None, it.get("message_en") or None))
             n += cur.rowcount
         conn.execute("INSERT OR REPLACE INTO crm_booking_checklist (booking_id, created_by, created_at, n) VALUES (?, ?, ?, ?)",
                      (bid, uid, _now(), n))
