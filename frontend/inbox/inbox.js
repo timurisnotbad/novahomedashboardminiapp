@@ -169,6 +169,7 @@
     const b = $("conv-booking");
     b.innerHTML = `<div class="ib-booking__row"><span>${c.booking ? bookingText(c.booking, true) : '<span class="ib-muted">Бронь не привязана</span>'}</span><button class="ib-link" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : "Привязать бронь"}</button></div>` + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
+    $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
     loadStatuses();
     const stNames = (statuses || []).map((s) => s.name);
@@ -748,6 +749,14 @@
       }
     });
     $("rename").addEventListener("click", () => openGuestEdit());
+    $("receipt").addEventListener("click", async () => {
+      if (!S.open) return;
+      try {
+        const r = await req(`/chats/${S.open.id}/receipt`, { method: "POST" });
+        if (r.chat) { S.chats.set(r.chat.id, r.chat); S.open = r.chat; renderHead(); renderList(); }
+        toast(r.sent ? "Гость увидит, что сообщения прочитаны" : "Нечего отмечать");
+      } catch (err) { toast(err.message); }
+    });
 
     $("msgs").addEventListener("click", (e) => {
       if (e.target.id === "older") { loadOlder(); return; }

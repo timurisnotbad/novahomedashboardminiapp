@@ -177,7 +177,8 @@ textarea.ib-field { resize:vertical; min-height:80px; }
   .ib-back { display:grid; width:32px; height:32px; }
   /* header: row 1 — back, name + channel/phone, pencil; row 2 — status, assignee */
   .ib-conv__head { display:grid; grid-template-columns:32px 1fr 1fr 32px; grid-template-areas:"back who who pen" "status status who2 who2"; gap:6px 8px; padding:8px 10px; align-items:center; }
-  .ib-back { grid-area:back; } .ib-conv__who { grid-area:who; min-width:0; } #rename { grid-area:pen; width:32px; height:32px; }
+  .ib-conv__head { grid-template-columns:32px 1fr 32px 32px; grid-template-areas:"back who rcpt pen" "status status who2 who2"; }
+  .ib-back { grid-area:back; } .ib-conv__who { grid-area:who; min-width:0; } #rename { grid-area:pen; width:32px; height:32px; } #receipt { grid-area:rcpt; width:32px; height:32px; }
   #cl-status { grid-area:status; } #assignee { grid-area:who2; }
   #cl-status, #assignee { max-width:none; min-width:0; width:100%; font-size:13px; padding:5px 8px; }
   .ib-conv__title { font-size:15px; }
@@ -215,3 +216,8 @@ textarea.ib-field { resize:vertical; min-height:80px; }
 .ib-2col { display:grid; grid-template-columns:1fr 1fr; gap:0 8px; }
 .ib-2col > div { min-width:0; }
 @media (max-width: 480px) { .ib-2col { grid-template-columns:1fr; } }
+
+/* «прочитано» for the guest: blue when the guest still sees us as not having read */
+.ib-receipt { color:var(--label-2); position:relative; }
+.ib-receipt::after { content:""; position:absolute; top:7px; right:7px; width:8px; height:8px; border-radius:50%; background:var(--tint); }
+.ib-chat__eye { font-size:11px; color:var(--label-2); margin-left:4px; }

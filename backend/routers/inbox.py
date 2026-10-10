@@ -112,6 +112,13 @@ def read(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
     return {"ok": True}
 
 
+@router.post("/chats/{chat_id}/receipt")
+def receipt(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    """«Прочитано» for the guest: read receipt to WhatsApp / Telegram."""
+    sent = inbox.send_receipt(chat_id)
+    return {"ok": True, "sent": sent, "chat": inbox.get_chat(chat_id)}
+
+
 @router.patch("/chats/{chat_id}")
 def patch_chat(chat_id: int, payload: ChatPatch, user: dict = Depends(inbox_user)):  # noqa: B008
     fields = payload.model_dump(exclude_unset=True)

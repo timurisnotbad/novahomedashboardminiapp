@@ -129,6 +129,8 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_msg_chat_at ON inbox_messages(chat_id, at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_chat_last ON inbox_chats(last_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inbox_chat_phone ON inbox_chats(phone)")
+        if "receipt_pending" not in [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]:
+            conn.execute("ALTER TABLE inbox_chats ADD COLUMN receipt_pending INTEGER DEFAULT 0")  # guest not yet shown «read»
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -521,6 +523,8 @@ def _touch_chat(conn, chat_id: int, at: str, direction: str, kind: str, text: st
     else:
         conn.execute("UPDATE inbox_chats SET unread = unread + ?, rev = ? WHERE id = ?",
                      (unread_inc, rev, chat_id))
+    if direction == "in" and unread_inc:
+        conn.execute("UPDATE inbox_chats SET receipt_pending = 1 WHERE id = ?", (chat_id,))
 
 
 def store_message(m: dict, notify: bool = False, history: bool = False) -> dict | None:
@@ -678,16 +682,28 @@ def bridge_logout() -> None:
 
 
 def mark_read(chat_id: int) -> None:
+    """Opening a chat clears OUR unread counter only. The guest keeps seeing the
+    messages as unread until someone answers or presses «прочитано» (send_receipt):
+    a colleague looking at a chat must not read as «we saw it and ignore you»."""
     with database.get_conn() as conn:
-        r = conn.execute("SELECT jid, unread, channel FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
+        r = conn.execute("SELECT unread FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
         if not r or not r["unread"]:
             return
-        ids = [x["wa_id"] for x in conn.execute(
-            "SELECT wa_id FROM inbox_messages WHERE chat_id = ? AND direction = 'in' "
-            "ORDER BY id DESC LIMIT ?", (chat_id, min(int(r["unread"]), 30))).fetchall()]
         conn.execute("UPDATE inbox_chats SET unread = 0, rev = ? WHERE id = ?", (_bump(conn), chat_id))
-    # read receipts for the guest — best effort, in the background
+
+
+def send_receipt(chat_id: int) -> bool:
+    """Tell the guest's messenger we read the chat (two blue ticks). Called when
+    we answer, or by the «✓✓» button in the chat header."""
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT jid, channel, receipt_pending FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
+        if not r or not r["receipt_pending"]:
+            return False
+        ids = [x["wa_id"] for x in conn.execute(
+            "SELECT wa_id FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 30", (chat_id,)).fetchall()]
+        conn.execute("UPDATE inbox_chats SET receipt_pending = 0, rev = ? WHERE id = ?", (_bump(conn), chat_id))
     threading.Thread(target=_safe_read, args=(r["channel"] or "wa", r["jid"], ids), daemon=True).start()
+    return True
 
 
 def _safe_read(channel, jid, ids) -> None:
@@ -718,6 +734,10 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
     text = (text or "").strip()
     if not text and not media:
         raise BridgeError("Пустое сообщение")
+    try:
+        send_receipt(chat_id)  # answering = we have read it
+    except Exception:  # noqa: BLE001
+        pass
     kind = "text"
     if media:
         m = (mime or "")
