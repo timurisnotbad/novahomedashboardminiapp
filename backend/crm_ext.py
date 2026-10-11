@@ -224,6 +224,13 @@ def link_chat(bid: int, chat_id: int, who: str) -> None:
         conn.execute("UPDATE inbox_chats SET rev = (SELECT rev FROM inbox_rev WHERE id = 1) + 1 WHERE id = ?", (chat_id,))
         conn.execute("UPDATE inbox_rev SET rev = rev + 1 WHERE id = 1")
     inbox._pin_cache["at"] = 0  # noqa: SLF001 — chat header shows the booking right away
+    # the chat's own deal now carries this booking: if the booking already had a
+    # deal (another chat of the same guest), the two become one right away
+    try:
+        from . import crm_amo
+        crm_amo.merge_duplicate_deals()
+    except Exception:  # noqa: BLE001
+        logger.exception("deal merge after link failed")
 
 
 def unlink_chat(bid: int, chat_id: int) -> None:
