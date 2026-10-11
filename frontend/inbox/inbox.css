@@ -260,3 +260,7 @@ textarea.ib-field { resize:vertical; min-height:80px; }
 .ib-lb__nav { position:absolute; top:50%; transform:translateY(-50%); width:44px; height:44px; border-radius:50%; background:rgba(255,255,255,.14); color:#fff; border:none; font-size:22px; cursor:pointer; display:grid; place-items:center; }
 .ib-lb__nav.prev { left:10px; } .ib-lb__nav.next { right:10px; } .ib-lb__nav:disabled { opacity:.25; }
 .ib-lb__cnt { position:absolute; bottom:calc(14px + env(safe-area-inset-bottom, 0px)); left:0; right:0; text-align:center; color:#fff; font-size:13px; opacity:.8; }
+.ib-eta { border:1px solid var(--sep); background:var(--card); border-radius:999px; padding:3px 10px; font-size:12px; font-weight:600; color:var(--tint-text); cursor:pointer; margin-left:auto; }
+.ib-eta.set { background:var(--tint-soft); border-color:transparent; }
+.ib-presets { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 10px; } .ib-presets .ib-btn { padding:6px 10px; font-size:14px; }
+.ib-btn.danger { color:#B91C1C; }

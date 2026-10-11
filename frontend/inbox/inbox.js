@@ -173,7 +173,9 @@
     const stayText = stay ? `<span class="ib-stay">Booking.com${stayDates ? ": " + stayDates : ""}${roomShort ? " · " + esc(roomShort) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
     const bkBtn = c.channel === "bk" ? `<button class="ib-link ib-bkinfo" id="bk-info" title="Все данные гостя и брони из экстранета">ℹ️ Данные Booking</button>` : "";
     const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
-    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    const today = new Date().toISOString().slice(0, 10);
+    const etaChip = c.booking && c.booking.begin >= today ? `<button class="ib-eta ${c.booking.eta ? "set" : ""}" id="bk-eta" title="Во сколько гость приедет — попадёт в утренний список для горничных">🕒 ${c.booking.eta ? "приедет в " + esc(c.booking.eta) + (c.booking.eta_note ? " · " + esc(c.booking.eta_note) : "") : "время приезда?"}</button>` : "";
+    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
     $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
@@ -694,6 +696,33 @@
     };
   }
 
+  // ---- «приедет в …»: the time the guest told us, for the housekeepers' list ---------------
+  function openEta() {
+    const c = S.open && (S.chats.get(S.open.id) || S.open); const b = c && c.booking;
+    if (!b) return;
+    $("modal").classList.remove("hidden");
+    const presets = ["12:00", "14:00", "15:00", "16:00", "18:00", "20:00", "22:00", "00:00"];
+    $("modal-card").innerHTML = `<h3>Во сколько приедет гость</h3>
+      <p class="ib-muted" style="font-size:13px">${esc(b.apartment)} · заезд ${esc(dm(b.begin))}${b.guest ? " · " + esc(b.guest) : ""}. Это пометка для утреннего списка горничным, в календарь она не пишется.</p>
+      <div class="ib-presets">${presets.map((t) => `<button class="ib-btn ${b.eta === t ? "primary" : ""}" data-eta="${t}">${t}</button>`).join("")}</div>
+      <div class="ib-check"><input class="ib-field" id="eta-time" type="time" value="${esc(b.eta || "")}" style="margin:0" /><span class="ib-muted small">или точное время</span></div>
+      <input class="ib-field" id="eta-note" placeholder="Откуда / комментарий: поезд из Бухары, рейс в 19:40…" maxlength="120" value="${esc(b.eta_note || "")}" style="margin-top:8px" />
+      <div class="ib-row"><button class="ib-btn primary" id="eta-save">Сохранить</button>${b.eta ? '<button class="ib-btn danger" id="eta-clear">Убрать</button>' : ""}<button class="ib-btn" data-close>Отмена</button></div>`;
+    const save = async (eta, note) => {
+      try {
+        const r = await req(`/chats/${c.id}/eta`, { method: "POST", json: { eta, note } });
+        S.chats.set(r.chat.id, r.chat); if (S.open && S.open.id === r.chat.id) S.open = r.chat;
+        renderHead(); closeModal(); toast(eta ? `Приедет в ${eta}` : "Пометка убрана");
+      } catch (err) { toast(err.message); }
+    };
+    $("modal-card").onclick = (e) => {
+      const pr = e.target.closest("[data-eta]");
+      if (pr) { $("eta-time").value = pr.dataset.eta; save(pr.dataset.eta, $("eta-note").value.trim()); }
+      else if (e.target.id === "eta-save") save($("eta-time").value, $("eta-note").value.trim());
+      else if (e.target.id === "eta-clear") save("", "");
+    };
+  }
+
   // ---- everything Booking.com told us about the stay --------------------------------
   async function openBookingInfo() {
     if (!S.open) return;
@@ -809,6 +838,7 @@
     $("conv-booking").addEventListener("click", (e) => {
       if (e.target.id === "bk-pick") { openBookingPick(); return; }
       if (e.target.id === "bk-info") { openBookingInfo(); return; }
+      if (e.target.closest("#bk-eta")) { openEta(); return; }
       const a = e.target.closest("[data-bk-open]");
       if (a) {
         e.preventDefault();

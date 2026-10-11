@@ -385,6 +385,13 @@ def _chat_out(r) -> dict:
                      "guest": b["client_name"], "when": b["when"], "pinned": bool(pb),
                      "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5], "default_times": _default_times(),
                      "nights": b.get("days_count"), "amount": b.get("amount")} if b else None)
+    if c["booking"]:
+        try:
+            from . import crm
+            e = crm.eta_map().get(b["id"]) or {}
+            c["booking"]["eta"], c["booking"]["eta_note"] = e.get("eta") or "", e.get("note") or ""
+        except Exception:  # noqa: BLE001
+            c["booking"]["eta"], c["booking"]["eta_note"] = "", ""
     c["receipt"] = _receipt_text(c)
     if c["channel"] == "bk" and not pb:
         # Booking.com chat without a confirmed calendar booking: show what Booking says

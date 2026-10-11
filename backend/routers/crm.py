@@ -1,6 +1,7 @@
 """Nova Home CRM API (see backend/crm.py). Cookie session; admin-only routes
 for users, pipelines, fields and integrations."""
 import asyncio
+import re
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -141,6 +142,27 @@ def home(user: dict = Depends(current_user)):  # noqa: B008
     d = crm_amo.home(user["id"])
     d["wa"] = inbox.bridge_status().get("status")
     return d
+
+
+@router.get("/report/arrivals")
+def report_arrivals(date: str | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    return crm.arrivals_report(date or crm.date.today().isoformat())
+
+
+@router.post("/report/arrivals/send")
+def report_arrivals_send(payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.send_arrivals_report((payload or {}).get("date") or crm.date.today().isoformat(), user["name"])
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/bookings/{bid}/eta")
+def booking_eta(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return {"ok": True, "eta": crm.set_eta(bid, str(payload.get("eta") or ""), str(payload.get("note") or ""), user["name"])}
+    except ValueError as exc:
+        _bad(exc)
 
 
 @router.get("/badges")
@@ -985,6 +1007,8 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
                      "auto_all_channels": crm.get_setting("auto_all_channels", "1") == "1",
+                     "report_auto": crm.get_setting("report_auto", "1") == "1", "report_time": crm.get_setting("report_time", "07:00"),
+                     "report_chat_ids": crm.get_setting("report_chat_ids", ""), "report_targets_default": ", ".join(str(x) for x in config.notify_targets()),
                      "booking_flow": crm.get_setting("booking_flow", "1") == "1",
                      "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
                      "checkin_time": crm.default_times()[0], "checkout_time": crm.default_times()[1],
@@ -1003,6 +1027,9 @@ class SettingsIn(BaseModel):
     rc_sync_clients: bool | None = None
     checkin_time: str | None = None
     checkout_time: str | None = None
+    report_time: str | None = None
+    report_chat_ids: str | None = None
+    report_auto: bool | None = None
 
 
 @router.post("/integrations/settings")
@@ -1013,6 +1040,12 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
     if payload.auto_all_channels is not None:
         crm.set_setting("auto_all_channels", "1" if payload.auto_all_channels else "0")
+    if payload.report_auto is not None:
+        crm.set_setting("report_auto", "1" if payload.report_auto else "0")
+    if payload.report_chat_ids is not None:
+        crm.set_setting("report_chat_ids", payload.report_chat_ids.strip())
+    if payload.report_time is not None and re.match(r"^\d{1,2}:\d{2}$", payload.report_time.strip()):
+        crm.set_setting("report_time", payload.report_time.strip())
     if payload.auto_deal is not None:
         crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
     if payload.booking_flow is not None:

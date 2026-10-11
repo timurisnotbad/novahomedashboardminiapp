@@ -162,6 +162,7 @@ def _now() -> str:
 def init_db() -> None:
     with database.get_conn() as conn:
         conn.executescript(SCHEMA)
+        conn.execute("CREATE TABLE IF NOT EXISTS crm_eta (booking_id INTEGER PRIMARY KEY, eta TEXT, note TEXT, set_by TEXT, set_at TEXT)")
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_templates)").fetchall()]
         if cols and "command" not in cols:
             conn.execute("ALTER TABLE inbox_templates ADD COLUMN command TEXT")
@@ -1332,6 +1333,95 @@ def _contact_states(rows: list[dict]) -> None:
         b["contact"] = "none" if not outs else ("contacted" if any(outs) else "incoming")
 
 
+RU_MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+# ---- time of arrival the guest told us (chat / card) — a light note, not calendar data ----
+_eta_cache: dict = {"at": 0.0, "map": {}}
+
+
+def eta_map(force: bool = False) -> dict:
+    """{booking_id: {"eta","note","set_by","set_at"}} — cached 20 s (the chat list asks often)."""
+    if force or time.time() - _eta_cache["at"] > 20:
+        with database.get_conn() as conn:
+            _eta_cache["map"] = {r["booking_id"]: dict(r) for r in conn.execute("SELECT * FROM crm_eta").fetchall()}
+        _eta_cache["at"] = time.time()
+    return _eta_cache["map"]
+
+
+def set_eta(bid: int, eta: str, note: str, who: str) -> dict | None:
+    eta = (eta or "").strip()[:20]
+    m = re.match(r"^(\d{1,2})[:.](\d{2})$", eta)
+    if m:
+        eta = f"{int(m.group(1)):02d}:{m.group(2)}"
+    with database.get_conn() as conn:
+        if not conn.execute("SELECT 1 FROM bookings WHERE id = ?", (bid,)).fetchone():
+            raise ValueError("Бронь не найдена")
+        if not eta and not (note or "").strip():
+            conn.execute("DELETE FROM crm_eta WHERE booking_id = ?", (bid,))
+        else:
+            conn.execute("INSERT OR REPLACE INTO crm_eta (booking_id, eta, note, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+                         (bid, eta, (note or "").strip()[:120], who, _now()))
+    return eta_map(force=True).get(bid)
+
+
+def arrivals_report(day: str) -> dict:
+    """The morning list for the housekeepers: who arrives when (ETA from the chat
+    first, then the calendar's arrival time, else the house default with «?»),
+    plus departures and tight turnovers. Returned as rows + ready-to-send text."""
+    d = bookings_day(day)
+    etas = eta_map(force=True)
+    dci, dco = default_times()
+    rows = []
+    for b in d["arrivals"]:
+        e = etas.get(b["id"]) or {}
+        if e.get("eta"):
+            t, src = e["eta"], "chat"
+        elif b.get("arrival_time"):
+            t, src = b["arrival_time"][:5], "calendar"
+        else:
+            t, src = dci, "default"
+        dep = next((x for x in d["departures"] if x["apartment"] == b["apartment"]), None)
+        rows.append({"booking_id": b["id"], "apartment": b["apartment"], "guest": b["guest"], "nights": b.get("nights"), "eta": t, "eta_src": src,
+                     "note": e.get("note") or "", "turnover": bool(dep), "departure_time": (dep.get("departure_time") or dco)[:5] if dep else None,
+                     "source": b.get("source"), "phone": b.get("phone")})
+    rows.sort(key=lambda r: (r["eta"] if re.match(r"^\d{2}:\d{2}$", r["eta"]) else "99", r["apartment"] or ""))
+    dt = date.fromisoformat(day)
+    human = f"{dt.day} {RU_MONTHS_GEN[dt.month - 1]}"
+    lines = [f"🔑 Заезды {human} — {len(rows)}"]
+    for i, r in enumerate(rows, 1):
+        t = r["eta"] + ("" if r["eta_src"] == "chat" else " (по брони)" if r["eta_src"] == "calendar" else "?")
+        extra = f" — {r['note']}" if r["note"] else ""
+        turn = f" · выезд {r['departure_time']}, уборка между" if r["turnover"] else ""
+        lines.append(f"{i}. {r['apartment']} — {r['guest'] or 'Гость'} · {t}{extra}{turn}")
+    if not rows:
+        lines.append("Заездов нет.")
+    deps = sorted(d["departures"], key=lambda b: ((b.get("departure_time") or dco)[:5], b["apartment"] or ""))
+    if deps:
+        lines += ["", f"🚪 Выезды — {len(deps)}"]
+        lines += [f"• {b['apartment']} — {b['guest'] or 'Гость'} · до {(b.get('departure_time') or dco)[:5]}" for b in deps]
+    unknown = [r for r in rows if r["eta_src"] == "default"]
+    if unknown:
+        lines += ["", "❓ Время не подтверждено: " + ", ".join(r["apartment"] for r in unknown)]
+    return {"date": day, "rows": rows, "departures": [{"booking_id": b["id"], "apartment": b["apartment"], "guest": b["guest"], "time": (b.get("departure_time") or dco)[:5]} for b in deps],
+            "text": "\n".join(lines), "unknown": len(unknown)}
+
+
+def send_arrivals_report(day: str, who: str = "") -> dict:
+    """Post the list to the work chats (Telegram: setting report_chat_ids, else the
+    usual notify targets, «cleaning» topic in forum groups)."""
+    from . import config as _cfg, notify
+    rep = arrivals_report(day)
+    ids = [int(x) for x in re.findall(r"-?\d+", get_setting("report_chat_ids", ""))] or _cfg.notify_targets()
+    if not _cfg.BOT_TOKEN:
+        raise ValueError("Telegram-бот не настроен (BOT_TOKEN)")
+    if not ids:
+        raise ValueError("Не указаны рабочие чаты: Интеграции → Отчёт о заездах")
+    notify.send(rep["text"] + (f"\n\n— {who}" if who else ""), targets=ids, topic="cleaning")
+    set_setting("report_last_sent", f"{day}|{_now()}")
+    return {"ok": True, "chats": len(ids), "text": rep["text"]}
+
+
 def bookings_day(day: str) -> dict:
     rows = [_booking_out(b) for b in database.get_bookings(day, day)]
     with database.get_conn() as conn:
@@ -1362,7 +1452,9 @@ def bookings_day(day: str) -> dict:
             h1, m1 = map(int, t_out(dep).split(":")[:2])
             h2, m2 = map(int, t_in(b).split(":")[:2])
             gap = (h2 * 60 + m2) - (h1 * 60 + m1)
-        plan.append({"booking_id": b["id"], "apartment": b["apartment"], "arrival_time": t_in(b), "time_set": bool(b.get("arrival_time")),
+        e = eta_map().get(b["id"]) or {}
+        plan.append({"booking_id": b["id"], "apartment": b["apartment"], "arrival_time": e.get("eta") or t_in(b), "time_set": bool(e.get("eta") or b.get("arrival_time")),
+                     "eta": e.get("eta") or "", "eta_note": e.get("note") or "",
                      "guest": b["guest"], "nights": b.get("nights"), "turnover": bool(dep), "departure_time": t_out(dep) if dep else None,
                      "gap_min": gap, "tight": gap is not None and gap < 180, "pay": b.get("pay"), "contact": b.get("contact")})
     return {
@@ -1441,6 +1533,7 @@ def home(uid: int) -> dict:
             "SELECT id, name, push_name, phone, last_text, last_at, unread FROM inbox_chats ORDER BY last_at DESC LIMIT 8").fetchall()]
     return {
         "date": today, "arrivals": len(day["arrivals"]), "departures": len(day["departures"]), "staying": len(day["staying"]),
+        "report": arrivals_report(today), "report_last_sent": get_setting("report_last_sent", ""),
         "unread": unread, "my_open_tasks": my_open, "overdue_tasks": overdue, "clients": clients_n,
         "stages": by_stage, "recent_chats": recent_chats, "last_sync": database.last_sync(),
         "today_tasks": [t for t in tasks(status="open") if (t["due"] or "")[:10] <= today][:10],

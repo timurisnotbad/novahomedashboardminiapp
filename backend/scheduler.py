@@ -23,6 +23,26 @@ def _evening_summary():
         logger.warning("Evening summary failed: %s", exc)
 
 
+def _morning_report():
+    """Setting report_time (default 07:00): today's arrivals with the times the
+    guests told us → the work chats. Checked every minute, sent once a day."""
+    try:
+        from . import crm
+        if crm.get_setting("report_auto", "1") != "1":
+            return
+        now = date.today().isoformat()
+        hhmm = crm.get_setting("report_time", "07:00")
+        from datetime import datetime as _dt
+        if _dt.now().strftime("%H:%M") < hhmm:
+            return
+        if crm.get_setting("report_last_sent", "").startswith(now):
+            return
+        crm.send_arrivals_report(now, "")
+        logger.info("Morning arrivals report sent")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Morning report failed: %s", exc)
+
+
 def _job():
     try:
         count = rc_sync.sync_to_db()
@@ -107,6 +127,7 @@ def start() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(_morning_report, "interval", minutes=1, id="morning_report", max_instances=1, coalesce=True)
     _scheduler.add_job(
         _notify_job,
         "interval",

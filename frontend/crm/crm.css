@@ -399,3 +399,11 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 @media (max-width: 760px) { .step__msgs { grid-template-columns:1fr; } .step__when .step__hint { flex-basis:100%; } }
 
 @media (max-width: 760px) { input.field, textarea.field, select.field, .field, #auth-form input { font-size:16px; } }
+
+/* arrivals report on the dashboard */
+.rep__row { display:flex; gap:10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--sep); flex-wrap:wrap; }
+.rep__n { width:22px; height:22px; border-radius:50%; background:#E5E7EB; color:var(--label-2); font-size:12px; display:grid; place-items:center; flex:none; }
+.rep__t { border:1px solid var(--sep); background:var(--card); border-radius:999px; padding:3px 10px; font-weight:700; font-size:14px; cursor:pointer; min-width:64px; }
+.rep__t.ok { background:#DCFCE7; border-color:transparent; color:#166534; } .rep__t.ask { background:#FEF3C7; border-color:transparent; color:#92400E; }
+.rep__apt a { font-weight:700; color:var(--label); text-decoration:none; } .rep__g { flex:1; min-width:0; font-size:14px; }
+.presets { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }

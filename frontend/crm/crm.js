@@ -163,6 +163,13 @@
         <div class="stat" onclick="location.hash='#messages'"><b>${d.unread}</b><span>непрочитанных сообщений</span></div>
         <div class="stat ${d.overdue_tasks ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач${d.overdue_tasks ? " · просрочено " + d.overdue_tasks : ""}</span></div>
       </div>
+      ${(() => { const r = d.report || { rows: [], departures: [] }; const last = (d.report_last_sent || "").split("|"); return `
+      <div class="card" style="margin-bottom:16px"><div class="card__title" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span>Заезды сегодня · список для горничных</span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" id="rep-copy">Копировать</button><button class="btn sm primary" id="rep-send">Отправить в рабочий чат</button></span></div>
+        ${r.rows.length ? `<div class="rep">${r.rows.map((x, i) => `<div class="rep__row"><b class="rep__n">${i + 1}</b><button class="rep__t ${x.eta_src === "chat" ? "ok" : x.eta_src === "calendar" ? "" : "ask"}" data-eta-bk="${x.booking_id}" data-eta="${esc(x.eta)}" data-note="${esc(x.note)}" title="Нажмите, чтобы указать время">${esc(x.eta)}${x.eta_src === "default" ? "?" : ""}</button><span class="rep__apt"><a href="#" data-bopen="${x.booking_id}">${esc(x.apartment)}</a></span><span class="rep__g">${esc(x.guest || "Гость")}${x.note ? ` <span class="muted">· ${esc(x.note)}</span>` : ""}${x.turnover ? ` <span class="tag">выезд ${esc(x.departure_time)}</span>` : ""}</span></div>`).join("")}</div>` : `<div class="muted">Сегодня заездов нет</div>`}
+        ${r.departures.length ? `<div class="muted small" style="margin-top:8px">🚪 Выезды: ${r.departures.map((x) => `${esc(x.apartment)} до ${esc(x.time)}`).join(", ")}</div>` : ""}
+        <div class="muted small" style="margin-top:6px">${r.unknown ? `❓ Без подтверждённого времени: ${r.unknown}. ` : ""}Время берётся из пометки «приедет в…» в чате гостя, иначе из брони. ${last[0] === d.date ? "Сегодня отправлено в " + esc((last[1] || "").slice(11, 16)) + "." : "Утром уходит в рабочий чат автоматически (Интеграции → Отчёт о заездах)."}</div>
+        <textarea id="rep-text" class="field mono" rows="3" style="margin-top:8px;font-size:12px" readonly>${esc(r.text || "")}</textarea></div>`; })()}
       <div class="grid c2">
         <div class="card"><div class="card__title">Воронка</div>
           ${open.length ? open.map((s) => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--sep)">
@@ -186,6 +193,10 @@
           <div style="margin-top:10px"><a href="#revenue">Выручка по каналам →</a> · <a href="#auto">Автосообщения →</a></div>
         </div>
       </div>`;
+    const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+    on("rep-copy", async () => { try { await navigator.clipboard.writeText($("rep-text").value); toast("Скопировано — вставьте в WhatsApp-группу"); } catch (e) { $("rep-text").select(); toast("Выделено — нажмите Ctrl+C"); } });
+    on("rep-send", async (e) => { e.target.disabled = true; try { const r = await post("/report/arrivals/send", { date: d.date }); toast(`Отправлено в ${r.chats} чат(а)`); navigate(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+    $("main").querySelectorAll("[data-eta-bk]").forEach((btn) => btn.addEventListener("click", () => etaModal(parseInt(btn.dataset.etaBk, 10), btn.dataset.eta, btn.dataset.note)));
   };
 
   // ---- messages (embedded inbox) ----------------------------------------
@@ -197,7 +208,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=68&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=69&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -721,6 +732,11 @@
       <div class="card"><h3>Время заезда и выезда</h3><div class="muted small">Стандартное время дома. Подставляется везде, где в брони время не указано: план подготовки, чек-листы, напоминания гостю, документы.</div>
         <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Заезд с</label><input class="field" id="i-ci" type="time" value="${esc(d.settings.checkin_time || "14:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><div><label class="lbl">Выезд до</label><input class="field" id="i-co" type="time" value="${esc(d.settings.checkout_time || "11:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><button class="btn" id="i-times" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div></div>
       <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
+      <div class="card"><h3>Отчёт о заездах для горничных</h3><div class="muted small">Каждое утро список «кто во сколько заезжает» (время из пометок в чатах, иначе из брони) уходит в рабочие Telegram-чаты. Вечерний план на завтра (22:00) тоже показывает эти времена. Кнопка «Отправить в рабочий чат» есть на Главной.</div>
+        <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Время отправки</label><input class="field" id="rp-time" type="time" value="${esc(d.settings.report_time || "07:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
+          <div style="flex:1;min-width:220px"><label class="lbl">ID Telegram-чатов через запятую <span class="muted">(пусто — ${esc(d.settings.report_targets_default || "чаты уведомлений бота")})</span></label><input class="field" id="rp-ids" value="${esc(d.settings.report_chat_ids || "")}" placeholder="-1001234567890, 123456789" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
+          <label style="display:flex;gap:6px;align-items:center;padding-bottom:10px"><input type="checkbox" id="rp-auto" ${d.settings.report_auto ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Слать автоматически</label><button class="btn" id="rp-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div>
+        <div class="muted small" style="margin-top:6px">ID группы: добавьте бота в группу и напишите в ней /id, либо посмотрите в «Пользователи → Telegram». Для WhatsApp-группы используйте «Копировать» на Главной.</div></div>
       <div class="card"><h3>Автосообщения во все каналы гостя</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-allch" ${d.settings.auto_all_channels ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Шаблоны этапов и автосообщения уходят во все чаты гостя сразу: WhatsApp, Telegram, Instagram, Booking — все, что привязаны к брони, к его сделке или найдены по его номеру. Выключено — только в один, основной чат</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card" id="steps-card"><h3>Этапы заезда гостя</h3>
@@ -738,6 +754,7 @@
     $("n-test").addEventListener("click", async () => { try { const r = await post("/push/test"); toast(r.sent ? `Отправлено на ${r.sent} устр.` : "У вас нет устройств с включёнными push"); } catch (err) { toast(err.message); } });
     $("i-times").addEventListener("click", async () => { try { await post("/integrations/settings", { checkin_time: val("i-ci"), checkout_time: val("i-co") }); S.times = [val("i-ci"), val("i-co")]; toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-rcc").addEventListener("change", async (e) => { try { await post("/integrations/settings", { rc_sync_clients: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("rp-save").addEventListener("click", async () => { try { await post("/integrations/settings", { report_time: val("rp-time"), report_chat_ids: val("rp-ids"), report_auto: $("rp-auto").checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-allch").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_all_channels: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
@@ -990,6 +1007,22 @@
       const mk = e.target.closest("[data-dmake]"); if (mk) { mk.disabled = true; try { const d = await post(`/bookings/${b.id}/documents`, { kind: mk.dataset.dmake, lang: S.cache.docLang }); toast(`Создан: ${d.title} ${d.number}`); window.open(d.url, "_blank"); } catch (err) { toast(err.message); } renderBookingDocs(b); return; }
       const dd = e.target.closest("[data-ddel]"); if (dd) { if (confirm("Удалить документ?")) { await del(`/documents/${dd.dataset.ddel}`); renderBookingDocs(b); } return; }
       const dm = e.target.closest("[data-dmail]"); if (dm) { const d = list.find((x) => x.id === parseInt(dm.dataset.dmail, 10)); emailForm({ to: (b.client && b.client.email) || d.data.email || "", booking_id: b.id, client_id: b.client ? b.client.id : null, doc: d, subject: `${d.title} ${d.number} · Nova Home`, text: `${(b.guest || "").split(" ")[0] ? (b.guest || "").split(" ")[0] + ", " : ""}${d.lang === "en" ? "hello!\n\nPlease find attached: " : "здравствуйте!\n\nВо вложении: "}${d.title} ${d.number}.\n${b.apartment} · ${dShort(b.checkin)} – ${dShort(b.checkout)}\n\n${d.lang === "en" ? "Best regards,\nNova Home" : "С уважением,\nNova Home"}`, after: () => renderBookingDocs(b) }); }
+    };
+  }
+
+  // ---- «приедет в …» from the dashboard / booking card ---------------------------------
+  function etaModal(bid, eta, note) {
+    const presets = ["12:00", "14:00", "15:00", "16:00", "18:00", "20:00", "22:00", "00:00"];
+    modal(`<h3>Во сколько приедет гость</h3><div class="muted small">Пометка для утреннего списка горничным; в календарь не пишется.</div>
+      <div class="presets">${presets.map((t) => `<button class="btn sm ${eta === t ? "primary" : ""}" data-eta="${t}">${t}</button>`).join("")}</div>
+      <div class="form-row"><div><label class="lbl">Точное время</label><input class="field" id="eta-time" type="time" value="${esc(eta && /^\d\d:\d\d$/.test(eta) ? eta : "")}" /></div><div><label class="lbl">Комментарий</label><input class="field" id="eta-note" value="${esc(note || "")}" placeholder="поезд из Бухары, рейс 19:40…" maxlength="120" /></div></div>
+      <div class="row-actions"><button class="btn primary" id="eta-save">Сохранить</button><button class="btn" id="eta-clear">Убрать</button><button class="btn link" data-close>Отмена</button></div>`);
+    const save = async (t, n) => { try { await post(`/bookings/${bid}/eta`, { eta: t, note: n }); closeModal(); toast(t ? `Приедет в ${t}` : "Пометка убрана"); navigate(); } catch (err) { toast(err.message); } };
+    $("modal-card").onclick = (e) => {
+      const pr = e.target.closest("[data-eta]");
+      if (pr) save(pr.dataset.eta, val("eta-note"));
+      else if (e.target.id === "eta-save") save(val("eta-time"), val("eta-note"));
+      else if (e.target.id === "eta-clear") save("", "");
     };
   }
 

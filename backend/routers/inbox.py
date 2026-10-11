@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import config, inbox, meta_api, wazzup
+from .. import config, database, inbox, meta_api, wazzup
 
 MAX_UPLOAD = 30 * 1024 * 1024
 
@@ -114,6 +114,22 @@ def chat(chat_id: int, before: int | None = None, user: dict = Depends(inbox_use
 def read(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
     inbox.mark_read(chat_id)
     return {"ok": True}
+
+
+@router.post("/chats/{chat_id}/eta")
+def chat_eta(chat_id: int, payload: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    """«Приедет в …» for the chat's booking — the housekeepers' morning list."""
+    from .. import crm
+    c = inbox.get_chat(chat_id)
+    if not c or not c.get("booking"):
+        raise HTTPException(status_code=400, detail="У чата нет брони — сначала привяжите бронь")
+    try:
+        crm.set_eta(c["booking"]["id"], str(payload.get("eta") or ""), str(payload.get("note") or ""), user["name"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with database.get_conn() as conn:
+        conn.execute("UPDATE inbox_chats SET rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
+    return {"ok": True, "chat": inbox.get_chat(chat_id)}
 
 
 @router.post("/chats/{chat_id}/receipt")
