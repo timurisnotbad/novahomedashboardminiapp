@@ -234,8 +234,11 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .side.open { height:auto; max-height:100dvh; overflow-y:auto; box-shadow:0 12px 30px rgba(0,0,0,.15); }
   .main, .inbox-frame { position:fixed; top:52px; bottom:calc(58px + env(safe-area-inset-bottom, 0px)); left:0; right:0; width:100%; min-height:0; }
   .main { height:auto; }
-  .inbox-frame { height:calc(var(--vvh, 100dvh) - 52px - 58px - env(safe-area-inset-bottom, 0px)); }  /* an iframe does not stretch between top and bottom; --vvh follows the keyboard */
-  .main { bottom:auto; height:calc(var(--vvh, 100dvh) - 52px - 58px - env(safe-area-inset-bottom, 0px)); }
+  .inbox-frame { height:calc(100dvh - 52px - 58px - env(safe-area-inset-bottom, 0px)); }  /* an iframe does not stretch between top and bottom */
+  /* keyboard open: <body> is the visible box (height + translateY set from JS); fixed children follow it */
+  body.kb { position:relative; overflow:hidden; }
+  body.kb .inbox-frame, body.kb .main { height:calc(var(--vvh) - 52px - 58px); bottom:58px; }
+  body.kb .tabbar, body.kb .side { transform:none; }
   .main { overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; padding:12px 14px 24px; }
   .main > * { max-width:100%; }
   .side__brand { padding:0; flex:1; font-size:16px; }

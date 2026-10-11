@@ -975,17 +975,24 @@
     if (m) openChat(parseInt(m[1], 10));
     pollTimer = setTimeout(pollNow, 2500);
   }
-  // iOS keyboard: the visual viewport shrinks, the layout viewport does not — size
-  // the shell to what is really visible and keep the page pinned at the top
-  if (window.visualViewport && window.innerWidth <= 760) {
+  // iOS keyboard (chats opened directly, not inside the CRM): same trick as the
+  // CRM shell — <body> sized to the visible box and shifted by its offset
+  if (window.visualViewport && window.innerWidth <= 760 && !EMBED) {
+    const vv = window.visualViewport;
     const fit = () => {
-      document.documentElement.style.setProperty("--vvh", Math.round(window.visualViewport.height) + "px");
-      if (window.scrollY || window.visualViewport.offsetTop) window.scrollTo(0, 0);
+      const kb = vv.height < window.innerHeight - 80;
+      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+      document.body.style.height = kb ? Math.round(vv.height) + "px" : "";
+      document.body.style.transform = kb ? `translateY(${Math.round(vv.offsetTop)}px)` : "";
+      if (!kb && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
       const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight;
     };
-    window.visualViewport.addEventListener("resize", fit);
-    window.visualViewport.addEventListener("scroll", fit);
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
     fit();
+  }
+  if (EMBED) {  // inside the CRM the frame itself is resized by the shell: just keep the thread at the bottom
+    window.addEventListener("resize", () => { const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight; });
   }
   start();
 })();

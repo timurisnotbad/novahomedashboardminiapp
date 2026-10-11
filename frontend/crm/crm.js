@@ -208,7 +208,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=72&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=73&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -1290,15 +1290,22 @@
     clearTimeout(boot.t);
     boot.t = setTimeout(badges, badges.failed ? 5000 : document.visibilityState === "visible" ? 300 : 15000);
   }
-  // iOS keyboard on the phone: size the shell to the visual viewport, keep the
-  // header / tab bar where they are and the page pinned at the top
+  // iOS keyboard on the phone: Safari shrinks the visual viewport and scrolls the
+  // layout viewport under it; fixed elements drift. Size <body> to the visible box
+  // and shift it by the offset — the header, the chats frame and the tab bar
+  // then stay exactly where the eye expects them, nothing scrolls away.
   if (window.visualViewport && window.innerWidth <= 760) {
+    const vv = window.visualViewport;
     const fit = () => {
-      document.documentElement.style.setProperty("--vvh", Math.round(window.visualViewport.height) + "px");
-      if (window.scrollY || window.visualViewport.offsetTop) window.scrollTo(0, 0);
+      const kb = vv.height < window.innerHeight - 80;  // keyboard (or Safari bars) open
+      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+      document.body.style.height = kb ? Math.round(vv.height) + "px" : "";
+      document.body.style.transform = kb ? `translateY(${Math.round(vv.offsetTop)}px)` : "";
+      document.body.classList.toggle("kb", kb);
+      if (!kb && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
     };
-    window.visualViewport.addEventListener("resize", fit);
-    window.visualViewport.addEventListener("scroll", fit);
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
     fit();
   }
   async function boot() {
