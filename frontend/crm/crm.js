@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=66&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=67&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -1250,6 +1250,17 @@
     } catch (e) { badges.failed = true; }
     clearTimeout(boot.t);
     boot.t = setTimeout(badges, badges.failed ? 5000 : document.visibilityState === "visible" ? 300 : 15000);
+  }
+  // iOS keyboard on the phone: size the shell to the visual viewport, keep the
+  // header / tab bar where they are and the page pinned at the top
+  if (window.visualViewport && window.innerWidth <= 760) {
+    const fit = () => {
+      document.documentElement.style.setProperty("--vvh", Math.round(window.visualViewport.height) + "px");
+      if (window.scrollY || window.visualViewport.offsetTop) window.scrollTo(0, 0);
+    };
+    window.visualViewport.addEventListener("resize", fit);
+    window.visualViewport.addEventListener("scroll", fit);
+    fit();
   }
   async function boot() {
     $("auth").classList.add("hidden");

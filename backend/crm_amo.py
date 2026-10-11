@@ -69,10 +69,15 @@ def accept(chat_id: int, uid: int, pipeline_id: int | None = None) -> dict:
     if not chat:
         raise ValueError("Чат не найден")
     cid = _client_for_chat(chat)
+    b0 = chat.get("booking")
     with database.get_conn() as conn:
         open_deal = conn.execute(
             "SELECT d.id FROM crm_deals d JOIN crm_stages s ON s.id = d.stage_id WHERE d.client_id = ? AND s.kind = 'open' "
             "ORDER BY d.updated_at DESC LIMIT 1", (cid,)).fetchone()
+        # the stay already has a deal (maybe already in «Заселён» / «Выехал»): the
+        # chat joins it — one booking is one deal, whatever stage it is in
+        if not open_deal and b0 and b0.get("id"):
+            open_deal = conn.execute("SELECT id FROM crm_deals WHERE booking_id = ? ORDER BY id LIMIT 1", (b0["id"],)).fetchone()
     if open_deal:
         did = open_deal["id"]
     else:
@@ -117,9 +122,38 @@ def on_incoming(chat_id: int) -> None:
                 crm.set_client_status(cid, sts[0]["name"])
 
 
+def merge_duplicate_deals() -> int:
+    """Several deals for one booking (older versions made one per chat): keep the
+    oldest, move its chats, notes and tasks over, drop the rest."""
+    n = 0
+    with database.get_conn() as conn:
+        groups = conn.execute("SELECT booking_id, GROUP_CONCAT(id) AS ids FROM crm_deals WHERE booking_id IS NOT NULL GROUP BY booking_id HAVING COUNT(*) > 1").fetchall()
+        for g in groups:
+            ids = sorted(int(x) for x in g["ids"].split(","))
+            keep, rest = ids[0], ids[1:]
+            for did in rest:
+                conn.execute("INSERT OR IGNORE INTO crm_deal_chats (deal_id, chat_id, linked_at) SELECT ?, chat_id, linked_at FROM crm_deal_chats WHERE deal_id = ?", (keep, did))
+                conn.execute("DELETE FROM crm_deal_chats WHERE deal_id = ?", (did,))
+                for t in ("crm_notes", "crm_tasks"):
+                    try:
+                        conn.execute(f"UPDATE {t} SET deal_id = ? WHERE deal_id = ?", (keep, did))  # noqa: S608
+                    except Exception:  # noqa: BLE001
+                        pass
+                conn.execute("DELETE FROM crm_deals WHERE id = ?", (did,))
+                n += 1
+            conn.execute("UPDATE crm_deals SET updated_at = ? WHERE id = ?", (crm._now(), keep))
+    if n:
+        logger.info("merged %s duplicate deals", n)
+    return n
+
+
 def backfill_deals() -> int:
     """Every chat is a lead: chats that wrote to us and have no deal get one
     (runs after each sync, so the board fills up on the first start too)."""
+    try:
+        merge_duplicate_deals()
+    except Exception:  # noqa: BLE001
+        logger.exception("deal merge failed")
     if crm.get_setting("auto_deal", "1") != "1":
         return 0
     n = 0

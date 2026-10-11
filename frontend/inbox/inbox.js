@@ -621,6 +621,33 @@
     });
   }
 
+  // ---- photo viewer: all photos of the chat, ← → / swipe, ✕, save ----------------------
+  function openLightbox(url) {
+    const urls = Array.from($("msgs").querySelectorAll("[data-zoom]")).map((i) => i.dataset.zoom);
+    let i = Math.max(0, urls.indexOf(url));
+    const lb = document.createElement("div");
+    lb.className = "ib-lightbox";
+    const draw = () => {
+      lb.innerHTML = `<div class="ib-lb__bar"><button class="ib-lb__x" aria-label="Закрыть">✕ Закрыть</button><a href="${esc(urls[i])}" download target="_blank" rel="noopener">⬇ Сохранить</a></div>
+        <button class="ib-lb__nav prev" ${i ? "" : "disabled"} aria-label="Предыдущее">‹</button><img src="${esc(urls[i])}" alt="" /><button class="ib-lb__nav next" ${i < urls.length - 1 ? "" : "disabled"} aria-label="Следующее">›</button>
+        <div class="ib-lb__cnt">${i + 1} / ${urls.length}</div>`;
+    };
+    const go = (d) => { const n = i + d; if (n >= 0 && n < urls.length) { i = n; draw(); } };
+    const close = () => { lb.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); if (e.key === "ArrowLeft") go(-1); if (e.key === "ArrowRight") go(1); };
+    lb.addEventListener("click", (e) => {
+      if (e.target.closest(".ib-lb__x") || e.target === lb) close();
+      else if (e.target.closest(".prev")) go(-1);
+      else if (e.target.closest(".next")) go(1);
+    });
+    let x0 = null;
+    lb.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    lb.addEventListener("touchend", (e) => { if (x0 === null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1); }, { passive: true });
+    document.addEventListener("keydown", onKey);
+    draw();
+    document.body.appendChild(lb);
+  }
+
   // ---- link the chat to a booking from the calendar ------------------------------
   async function openBookingPick() {
     if (!S.open) return;
@@ -813,13 +840,7 @@
         return;
       }
       const z = e.target.closest("[data-zoom]");
-      if (z) {
-        const lb = document.createElement("div");
-        lb.className = "ib-lightbox";
-        lb.innerHTML = `<img src="${esc(z.dataset.zoom)}" alt="" />`;
-        lb.addEventListener("click", () => lb.remove());
-        document.body.appendChild(lb);
-      }
+      if (z) openLightbox(z.dataset.zoom);
     });
     // double tap / double click on a message = reply to it (phones have no hover)
     $("msgs").addEventListener("dblclick", (e) => {
@@ -923,6 +944,18 @@
     const m = /chat=(\d+)/.exec(location.hash);
     if (m) openChat(parseInt(m[1], 10));
     pollTimer = setTimeout(pollNow, 2500);
+  }
+  // iOS keyboard: the visual viewport shrinks, the layout viewport does not — size
+  // the shell to what is really visible and keep the page pinned at the top
+  if (window.visualViewport && window.innerWidth <= 760) {
+    const fit = () => {
+      document.documentElement.style.setProperty("--vvh", Math.round(window.visualViewport.height) + "px");
+      if (window.scrollY || window.visualViewport.offsetTop) window.scrollTo(0, 0);
+      const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight;
+    };
+    window.visualViewport.addEventListener("resize", fit);
+    window.visualViewport.addEventListener("scroll", fit);
+    fit();
   }
   start();
 })();
