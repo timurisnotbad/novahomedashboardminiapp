@@ -31,7 +31,7 @@ def _morning_report():
         if crm.get_setting("report_auto", "1") != "1":
             return
         now = date.today().isoformat()
-        hhmm = crm.get_setting("report_time", "07:00")
+        hhmm = crm.get_setting("report_time", "09:00")
         from datetime import datetime as _dt
         if _dt.now().strftime("%H:%M") < hhmm:
             return

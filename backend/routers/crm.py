@@ -1007,7 +1007,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
                      "auto_all_channels": crm.get_setting("auto_all_channels", "1") == "1",
-                     "report_auto": crm.get_setting("report_auto", "1") == "1", "report_time": crm.get_setting("report_time", "07:00"),
+                     "report_auto": crm.get_setting("report_auto", "1") == "1", "report_time": crm.get_setting("report_time", "09:00"),
                      "report_chat_ids": crm.get_setting("report_chat_ids", ""), "report_targets_default": ", ".join(str(x) for x in config.notify_targets()),
                      "booking_flow": crm.get_setting("booking_flow", "1") == "1",
                      "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",

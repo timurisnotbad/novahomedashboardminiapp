@@ -1354,6 +1354,7 @@ def set_eta(bid: int, eta: str, note: str, who: str) -> dict | None:
     m = re.match(r"^(\d{1,2})[:.](\d{2})$", eta)
     if m:
         eta = f"{int(m.group(1)):02d}:{m.group(2)}"
+    old = eta_map(force=True).get(bid)
     with database.get_conn() as conn:
         if not conn.execute("SELECT 1 FROM bookings WHERE id = ?", (bid,)).fetchone():
             raise ValueError("Бронь не найдена")
@@ -1362,7 +1363,10 @@ def set_eta(bid: int, eta: str, note: str, who: str) -> dict | None:
         else:
             conn.execute("INSERT OR REPLACE INTO crm_eta (booking_id, eta, note, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
                          (bid, eta, (note or "").strip()[:120], who, _now()))
-    return eta_map(force=True).get(bid)
+    new = eta_map(force=True).get(bid)
+    import threading
+    threading.Thread(target=refresh_arrivals_report, args=(bid, old, new, who), daemon=True).start()
+    return new
 
 
 def arrivals_report(day: str) -> dict:
@@ -1390,7 +1394,7 @@ def arrivals_report(day: str) -> dict:
     human = f"{dt.day} {RU_MONTHS_GEN[dt.month - 1]}"
     lines = [f"🔑 Заезды {human} — {len(rows)}"]
     for i, r in enumerate(rows, 1):
-        t = r["eta"] + ("" if r["eta_src"] == "chat" else " (по брони)" if r["eta_src"] == "calendar" else "?")
+        t = r["eta"] + ("" if r["eta_src"] == "chat" else " (по брони)" if r["eta_src"] == "calendar" else " (не уточнено)")
         extra = f" — {r['note']}" if r["note"] else ""
         turn = f" · выезд {r['departure_time']}, уборка между" if r["turnover"] else ""
         lines.append(f"{i}. {r['apartment']} — {r['guest'] or 'Гость'} · {t}{extra}{turn}")
@@ -1402,7 +1406,10 @@ def arrivals_report(day: str) -> dict:
         lines += [f"• {b['apartment']} — {b['guest'] or 'Гость'} · до {(b.get('departure_time') or dco)[:5]}" for b in deps]
     unknown = [r for r in rows if r["eta_src"] == "default"]
     if unknown:
-        lines += ["", "❓ Время не подтверждено: " + ", ".join(r["apartment"] for r in unknown)]
+        lines += ["", "❓ Не уточнено (ожидаем к 14:00): " + ", ".join(r["apartment"] for r in unknown)]
+    stamp = get_setting("report_last_sent", "")
+    if stamp.startswith(day) and "|" in stamp:
+        lines += ["", f"Обновлено {_now()[11:16]}"]
     return {"date": day, "rows": rows, "departures": [{"booking_id": b["id"], "apartment": b["apartment"], "guest": b["guest"], "time": (b.get("departure_time") or dco)[:5]} for b in deps],
             "text": "\n".join(lines), "unknown": len(unknown)}
 
@@ -1417,9 +1424,37 @@ def send_arrivals_report(day: str, who: str = "") -> dict:
         raise ValueError("Telegram-бот не настроен (BOT_TOKEN)")
     if not ids:
         raise ValueError("Не указаны рабочие чаты: Интеграции → Отчёт о заездах")
-    notify.send(rep["text"] + (f"\n\n— {who}" if who else ""), targets=ids, topic="cleaning")
+    # THE list message of the day: later changes edit it in place (see refresh_arrivals_report)
+    notify.send_replacing(f"arrivals:{day}", rep["text"], targets=ids, topic="cleaning")
     set_setting("report_last_sent", f"{day}|{_now()}")
     return {"ok": True, "chats": len(ids), "text": rep["text"]}
+
+
+def refresh_arrivals_report(bid: int, old: dict | None, new: dict | None, who: str) -> None:
+    """An arrival time changed after the morning list went out: edit the list
+    message and post a one-line notice so the team notices (edits are silent)."""
+    from . import config as _cfg, notify
+    try:
+        with database.get_conn() as conn:
+            b = conn.execute("SELECT begin_date, apartment_name, client_name FROM bookings WHERE id = ?", (bid,)).fetchone()
+        if not b:
+            return
+        day = b["begin_date"]
+        if not get_setting("report_last_sent", "").startswith(day) or not _cfg.BOT_TOKEN:
+            return  # the list for that day was not sent yet — the morning run will carry the time
+        ids = [int(x) for x in re.findall(r"-?\d+", get_setting("report_chat_ids", ""))] or _cfg.notify_targets()
+        if not ids:
+            return
+        rep = arrivals_report(day)
+        notify.send_replacing(f"arrivals:{day}", rep["text"], targets=ids, topic="cleaning")
+        was = (old or {}).get("eta") or "14:00 (не уточнено)"
+        now = (new or {}).get("eta") or "14:00 (не уточнено)"
+        if was != now or ((old or {}).get("note") or "") != ((new or {}).get("note") or ""):
+            note = f" — {new['note']}" if new and new.get("note") else ""
+            notify.send(f"🔄 {b['apartment_name']} — {b['client_name'] or 'Гость'}: приедет в {now}{note} (было {was}). Список выше обновлён.",
+                        targets=ids, topic="cleaning")
+    except Exception:  # noqa: BLE001
+        logger.exception("arrivals report refresh failed")
 
 
 def bookings_day(day: str) -> dict:
