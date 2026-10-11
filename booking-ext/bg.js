@@ -37,7 +37,8 @@ async function tick() {
       try {
         const r = await ask(t.id, { type: "scan" });
         if (!r) continue;
-        state = Object.assign(state, { page: r.page, unread: r.unread, error: r.error || "" });
+        state = Object.assign(state, { page: r.page, unread: r.unread, error: r.error || "", session: r.session || "ok" });
+        if (r.session && r.session !== "ok") continue;  // expired → the page is refreshing itself; login → a person is needed
         const ans = await post(r);
         // read the conversations the CRM asks for — only while the page is idle
         for (const item of (ans.open || []).slice(0, 3)) {
@@ -47,7 +48,8 @@ async function tick() {
         }
       } catch (e) { state.error = String(e.message || e); }
     }
-    await api("/ping", { method: "POST", body: JSON.stringify({ page: state.page, unread: state.unread, version: chrome.runtime.getManifest().version, error: state.error }) });
+    if (!tabs.length) state.session = "notab";
+    await api("/ping", { method: "POST", body: JSON.stringify({ page: state.page, unread: state.unread, version: chrome.runtime.getManifest().version, error: state.error, session: state.session || "ok" }) });
     const out = await api("/outbox");
     for (const o of out) {
       let ok = false, error = "нет открытой вкладки экстранета";
@@ -65,6 +67,7 @@ chrome.runtime.onInstalled.addListener(async () => {  // (re)loaded: refresh the
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === "tick") tick(); });
 // the content script saw a change: deliver it now, then read what the CRM asks for
 async function pushed(tabId, r) {
+  if (r.session && r.session !== "ok") return;
   try {
     const ans = await post(r);
     for (const item of (ans.open || []).slice(0, 3)) {

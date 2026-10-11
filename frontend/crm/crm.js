@@ -208,7 +208,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=70&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=71&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -631,14 +631,15 @@
       const wzChan = (c) => `<span class="tag ${c.state === "active" ? "green" : "orange"}">${esc(c.transport || "")}${c.plainId ? " · " + esc(c.plainId) : ""}${c.state && c.state !== "active" ? " · " + esc(c.state) : ""}</span>`;
       const bk = d.booking_ext || {};
       const bkBlock = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-          <div><h3>Booking.com — расширение для Chrome</h3>${state(bk.alive ? true : (bk.last_ping ? false : null), bk.alive ? `Расширение на связи · версия ${esc(bk.version || "")} · непрочитанных в экстранете: ${bk.unread || 0}` : bk.last_ping ? `Нет связи с ${esc(dtShort(bk.last_ping))} — откройте экстранет в Chrome` : "Расширение ещё не подключалось")}
+          <div><h3>Booking.com — расширение для Chrome</h3>${state(bk.alive ? (bk.session && bk.session !== "ok" && bk.session !== "expired" ? false : true) : (bk.last_ping ? false : null), bk.alive ? (bk.session && bk.session !== "ok" ? `⚠️ ${esc(bk.session_text)}` : `Расширение на связи · версия ${esc(bk.version || "")} · непрочитанных в экстранете: ${bk.unread || 0}`) : bk.last_ping ? `Нет связи с ${esc(dtShort(bk.last_ping))} — откройте экстранет в Chrome` : "Расширение ещё не подключалось")}
             <div class="muted small">Сообщения гостей Booking.com читаются из открытой вкладки экстранета на офисном компьютере и приходят сюда как канал Booking.com. Ответы из CRM расширение отправляет в экстранете. Чатов: ${bk.chats || 0}${bk.pending ? ` · в очереди на отправку: ${bk.pending}` : ""}.</div>
             ${bk.errors && bk.errors.length ? `<div class="small bad" style="margin-top:4px">Последняя ошибка: ${esc(bk.errors[0])}</div>` : ""}</div></div>
           ${admin ? `<details class="small" style="margin-top:8px"><summary>Установка и ключ</summary><ol class="muted" style="margin:6px 0 0 18px">
             <li>В папке программы есть папка <b>booking-ext</b>. В Chrome откройте <span class="mono">chrome://extensions</span>, включите «Режим разработчика», нажмите «Загрузить распакованное расширение» и выберите папку booking-ext.</li>
             <li>Нажмите на значок расширения → «Настройки»: адрес CRM <span class="mono">${esc((bk.hook_url || "").replace(/\/api\/inbox\/ext$/, "") || location.origin)}</span>, ключ <span class="mono">${esc(bk.token || "")}</span>.</li>
             <li>Откройте в Chrome экстранет Booking.com → Сообщения и оставьте вкладку открытой. Статус выше станет зелёным в течение минуты. Пока страницей никто не пользуется, расширение само открывает неотвеченные разговоры по очереди и читает их.</li>
-            <li>После каждого обновления CRM: chrome://extensions → ⟳ на карточке расширения, иначе Chrome работает со старой версией (нужна 1.6+).</li>
+            <li>«Время сессии истекло» в экстранете расширение закрывает само (нажимает «Обновить страницу»), а в простое перезагружает вкладку каждые 20 минут, чтобы сессия не протухала. Если Booking выкинул на страницу входа, владельцу приходит Telegram-сообщение: войти нужно руками.</li>
+            <li>После каждого обновления CRM: chrome://extensions → ⟳ на карточке расширения, иначе Chrome работает со старой версией (нужна 1.7+).</li>
             <li>Если сообщения не читаются: в меню расширения нажмите «Снимок страницы» и пришлите файл разработчику — селекторы ниже подстроятся без переустановки.</li></ol>
             ${bk.debug ? `<details style="margin-top:8px"><summary class="muted small">Что расширение видит в открытом разговоре (разбор страницы${bk.debug_at ? ", " + esc(dtShort(bk.debug_at)) : ""})</summary><pre class="mono small" style="white-space:pre-wrap;max-height:260px;overflow:auto;background:#F3F4F6;padding:8px;border-radius:8px">${esc(bk.debug)}</pre></details>` : ""}
             <label class="lbl" style="margin-top:8px">Селекторы страницы (JSON, для настройки)</label><textarea class="field mono" id="bk-sel" rows="6">${esc(JSON.stringify(bk.selectors || {}, null, 1))}</textarea>

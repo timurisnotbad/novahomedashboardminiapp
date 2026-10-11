@@ -87,11 +87,34 @@ def set_selectors(text: str) -> dict:
     return selectors()
 
 
+SESSION_TEXT = {"ok": "", "expired": "сессия экстранета истекла — расширение обновляет страницу",
+                "login": "экстранет разлогинился: нужно войти в Booking.com на офисном компьютере", "notab": "вкладка экстранета закрыта"}
+
+
 def ping(info: dict) -> None:
     _state.update(last_ping=datetime.now().isoformat(timespec="seconds"), page=(info.get("page") or "")[:120],
-                  version=(info.get("version") or "")[:20], unread=int(info.get("unread") or 0))
+                  version=(info.get("version") or "")[:20], unread=int(info.get("unread") or 0),
+                  session=str(info.get("session") or "ok")[:10])
     if info.get("error"):
         _state["errors"] = ([str(info["error"])[:200]] + _state["errors"])[:5]
+    if _state["session"] in ("login", "notab"):
+        _alert_session(_state["session"])
+    else:
+        _state["alerted"] = ""
+
+
+def _alert_session(kind: str) -> None:
+    """Telegram to the owner, once per hour, while a person is needed at the extranet."""
+    from . import config as _cfg, notify
+    stamp = _state.get("alerted") or ""
+    if stamp.startswith(kind) and (datetime.now() - datetime.fromisoformat(stamp.split("|", 1)[1])).total_seconds() < 3600:
+        return
+    _state["alerted"] = f"{kind}|{datetime.now().isoformat(timespec='seconds')}"
+    try:
+        if _cfg.BOT_TOKEN and _cfg.notify_targets():
+            notify.send(f"⚠️ Booking.com: {SESSION_TEXT[kind]}. Пока это не сделано, сообщения гостей Booking не приходят в CRM.")
+    except Exception:  # noqa: BLE001
+        logger.exception("session alert failed")
 
 
 def status() -> dict:
@@ -101,7 +124,9 @@ def status() -> dict:
     alive = False
     if _state["last_ping"]:
         alive = (datetime.now() - datetime.fromisoformat(_state["last_ping"])).total_seconds() < 180
+    sess = _state.get("session") or "ok"
     return {**_state, "alive": alive, "chats": chats, "pending": pending, "token": token(), "selectors": selectors(),
+            "session": sess, "session_text": SESSION_TEXT.get(sess, sess),
             "debug": _state.get("debug", ""), "debug_at": _state.get("debug_at"),
             "hook_url": f"{(config.WEBAPP_URL or '').split('?')[0].rstrip('/')}{config.API_PREFIX}/inbox/ext"}
 

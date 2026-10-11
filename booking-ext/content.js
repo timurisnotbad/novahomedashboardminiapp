@@ -198,9 +198,34 @@
     return { L, all, conv: conversation(all, L), list: list(all, L) };
   }
 
+  // ---- the extranet session: «Время сессии истекло» → press «Обновить страницу»;
+  // a login page → tell the CRM (a person has to sign in); idle → reload the
+  // page every 20 min so the session never goes stale in the first place
+  const EXPIRED = /Время сессии истекло|Сессия истекла|Session (has )?expired|session timed out/i;
+  function sessionState() {
+    if (/sign-in|login|account\.booking\.com/i.test(location.href) || document.querySelector("input[type='password']")) return "login";
+    for (const n of nodes()) if (EXPIRED.test(n.t) && n.t.length < 80) return "expired";
+    return "ok";
+  }
+  let lastReload = Date.now(), lastSessionFix = 0;
+  function keepAlive() {
+    const st = sessionState();
+    if (st === "expired" && Date.now() - lastSessionFix > 30000) {
+      lastSessionFix = Date.now();
+      const btn = qsa("button, a, [role='button']").filter(isVisible).find((b) => /Обновить страницу|Обновить|Refresh|Reload/i.test(txt(b)));
+      if (btn) btn.click(); else location.reload();
+      setTimeout(() => { if (sessionState() === "expired") location.reload(); }, 4000);
+      return st;
+    }
+    if (st === "ok" && !busy() && Date.now() - lastReload > 20 * 60000) { lastReload = Date.now(); location.reload(); }
+    return st;
+  }
+  setInterval(keepAlive, 5000);
+
   async function scan() {
     const S = await selectors();
-    const out = { page: location.pathname.slice(0, 80), unread: 0, conversations: [], list: [], busy: busy() };
+    const out = { page: location.pathname.slice(0, 80), unread: 0, conversations: [], list: [], busy: busy(), session: sessionState() };
+    if (out.session !== "ok") { keepAlive(); return out; }
     try {
       const c = current(S); if (!c) return out;
       out.list = c.list.map((i) => ({ guest: i.guest, date: i.date, preview: i.preview, unread: i.unread }));
