@@ -126,7 +126,7 @@ def status() -> dict:
         alive = (datetime.now() - datetime.fromisoformat(_state["last_ping"])).total_seconds() < 180
     sess = _state.get("session") or "ok"
     return {**_state, "alive": alive, "chats": chats, "pending": pending, "token": token(), "selectors": selectors(),
-            "session": sess, "session_text": SESSION_TEXT.get(sess, sess),
+            "session": sess, "session_text": SESSION_TEXT.get(sess, sess), "import": import_status(),
             "debug": _state.get("debug", ""), "debug_at": _state.get("debug_at"),
             "hook_url": f"{(config.WEBAPP_URL or '').split('?')[0].rstrip('/')}{config.API_PREFIX}/inbox/ext"}
 
@@ -136,8 +136,10 @@ def _jid(reservation: str, guest: str) -> str:
     return f"bk:{key}"
 
 
-def ingest(payload: dict) -> dict:
-    """One conversation from the page: {reservation, guest, checkin, checkout, room, messages:[{id?, dir, text, at?}]}."""
+def ingest(payload: dict, imported: bool = False, unread_item: bool = False) -> dict:
+    """One conversation from the page: {reservation, guest, checkin, checkout, room, messages:[{id?, dir, text, at?}]}.
+    imported=True (history walk): nothing rings, nothing counts as unread — except the
+    last incoming message of a thread Booking still marks unanswered (red dot)."""
     payload = _normalize(payload)
     guest = payload["guest"]
     reservation = payload["reservation"]
@@ -156,9 +158,11 @@ def ingest(payload: dict) -> dict:
         # on one pass and whole on the next must still be the same message
         tail = "template" if "(отправлено автоматически Booking.com)" in text else re.sub(r"\s+", " ", text)[-60:]
         mid = m.get("id") or hashlib.sha1(f"{jid}|{'o' if out else 'i'}|{at[:16]}|{tail}".encode()).hexdigest()[:16]
+        last_in = not out and i == len(msgs) - 1
+        hist = bool(m.get("history")) or (imported and not (last_in and unread_item))
         r = inbox.store_message({"channel": "bk", "id": f"bk:{mid}", "jid": jid, "phone": "", "from_me": out,
                                  "push_name": None if out else (guest or "Гость Booking.com"), "at": at, "kind": "text", "text": text},
-                                notify=not out and i == len(msgs) - 1, history=bool(m.get("history")))
+                                notify=last_in and not hist, history=hist)
         if r:
             n += 1
         else:
@@ -327,6 +331,39 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip().rstrip("…. ").lower()
 
 
+def import_on() -> bool:
+    from . import crm
+    return crm.get_setting("ext_import", "") == "1"
+
+
+def set_import(on: bool) -> None:
+    from . import crm
+    crm.set_setting("ext_import", "1" if on else "")
+    crm.set_setting("ext_import_at", datetime.now().isoformat(timespec="seconds") if on else "")
+    if on:
+        crm.set_setting("ext_import_n", "0")
+        _state["import_idle"] = 0
+
+
+def import_status() -> dict:
+    from . import crm
+    return {"on": import_on(), "started": crm.get_setting("ext_import_at", ""), "done_chats": int(crm.get_setting("ext_import_n", "0") or 0),
+            "finished": crm.get_setting("ext_import_done", "")}
+
+
+def import_progress(found_more: bool) -> None:
+    """Called after each deep scan: count read threads; three deep scans in a row
+    with nothing left to open → the import is complete."""
+    from . import crm
+    if found_more:
+        _state["import_idle"] = 0
+        return
+    _state["import_idle"] = int(_state.get("import_idle") or 0) + 1
+    if _state["import_idle"] >= 3:
+        crm.set_setting("ext_import", "")
+        crm.set_setting("ext_import_done", datetime.now().isoformat(timespec="seconds"))
+
+
 def wanted(items: list, limit: int = 3, skip: set | None = None) -> list[dict]:
     """From the extranet's conversation list: the ones the CRM has not read yet —
     a guest we have no chat with, or a preview that differs from the chat's last
@@ -334,7 +371,10 @@ def wanted(items: list, limit: int = 3, skip: set | None = None) -> list[dict]:
     preview) pair is asked for once (inbox_ext_seen), so a preview we cannot
     match (a photo, a translated line) does not loop forever."""
     out = []
-    cutoff = (date.today() - timedelta(days=45)).isoformat()
+    importing = import_on()
+    cutoff = (date.today() - timedelta(days=45)).isoformat() if not importing else "0000"
+    if importing:
+        limit = max(limit, 4)
     with database.get_conn() as conn:
         for it in items or []:
             guest = re.sub(r"\s+", " ", str(it.get("guest") or "")).strip()
@@ -347,6 +387,11 @@ def wanted(items: list, limit: int = 3, skip: set | None = None) -> list[dict]:
             if conn.execute("SELECT 1 FROM inbox_ext_seen WHERE guest = ? AND preview = ?", (guest.lower(), preview)).fetchone():
                 continue
             m = conn.execute("SELECT chat_id FROM inbox_ext_meta WHERE LOWER(guest) = ?", (guest.lower(),)).fetchone()
+            if importing and m and conn.execute("SELECT 1 FROM inbox_ext_seen WHERE guest = ? AND preview = '*full*'", (guest.lower(),)).fetchone():
+                pass  # already imported in full once: only a changed preview brings it back (handled below)
+            elif importing:
+                out.append({"guest": guest, "preview": it.get("preview") or "", "unread": bool(it.get("unread")), "full": True})
+                continue
             if m:
                 last = conn.execute("SELECT text FROM inbox_messages WHERE chat_id = ? ORDER BY at DESC, id DESC LIMIT 1", (m["chat_id"],)).fetchone()
                 lt = _norm_text(last["text"] if last else "")
@@ -365,6 +410,11 @@ def mark_seen(item: dict) -> None:
     with database.get_conn() as conn:
         conn.execute("INSERT OR REPLACE INTO inbox_ext_seen (guest, preview, at) VALUES (?, ?, ?)",
                      (guest, _norm_text(item.get("preview")), datetime.now().isoformat(timespec="seconds")))
+        if item.get("full") and item.get("ok"):
+            conn.execute("INSERT OR REPLACE INTO inbox_ext_seen (guest, preview, at) VALUES (?, '*full*', ?)", (guest, datetime.now().isoformat(timespec="seconds")))
+    if item.get("full") and item.get("ok"):  # outside the connection: set_setting opens its own
+        from . import crm
+        crm.set_setting("ext_import_n", str(int(crm.get_setting("ext_import_n", "0") or 0) + 1))
 
 
 def set_debug(text: str) -> None:

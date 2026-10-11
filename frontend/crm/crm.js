@@ -208,7 +208,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=71&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=72&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -639,8 +639,10 @@
             <li>Нажмите на значок расширения → «Настройки»: адрес CRM <span class="mono">${esc((bk.hook_url || "").replace(/\/api\/inbox\/ext$/, "") || location.origin)}</span>, ключ <span class="mono">${esc(bk.token || "")}</span>.</li>
             <li>Откройте в Chrome экстранет Booking.com → Сообщения и оставьте вкладку открытой. Статус выше станет зелёным в течение минуты. Пока страницей никто не пользуется, расширение само открывает неотвеченные разговоры по очереди и читает их.</li>
             <li>«Время сессии истекло» в экстранете расширение закрывает само (нажимает «Обновить страницу»), а в простое перезагружает вкладку каждые 20 минут, чтобы сессия не протухала. Если Booking выкинул на страницу входа, владельцу приходит Telegram-сообщение: войти нужно руками.</li>
-            <li>После каждого обновления CRM: chrome://extensions → ⟳ на карточке расширения, иначе Chrome работает со старой версией (нужна 1.7+).</li>
+            <li>После каждого обновления CRM: chrome://extensions → ⟳ на карточке расширения, иначе Chrome работает со старой версией (нужна 1.8+).</li>
             <li>Если сообщения не читаются: в меню расширения нажмите «Снимок страницы» и пришлите файл разработчику — селекторы ниже подстроятся без переустановки.</li></ol>
+            ${(() => { const im = bk.import || {}; return `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn sm ${im.on ? "" : "primary"}" id="bk-import">${im.on ? "Остановить импорт" : "Импортировать историю переписок"}</button>
+              <span class="muted small">${im.on ? `Идёт импорт: прочитано чатов — ${im.done_chats || 0}. Расширение листает весь список и каждый тред до начала, пока компьютером никто не пользуется.` : im.finished ? `Импорт завершён ${esc(dtShort(im.finished))}, прочитано чатов: ${im.done_chats || 0}.` : "Заберёт все прошлые переписки из экстранета. Старые сообщения приходят без уведомлений; треды с красной точкой (без ответа) остаются непрочитанными."}</span></div>`; })()}
             ${bk.debug ? `<details style="margin-top:8px"><summary class="muted small">Что расширение видит в открытом разговоре (разбор страницы${bk.debug_at ? ", " + esc(dtShort(bk.debug_at)) : ""})</summary><pre class="mono small" style="white-space:pre-wrap;max-height:260px;overflow:auto;background:#F3F4F6;padding:8px;border-radius:8px">${esc(bk.debug)}</pre></details>` : ""}
             <label class="lbl" style="margin-top:8px">Селекторы страницы (JSON, для настройки)</label><textarea class="field mono" id="bk-sel" rows="6">${esc(JSON.stringify(bk.selectors || {}, null, 1))}</textarea>
             <div style="margin-top:6px"><button class="btn sm" id="bk-sel-save">Сохранить селекторы</button></div></details>` : ""}</div>`;
@@ -684,6 +686,7 @@
           <div class="muted small">Уведомления о новых сообщениях из всех каналов (${d.telegram_bot.notify_targets.length ? "чатов: " + d.telegram_bot.notify_targets.length : "выключены"}); ответ на уведомление уходит гостю.</div></div>
         <div class="card"><h3>Booking.com · Airbnb</h3><div class="muted small">Брони приходят через RealtyCalendar («Интеграции»). Сообщения гостей — в приложениях площадок.</div></div>`;
       const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+      on("bk-import", async (e) => { const start = e.target.textContent.startsWith("Импорт"); if (start && !confirm("Запустить импорт всей истории Booking? Это займёт от 10 минут до часа, компьютер с экстранетом должен быть свободен.")) return; try { await post("/channels/booking_ext/import", { on: start }); toast(start ? "Импорт запущен" : "Импорт остановлен"); navigate(); } catch (err) { toast(err.message); } });
       on("bk-sel-save", async () => { try { await post("/channels/booking_ext/selectors", { text: $("bk-sel").value }); toast("Селекторы сохранены — расширение подхватит их в течение минуты"); } catch (err) { toast(err.message); } });
       on("wz-hook", async (e) => { e.target.disabled = true; try { const r = await post("/channels/wazzup/webhook"); toast("Вебхук подключён: " + r.url); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
       on("wa-off", async () => { if (!confirm("Отключить WhatsApp? Для возврата нужно будет снова сканировать QR.")) return; try { await post("/channels/whatsapp/logout"); toast("Отключено"); render(); } catch (err) { toast(err.message); } });

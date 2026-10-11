@@ -473,6 +473,13 @@ class SelectorsIn(BaseModel):
     text: str
 
 
+@router.post("/channels/booking_ext/import")
+def ext_import(payload: dict | None = None, user: dict = Depends(admin_user)):  # noqa: B008
+    """Start / stop the history import (the extension walks every thread while the PC is idle)."""
+    booking_ext.set_import(bool((payload or {}).get("on", True)))
+    return booking_ext.import_status()
+
+
 @router.post("/channels/booking_ext/selectors")
 def set_ext_selectors(payload: SelectorsIn, user: dict = Depends(admin_user)):  # noqa: B008
     try:

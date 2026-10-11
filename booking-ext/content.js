@@ -254,12 +254,77 @@
     const P = c3 && c3.conv ? c3.conv : {};
     return (item.reservation && P.reservation && String(P.reservation) === String(item.reservation)) || (item.guest && P.guest && P.guest.toLowerCase() === String(item.guest).toLowerCase());
   }
+  // the scrolling box of an element (list column / thread)
+  function scrollerOf(el) {
+    for (let i = 0; i < 14 && el && el !== document.body; i++, el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (/(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 4) return el;
+    }
+    return null;
+  }
+  // history: scroll the thread to its top until nothing more loads, then read it all
+  async function fullThread(S) {
+    const c = current(S); if (!c || !c.conv) return c && c.conv;
+    const col = c.all.filter((n) => n.r.left >= c.L.mid.l && n.r.right <= c.L.mid.r);
+    const anchor = col.find((n) => SEP.test(n.t) || /\d{1,2}:\d{2}$/.test(n.t));
+    const box = anchor ? scrollerOf(anchor.el) : null;
+    if (!box) return c.conv;
+    const seen = new Map();
+    const take = () => { const cc = current(S); if (cc && cc.conv) for (const m of cc.conv.messages) seen.set(m.dir + m.at + m.text.slice(-60), m); return cc; };
+    let last = -1, cc = take();
+    for (let i = 0; i < 40; i++) {
+      box.scrollTop = 0; await sleep(900);
+      cc = take();
+      if (box.scrollHeight === last && box.scrollTop === 0) break;  // nothing more loaded
+      last = box.scrollHeight;
+      if (box.scrollTop > 0) { box.scrollTop = 0; await sleep(400); }
+      // step down through the box so every bubble is in the visible area once
+      for (let y = 0; y < box.scrollHeight; y += Math.max(200, box.clientHeight - 120)) { box.scrollTop = y; await sleep(250); take(); }
+      box.scrollTop = 0; await sleep(300);
+      if (last === box.scrollHeight) break;
+    }
+    box.scrollTop = box.scrollHeight;
+    // a bubble read while half-visible is a fragment of the whole one: drop fragments
+    let msgs = Array.from(seen.values());
+    msgs = msgs.filter((m) => !msgs.some((o) => o !== m && o.dir === m.dir && o.text.length > m.text.length && o.text.includes(m.text.trim())));
+    // our template cards are tall: a piece read without its time stamp is a fragment too
+    msgs = msgs.filter((m) => !(m.dir === "out" && /T00:00:00$/.test(m.at) && msgs.some((o) => o !== m && o.dir === "out" && o.at.slice(0, 10) === m.at.slice(0, 10) && !/T00:00:00$/.test(o.at) && /автоматически Booking\.com/.test(o.text))));
+    msgs.sort((a, b) => a.at.localeCompare(b.at));
+    return Object.assign({}, cc && cc.conv ? cc.conv : c.conv, { messages: msgs });
+  }
+  // the whole conversation list: scroll it down until no more items load
+  async function deepList(S) {
+    const c = current(S); if (!c) return [];
+    const first = c.list[0]; const box = first ? scrollerOf(first.el) : null;
+    const seen = new Map(); const add = (l) => { for (const i of l) seen.set(i.guest + "|" + i.date, i); };
+    add(c.list);
+    if (!box) return Array.from(seen.values());
+    let last = -1;
+    for (let i = 0; i < 60; i++) {
+      box.scrollTop = box.scrollHeight; await sleep(1200);
+      const cc = current(S); if (cc) add(cc.list);
+      if (box.scrollHeight === last) break;
+      last = box.scrollHeight;
+    }
+    box.scrollTop = 0;
+    return Array.from(seen.values());
+  }
   async function open(item) {
     if (busy()) return { ok: false, busy: true };
     const S = await selectors();
     const ok = await openConversation(item, S);
     const r = await scan();
+    if (ok && item.full) { try { const full = await fullThread(S); if (full && full.messages.length) r.conversations = [full]; } catch (e) { r.error = String(e.message || e); } }
+    if (item.full) r.imported = true;
     return Object.assign(r, { ok });
+  }
+  async function scanDeep() {
+    if (busy()) return { busy: true };
+    const S = await selectors();
+    const r = await scan();
+    if (r.session !== "ok") return r;
+    try { const all = await deepList(S); r.list = all.map((i) => ({ guest: i.guest, date: i.date, preview: i.preview, unread: i.unread })); r.deep = true; } catch (e) { r.error = String(e.message || e); }
+    return r;
   }
 
   function setNativeValue(el, value) {
@@ -308,6 +373,7 @@
 
   window.__novaBk = (m, s, reply) => {
     if (m.type === "scan") { scan().then(reply); return true; }
+    if (m.type === "scanDeep") { scanDeep().then(reply); return true; }
     if (m.type === "open") { open(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }
     if (m.type === "send") { send(m.item).then(reply).catch((e) => reply({ ok: false, error: String(e.message || e) })); return true; }
     if (m.type === "snapshot") { snapshot(); reply({ ok: true }); }

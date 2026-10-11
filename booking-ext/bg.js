@@ -24,7 +24,23 @@ async function ask(tabId, msg) {
   }
 }
 async function post(r, opened) {
-  return api("/messages", { method: "POST", body: JSON.stringify({ conversations: r.conversations || [], list: r.list || [], opened: opened || null, debug: r.debug || "", busy: !!r.busy }) });
+  return api("/messages", { method: "POST", body: JSON.stringify({ conversations: r.conversations || [], list: r.list || [], opened: opened || null, debug: r.debug || "", busy: !!r.busy, deep: !!r.deep, imported: !!r.imported }) });
+}
+let importMode = false, importAt = 0;
+async function importOn() {
+  if (Date.now() - importAt > 60000) { try { const c = await api("/config"); importMode = !!c.import_history; } catch (e) { /* keep */ } importAt = Date.now(); }
+  return importMode;
+}
+// «Импорт истории»: the whole list, every thread scrolled to its beginning — only while idle
+async function importStep(tabId) {
+  const r = await ask(tabId, { type: "scanDeep" });
+  if (!r || r.busy || (r.session && r.session !== "ok")) return;
+  const ans = await post(r);
+  for (const item of (ans.open || []).slice(0, 4)) {
+    const o = await ask(tabId, { type: "open", item: Object.assign({ full: true }, item) });
+    if (!o || o.busy) break;
+    await post(o, Object.assign({}, item, { ok: !!o.ok }));
+  }
 }
 let ticking = false;
 async function tick() {
@@ -39,6 +55,7 @@ async function tick() {
         if (!r) continue;
         state = Object.assign(state, { page: r.page, unread: r.unread, error: r.error || "", session: r.session || "ok" });
         if (r.session && r.session !== "ok") continue;  // expired → the page is refreshing itself; login → a person is needed
+        if (await importOn()) { await importStep(t.id); continue; }
         const ans = await post(r);
         // read the conversations the CRM asks for — only while the page is idle
         for (const item of (ans.open || []).slice(0, 3)) {
