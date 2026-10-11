@@ -984,6 +984,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
+                     "auto_all_channels": crm.get_setting("auto_all_channels", "1") == "1",
                      "booking_flow": crm.get_setting("booking_flow", "1") == "1",
                      "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
                      "checkin_time": crm.default_times()[0], "checkout_time": crm.default_times()[1],
@@ -995,6 +996,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
 class SettingsIn(BaseModel):
     auto_tasks: bool | None = None
     auto_checklist: bool | None = None
+    auto_all_channels: bool | None = None
     checklist: str | None = None
     auto_deal: bool | None = None
     booking_flow: bool | None = None
@@ -1009,6 +1011,8 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         crm.set_setting("auto_tasks", "1" if payload.auto_tasks else "0")
     if payload.auto_checklist is not None:
         crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
+    if payload.auto_all_channels is not None:
+        crm.set_setting("auto_all_channels", "1" if payload.auto_all_channels else "0")
     if payload.auto_deal is not None:
         crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
     if payload.booking_flow is not None:

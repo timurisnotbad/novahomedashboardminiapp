@@ -708,6 +708,50 @@ def _chat_for_booking(b: dict, rule: dict) -> tuple[dict | None, str]:
         return None, str(exc)
 
 
+def guest_chats(b: dict, first: dict | None = None) -> list[dict]:
+    """Every conversation with this guest, all channels: chats pinned to the
+    booking, chats of the booking's deal, chats with the booking's phone, chats of
+    the guest cards with that phone. `first` goes first; the rest deduplicated."""
+    ids: list[int] = [first["id"]] if first else []
+    with database.get_conn() as conn:
+        ids += [r[0] for r in conn.execute("SELECT chat_id FROM crm_booking_chats WHERE booking_id = ?", (b["id"],)).fetchall()]
+        ids += [r[0] for r in conn.execute("SELECT l.chat_id FROM crm_deal_chats l JOIN crm_deals d ON d.id = l.deal_id WHERE d.booking_id = ?", (b["id"],)).fetchall()]
+        phone = crm.digits(b.get("phone") or "")
+        if len(phone) >= 7:
+            ids += [r[0] for r in conn.execute("SELECT id FROM inbox_chats WHERE phone LIKE ?", ("%" + phone[-9:],)).fetchall()]
+            ids += [r[0] for r in conn.execute("SELECT chat_id FROM crm_clients WHERE chat_id IS NOT NULL AND phone LIKE ?", ("%" + phone[-9:],)).fetchall()]
+        # the guest cards behind those chats may hold more chats (Instagram, Telegram…)
+        if ids:
+            more = conn.execute(f"SELECT c2.chat_id FROM crm_clients c1 JOIN crm_clients c2 ON c2.phone = c1.phone AND c1.phone != '' "
+                                f"WHERE c1.chat_id IN ({','.join('?' * len(ids))}) AND c2.chat_id IS NOT NULL", ids).fetchall()  # noqa: S608
+            ids += [r[0] for r in more]
+    out, seen = [], set()
+    for i in ids:
+        if i in seen:
+            continue
+        seen.add(i)
+        c = inbox.get_chat(i)
+        if c:
+            out.append(c)
+    return out
+
+
+def _send_everywhere(b: dict | None, first: dict, text_for: "callable", author: str) -> tuple[str, str | None, list[str]]:
+    """Send to the primary chat and, when «auto_all_channels» is on, to every other
+    chat of the same guest. Returns (status, error, titles of the chats reached)."""
+    chats = [first] if not b or crm.get_setting("auto_all_channels", "1") != "1" else guest_chats(b, first)
+    sent, errors = [], []
+    for c in chats:
+        try:
+            inbox.send(c["id"], author, text_for(c))
+            sent.append(f"{c.get('title')} ({c.get('channel_name') or c.get('channel')})")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{c.get('title')}: {exc}")
+    if sent:
+        return "sent", ("; ".join(errors) if errors else None), sent
+    return "failed", "; ".join(errors) or "не отправлено", []
+
+
 def _sources_ok(rule: dict, b: dict) -> bool:
     if not rule["sources"]:
         return True
@@ -774,20 +818,14 @@ def _send_rule(rule: dict, b: dict | None, key: str, now: datetime, chat: dict |
     if chat is None and b is not None:
         chat, why = _chat_for_booking(b, rule)
     text = fill(rule["text"], b, chat)
-    status, error = "sent", None
+    status, error, reached = "sent", None, []
     if not chat:
         status, error = "skipped", why or "нет чата"
     else:
-        try:
-            inbox.send(chat["id"], AUTHOR, text)
-        except inbox.BridgeError as exc:
-            status, error = "failed", str(exc)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("auto rule send failed")
-            status, error = "failed", str(exc)
+        status, error, reached = _send_everywhere(b, chat, lambda c: fill(rule["text"], b, c), AUTHOR)
     with database.get_conn() as conn:
         conn.execute("UPDATE crm_auto_log SET chat_id = ?, chat_title = ?, text = ?, status = ?, error = ?, at = ? WHERE dedupe = ?",
-                     (chat and chat["id"], chat and chat.get("title"), text, status, error, crm._now(), key))
+                     (chat and chat["id"], ", ".join(reached) if len(reached) > 1 else (chat and chat.get("title")), text, status, error, crm._now(), key))
     logger.info("auto rule %s → %s: %s %s", rule["name"], chat and chat.get("title"), status, error or "")
     return {"rule": rule["name"], "booking_id": b and b["id"], "chat": chat and chat["title"], "status": status, "error": error}
 
@@ -815,18 +853,18 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
     if t["auto_text_en"] and chat and guest_lang(chat) not in ("RU", "UZ", ""):
         text_src, lang = t["auto_text_en"], "en"
     text = fill(text_src, b, chat, lang)
-    status, error = "sent", None
+    status, error, reached = "sent", None, []
     if not chat:
         status, error = "skipped", why or "нет чата с гостем"
     else:
-        try:
-            inbox.send(chat["id"], who or AUTHOR, text)
-        except Exception as exc:  # noqa: BLE001
-            status, error = "failed", str(exc)
+        def text_for(c):  # each chat in the guest's own language (card language is shared, but be safe)
+            src, lg = (t["auto_text_en"], "en") if t["auto_text_en"] and guest_lang(c) not in ("RU", "UZ", "") else (t["auto_text"], "ru")
+            return fill(src, b, c, lg)
+        status, error, reached = _send_everywhere(b, chat, text_for, who or AUTHOR)
     with database.get_conn() as conn:
         if status == "sent":
             conn.execute("UPDATE crm_tasks SET status = 'done', done_at = ?, auto_status = ? WHERE id = ?",
-                         (crm._now(), f"sent:{chat['title']}", tid))
+                         (crm._now(), "sent:" + ", ".join(reached)[:280], tid))
         else:
             conn.execute("UPDATE crm_tasks SET auto_status = ? WHERE id = ?", (f"{status}:{error}"[:300], tid))
     logger.info("task message %s → %s: %s %s", tid, chat and chat.get("title"), status, error or "")

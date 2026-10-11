@@ -197,7 +197,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=67&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=68&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -721,6 +721,7 @@
       <div class="card"><h3>Время заезда и выезда</h3><div class="muted small">Стандартное время дома. Подставляется везде, где в брони время не указано: план подготовки, чек-листы, напоминания гостю, документы.</div>
         <div style="display:flex;gap:10px;align-items:end;margin-top:8px;flex-wrap:wrap"><div><label class="lbl">Заезд с</label><input class="field" id="i-ci" type="time" value="${esc(d.settings.checkin_time || "14:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><div><label class="lbl">Выезд до</label><input class="field" id="i-co" type="time" value="${esc(d.settings.checkout_time || "11:00")}" ${S.me.role !== "admin" ? "disabled" : ""} /></div><button class="btn" id="i-times" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить</button></div></div>
       <div class="card"><h3>Карточка гостя → RealtyCalendar</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-rcc" ${d.settings.rc_sync_clients ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> При изменении гостя в CRM или в чате отправлять данные в его текущие и будущие брони: имя, телефон, email, доп. телефон — в поля гостя; статус, язык, Instagram, Telegram, город, особенности — блоком «--- CRM ---» в примечание к брони</label></div>
+      <div class="card"><h3>Автосообщения во все каналы гостя</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-allch" ${d.settings.auto_all_channels ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Шаблоны этапов и автосообщения уходят во все чаты гостя сразу: WhatsApp, Telegram, Instagram, Booking — все, что привязаны к брони, к его сделке или найдены по его номеру. Выключено — только в один, основной чат</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card" id="steps-card"><h3>Этапы заезда гостя</h3>
         <div class="muted small">Сценарий по каждой брони: что сделать и что написать гостю на каждом этапе. Шаги с текстом CRM отправляет гостю сама в назначенное время (в чат WhatsApp / Telegram / Booking, привязанный к брони или найденный по номеру) и закрывает задачу; шаги без текста — задачи менеджеру. Гостю с языком не RU/UZ в карточке уходит английский вариант. Переменные: <span class="mono">{имя} {объект} {блок} {заезд время} {выезд время} {время заезда} {время выезда} {ночей} {сумма} {долг} {телефон компании} {адрес}</span>. Текст в [квадратных скобках] — заполните один раз: ключи, Wi-Fi, ссылка на отзыв.</div>
@@ -737,6 +738,7 @@
     $("n-test").addEventListener("click", async () => { try { const r = await post("/push/test"); toast(r.sent ? `Отправлено на ${r.sent} устр.` : "У вас нет устройств с включёнными push"); } catch (err) { toast(err.message); } });
     $("i-times").addEventListener("click", async () => { try { await post("/integrations/settings", { checkin_time: val("i-ci"), checkout_time: val("i-co") }); S.times = [val("i-ci"), val("i-co")]; toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-rcc").addEventListener("change", async (e) => { try { await post("/integrations/settings", { rc_sync_clients: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("i-allch").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_all_channels: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     stepsEditor(d.settings.steps || []);
