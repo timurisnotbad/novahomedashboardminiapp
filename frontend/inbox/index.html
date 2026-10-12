@@ -26,7 +26,7 @@
       </div>
       <div class="ib-filters" id="filters">
         <button data-only="all" class="is-on">Все</button>
-        <button data-only="unread">Непрочитанные <b id="unread-total"></b></button>
+        <button data-only="unread" title="Чаты, в которых гость ждёт ответа">Нужен ответ <b id="unread-total"></b></button>
         <button data-only="mine">Мои</button>
       </div>
       <div id="chat-list" class="ib-list"></div>
@@ -90,7 +90,7 @@
     <div>
       <div class="ib-empty__ic">🔒</div>
       <h2>Нет доступа</h2>
-      <p>Откройте чаты по своей ссылке: напишите боту команду <b>/chats</b>.</p>
+      <p id="denied-text">Откройте чаты по своей ссылке: напишите боту команду <b>/chats</b>.</p>
     </div>
   </div>
 

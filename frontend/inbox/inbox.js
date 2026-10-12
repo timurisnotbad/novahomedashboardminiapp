@@ -40,9 +40,30 @@
       opts.body = JSON.stringify(opts.json);
       delete opts.json;
     }
-    const res = await fetch(API + path, opts);
-    let data = null;
-    try { data = await res.json(); } catch (e) { /* empty */ }
+    // 20 s timeout (40 s for the long-poll with wait=); a caller's own signal is honoured too
+    const ms = /[?&]wait=/.test(path) ? 40000 : 20000;
+    let timer = null, timedOut = false;
+    if (typeof AbortController !== "undefined") {
+      const ctl = new AbortController();
+      const outer = opts.signal;
+      if (outer) {
+        if (outer.aborted) ctl.abort();
+        else outer.addEventListener("abort", () => ctl.abort(), { once: true });
+      }
+      opts.signal = ctl.signal;
+      timer = setTimeout(() => { timedOut = true; ctl.abort(); }, ms);
+    }
+    let res, data = null;
+    try {
+      res = await fetch(API + path, opts);
+      try { data = await res.json(); } catch (e) { if (timedOut) throw e; /* empty body */ }
+    } catch (e) {
+      if (timedOut) { const err = new Error("Сервер не ответил — проверьте связь"); err.status = 0; throw err; }
+      if (e && e.name === "AbortError") throw e;  // the caller aborted (repoll)
+      const err = new Error("Нет связи с сервером"); err.status = 0; throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       const err = new Error((data && data.detail) || "Ошибка " + res.status);
       err.status = res.status;
@@ -55,14 +76,18 @@
   const S = {
     me: null, agents: [], rev: 0, chats: new Map(), only: "all", q: "",
     open: null, msgs: [], reply: null, wa: "…", loadingOlder: false, noOlder: false,
+    more: false, loadingMore: false, needReply: null,  // chat list paging; «нужен ответ» = chats with unread>0 (server-wide when the poll says so)
   };
 
   // ---- helpers -------------------------------------------------------------
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   function linkify(s) {
-    return esc(s).replace(/(https?:\/\/[^\s<]+)/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`)
-      .replace(/\*([^*\n]+)\*/g, "<b>$1</b>").replace(/_([^_\n]+)_/g, "<i>$1</i>");
+    // URLs first (they may contain `_` and `*`), formatting on the rest, then the anchors back
+    const urls = [];
+    return esc(s).replace(/(https?:\/\/[^\s<]+)/g, (u) => { urls.push(u); return `\u0000${urls.length - 1}\u0000`; })
+      .replace(/\*([^*\n]+)\*/g, "<b>$1</b>").replace(/_([^_\n]+)_/g, "<i>$1</i>")
+      .replace(/\u0000(\d+)\u0000/g, (m, i) => `<a href="${urls[i]}" target="_blank" rel="noopener">${urls[i]}</a>`);
   }
   function toast(t) {
     const el = $("toast");
@@ -149,13 +174,59 @@
             <div class="ib-chat__bot"><span class="ib-chat__last">${last}</span>${c.unread ? `<span class="ib-badge">${c.unread}</span>` : ""}</div>
             ${c.assignee ? `<div class="ib-who">👤 ${esc(c.assignee)}</div>` : ""}
           </div>
+          ${c.unread ? `<button class="ib-done" data-done="${c.id}" title="Отметить обработанным без ответа" aria-label="Обработано">✓</button>` : ""}
         </div>`;
       }).join("");
     }
-    let total = 0;
-    S.chats.forEach((c) => { total += c.unread || 0; });
+    if (S.more) el.insertAdjacentHTML("beforeend", `<button class="ib-more ib-more--chats" id="more-chats" ${S.loadingMore ? "disabled" : ""}>${S.loadingMore ? "Загружаю…" : "Показать ещё"}</button>`);
+    // «нужен ответ» = the number of chats with unread>0 (not the sum of messages)
+    let local = 0;
+    S.chats.forEach((c) => { if (c.unread > 0) local++; });
+    const total = S.needReply != null ? Math.max(S.needReply, local) : local;
     $("unread-total").textContent = total ? String(total) : "";
     document.title = (total ? `(${total}) ` : "") + "Чаты · Nova Home";
+  }
+
+  // next page of the chat list: chats older than the oldest one we have
+  async function loadMoreChats() {
+    if (S.loadingMore || !S.more) return;
+    const all = Array.from(S.chats.values()).filter((c) => c.last_at).sort((a, b) => a.last_at.localeCompare(b.last_at));
+    if (!all.length) { S.more = false; renderList(); return; }
+    S.loadingMore = true;
+    renderList();
+    try {
+      const d = await req(`/chats?limit=300&before=${encodeURIComponent(all[0].last_at)}`);
+      const chats = (d && d.chats) || [];
+      const fresh = chats.filter((c) => !S.chats.has(c.id));
+      chats.forEach((c) => S.chats.set(c.id, c));
+      S.more = fresh.length > 0 && (d.more != null ? !!d.more : chats.length >= 300);
+      if (!fresh.length) toast("Это все чаты");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      S.loadingMore = false;
+      renderList();
+    }
+  }
+
+  // «✓ обработано» in the list: the chat is handled without a reply, the badge goes away
+  async function markHandled(id, btn) {
+    const c = S.chats.get(id);
+    if (!c || !c.unread) return;
+    if (btn) btn.disabled = true;
+    try {
+      await req(`/chats/${id}/read`, { method: "POST" });
+      const cur = S.chats.get(id);
+      if (cur && cur.unread) {
+        cur.unread = 0;
+        if (S.needReply != null) S.needReply = Math.max(0, S.needReply - 1);
+      }
+      if (S.open && S.open.id === id) { S.open = cur || S.open; renderHead(); }
+      renderList();
+    } catch (e) {
+      toast(e.message);
+      if (btn) btn.disabled = false;
+    }
   }
 
   // ---- conversation -----------------------------------------------------------
@@ -259,6 +330,11 @@
     else el.scrollTop = prevTop;
   }
 
+  // Phones: the chat is a full screen of its own, so it gets a history entry —
+  // the OS/browser Back closes it (popstate) instead of leaving the section.
+  const isPhone = () => window.innerWidth <= 760;
+  let histPushed = false;  // the open chat's history entry is ours: ← does history.back()
+
   async function openChat(id) {
     const c = S.chats.get(id);
     S.open = c || { id };
@@ -271,10 +347,22 @@
     renderHead();
     renderList();
     $("msgs").innerHTML = "";
-    try { history.replaceState(null, "", "#chat=" + id); } catch (e) { /* ignore */ }
+    try {
+      const st = history.state;
+      if (st && st.chat) {  // already on a chat entry (reload, forward, chat → chat): reuse it
+        histPushed = true;
+        if (st.chat !== id) history.replaceState({ chat: id }, "", "#chat=" + id);
+      } else if (isPhone()) {
+        history.pushState({ chat: id }, "", "#chat=" + id);
+        histPushed = true;
+      } else {
+        histPushed = false;
+        history.replaceState(null, "", "#chat=" + id);
+      }
+    } catch (e) { /* ignore */ }
     try {
       const d = await req(`/chats/${id}`);
-      if (!S.open || S.open.id !== id) return;
+      if (!S.open || S.open.id !== id) return;  // another chat was opened meanwhile
       S.chats.set(id, d.chat);
       S.open = d.chat;
       S.msgs = d.messages;
@@ -283,9 +371,9 @@
       renderMsgs("bottom");
       repoll();  // the waiting poll does not know about this chat yet
     } catch (e) {
-      toast(e.message);
+      if (S.open && S.open.id === id) toast(e.message);
     }
-    if (window.innerWidth > 760) $("text").focus();
+    if (S.open && S.open.id === id && !isPhone()) $("text").focus();
   }
 
   // Opening a chat does NOT clear its unread badge: the badge means «needs an
@@ -294,8 +382,10 @@
   async function loadOlder() {
     if (!S.open || S.loadingOlder || S.noOlder || !S.msgs.length) return;
     S.loadingOlder = true;
+    const id = S.open.id;
     try {
-      const d = await req(`/chats/${S.open.id}?before=${S.msgs[0].id}`);
+      const d = await req(`/chats/${id}?before=${S.msgs[0].id}`);
+      if (!S.open || S.open.id !== id) return;  // another chat is open now
       const have = new Set(S.msgs.map((m) => m.id));
       const older = d.messages.filter((m) => !have.has(m.id));
       S.noOlder = d.messages.length < 60;
@@ -308,7 +398,12 @@
     }
   }
 
-  function closeChat() {
+  function closeChat(fromHistory) {
+    if (!fromHistory && histPushed) {  // ← on a phone: go back; popstate finishes the close
+      histPushed = false;
+      try { history.back(); return; } catch (e) { /* fall through */ }
+    }
+    histPushed = false;
     S.open = null;
     $("ib").classList.remove("show-conv");
     $("conv").classList.add("hidden");
@@ -339,22 +434,47 @@
     }
   }
 
+  // template variables that stayed unfilled ({имя} when the chat has no name) and
+  // [placeholders] the operator was supposed to type over — asked about before sending
+  function unfilled(text) {
+    const seen = new Set();
+    (text.match(/\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}/g) || []).forEach((t) => seen.add(t));
+    (text.match(/\[[^\[\]\n]{2,40}\]/g) || []).forEach((t) => seen.add(t));
+    return Array.from(seen);
+  }
+  function confirmUnfilled(text) {
+    const left = unfilled(text);
+    return !left.length || confirm(`В тексте остались незаполненные поля: ${left.join(", ")}. Отправить как есть?`);
+  }
+  // the composer text (and the reply quote) back after a failed send
+  function restoreDraft(text, reply, chatId) {
+    const ta = $("text");
+    if (!text) return;
+    ta.value = ta.value.trim() ? text + "\n" + ta.value : text;
+    autosize();
+    if (reply && !S.reply && S.open && S.open.id === chatId) setReply(reply);
+  }
+
   let sending = false;
   async function sendText() {
     const ta = $("text");
     const text = ta.value.trim();
     if (!text || !S.open || sending) return;
+    if (!confirmUnfilled(text)) return;
     sending = true;
     $("send").disabled = true;
-    const quoted = S.reply && S.reply.wa_id && !S.reply.wa_id.startsWith("local-") ? S.reply.wa_id : null;
+    const chatId = S.open.id;
+    const reply = S.reply;
+    const quoted = reply && reply.wa_id && !reply.wa_id.startsWith("local-") ? reply.wa_id : null;
     ta.value = "";
     autosize();
     setReply(null);
     try {
-      const m = await req(`/chats/${S.open.id}/send`, { method: "POST", json: { text, quoted_id: quoted } });
-      if (m && S.open) { mergeMsgs([m]); renderMsgs("bottom"); }
+      const m = await req(`/chats/${chatId}/send`, { method: "POST", json: { text, quoted_id: quoted } });
+      if (m && S.open && S.open.id === chatId) { mergeMsgs([m]); renderMsgs("bottom"); }
     } catch (e) {
       toast(e.message);
+      restoreDraft(text, reply, chatId);
       pollNow();
     } finally {
       sending = false;
@@ -366,11 +486,13 @@
     if (!file || !S.open) return;
     if (file.size > 30 * 1024 * 1024) { toast("Файл больше 30 МБ"); return; }
     const caption = $("text").value.trim();
+    if (!confirmUnfilled(caption)) return;
+    const chatId = S.open.id;
     $("text").value = "";
     autosize();
     toast("Отправляю файл…");
     try {
-      const m = await req(`/chats/${S.open.id}/file`, {
+      const m = await req(`/chats/${chatId}/file`, {
         method: "POST",
         headers: {
           "Content-Type": file.type || "application/octet-stream",
@@ -379,10 +501,11 @@
         },
         body: file,
       });
-      if (m && S.open) { mergeMsgs([m]); renderMsgs("bottom"); }
+      if (m && S.open && S.open.id === chatId) { mergeMsgs([m]); renderMsgs("bottom"); }
       toast("Отправлено");
     } catch (e) {
       toast(e.message);
+      restoreDraft(caption, null, chatId);
       pollNow();
     }
   }
@@ -453,9 +576,17 @@
   let polling = false;
   let pollCtl = null;  // the long-poll in flight: aborted when another chat is opened
   let lastIncoming = null;
+  let stopped = false;  // 403 from the poll: the session is gone, no point retrying every 4 s
+  function showDenied() {
+    stopped = true;
+    clearTimeout(pollTimer);
+    const p = $("denied-text");
+    if (p && EMBED) p.textContent = "Сессия истекла — войдите в CRM заново";
+    $("denied").classList.remove("hidden");
+  }
   function repoll() { if (pollCtl) { try { pollCtl.abort(); } catch (e) { /* ignore */ } } else pollNow(); }
   async function pollNow() {
-    if (polling) return;
+    if (polling || stopped) return;
     polling = true;
     clearTimeout(pollTimer);
     const since = S.rev, reqChat = S.open ? S.open.id : null;
@@ -481,12 +612,14 @@
         S.chats.set(c.id, c);
       });
       S.rev = d.rev;
-      if (S.open && d.messages.length) {
+      const nrChanged = typeof d.need_reply === "number" && d.need_reply !== S.needReply;
+      if (nrChanged) S.needReply = d.need_reply;
+      // messages belong to the chat this request asked for — never to one opened meanwhile
+      if (S.open && S.open.id === reqChat && d.messages && d.messages.length) {
         mergeMsgs(d.messages);
         renderMsgs();
-        const c = S.chats.get(S.open.id);
       }
-      if (d.chats.length) {
+      if (d.chats.length || nrChanged) {
         renderList();
         if (S.open && d.chats.some((c) => c.id === S.open.id)) renderHead();
       }
@@ -494,11 +627,11 @@
       pollFailed = false;
     } catch (e) {
       pollFailed = !(e && e.name === "AbortError");
-      if (e.status === 403) { $("denied").classList.remove("hidden"); return; }
+      if (e.status === 403) showDenied();
     } finally {
       pollCtl = null;
       polling = false;
-      pollTimer = setTimeout(pollNow, pollFailed ? 4000 : document.visibilityState === "visible" ? 300 : 30000);
+      if (!stopped) pollTimer = setTimeout(pollNow, pollFailed ? 4000 : document.visibilityState === "visible" ? 300 : 30000);
     }
   }
   let pollFailed = false;
@@ -779,8 +912,25 @@
   // ---- events ----------------------------------------------------------------------
   function bind() {
     $("chat-list").addEventListener("click", (e) => {
+      const done = e.target.closest("[data-done]");
+      if (done) { e.stopPropagation(); e.preventDefault(); markHandled(parseInt(done.dataset.done, 10), done); return; }
+      if (e.target.closest("#more-chats")) { loadMoreChats(); return; }
       const it = e.target.closest("[data-chat]");
       if (it) openChat(parseInt(it.dataset.chat, 10));
+    });
+    // phones: Back closes the open chat (its history entry is ours), forward re-opens it
+    window.addEventListener("popstate", (e) => {
+      const st = e.state;
+      if (st && st.chat) {
+        if (!S.open || S.open.id !== st.chat) openChat(st.chat);
+      } else if (S.open) {
+        closeChat(true);
+      }
+    });
+    // a «#chat=N» typed into the address bar of the already open page (popstate ran first, so this is a no-op after Back)
+    window.addEventListener("hashchange", () => {
+      const m = /chat=(\d+)/.exec(location.hash);
+      if (m && (!S.open || S.open.id !== parseInt(m[1], 10))) openChat(parseInt(m[1], 10));
     });
     $("filters").addEventListener("click", (e) => {
       const b = e.target.closest("[data-only]");
@@ -791,7 +941,7 @@
     });
     let qT = null;
     $("search").addEventListener("input", (e) => { S.q = e.target.value.trim(); clearTimeout(qT); qT = setTimeout(renderList, 150); });
-    $("back").addEventListener("click", closeChat);
+    $("back").addEventListener("click", () => closeChat());  // not `closeChat` itself: the event would read as `fromHistory`
     $("send").addEventListener("click", sendText);
     $("text").addEventListener("input", () => { autosize(); renderCmd(); });
     $("text").addEventListener("blur", () => setTimeout(() => { const b = $("cmd-box"); if (b) b.remove(); }, 150));
@@ -960,14 +1110,15 @@
       S.agents = me.agents || [];
       $("me-name").textContent = "Вы: " + S.me.name;
     } catch (e) {
-      if (e.status === 403) $("denied").classList.remove("hidden");
+      if (e.status === 403) showDenied();
       else toast("Сервер недоступен: " + e.message);
       return;
     }
     try {
-      const d = await req("/chats");
+      const d = await req("/chats?limit=300");
       d.chats.forEach((c) => S.chats.set(c.id, c));
       S.rev = d.rev;
+      S.more = d.more != null ? !!d.more : d.chats.length >= 300;  // a full page: there may be older chats
     } catch (e) { toast(e.message); }
     renderList();
     refreshWa();

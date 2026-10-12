@@ -79,6 +79,14 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-tick.read { color:var(--blue); }
 .ib-tick.failed { color:var(--red); }
 .ib-list__empty { padding:30px 20px; text-align:center; color:var(--label-2); font-size:14px; }
+/* «✓ обработано» on a row that needs a reply: hover-only with a mouse, always visible on touch */
+.ib-done { flex:none; align-self:center; width:32px; height:32px; border-radius:50%; margin-left:-4px; display:grid; place-items:center; font-size:15px; font-weight:700; color:var(--green); border:1.5px solid currentColor; opacity:0; transition:opacity .15s, background .15s; }
+.ib-chat:hover .ib-done, .ib-done:focus-visible { opacity:1; }
+.ib-done:hover { background:#E3F6E8; }
+.ib-done:disabled { opacity:.4; }
+@media (hover: none) { .ib-done { opacity:.85; } }
+.ib-more--chats { display:block; width:100%; padding:14px 10px; min-height:44px; font-size:14px; font-weight:600; color:var(--tint-text); border-top:1px solid var(--sep); }
+.ib-more--chats:disabled { opacity:.5; }
 
 /* ---------- conversation ---------- */
 .ib-main { flex:1; min-width:0; display:flex; background:var(--chat-bg); }
@@ -197,9 +205,23 @@ textarea.ib-field { resize:vertical; min-height:80px; }
   .ib .ib-booking__btns { margin-left:auto; }
   .ib-msgs { padding:10px 10px 14px; min-height:0; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   .ib-m { max-width:86%; }
-  .ib-m__act { display:none; }
   .ib-compose { flex:none; }
   .ib-modal__card { max-height:calc(100% - 24px); }
+  /* tap targets: nothing interactive under 40 px */
+  .ib-filters { gap:8px; padding:0 14px 8px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  .ib-filters::-webkit-scrollbar { display:none; }
+  .ib-filters button { min-height:40px; padding:8px 14px; font-size:14px; flex:none; }
+  .ib-back { width:40px; height:40px; }
+  .ib-conv__head { grid-template-columns:40px 1fr 1fr 32px 32px; }
+  .ib-compose .ib-icon, .ib-send { width:40px; height:40px; }
+  .ib-done { width:44px; height:44px; margin-left:-6px; border-width:1px; }
+  .ib .ib-link, .ib .ib-eta, .ib .ib-bkinfo { min-height:40px; display:inline-flex; align-items:center; }
+  .ib .ib-link.attn { padding:8px 14px; }
+}
+/* touch screens have no hover: the per-message «Ответить» stays visible, small and faint */
+@media (hover: none) {
+  .ib-m__act { opacity:.55; }
+  .ib-m__act button { width:30px; height:30px; }
 }
 
 /* booking link + client status in the chat header */
