@@ -169,7 +169,6 @@ label.lbl { display:block; font-size:13px; color:var(--label-2); margin:10px 0 4
 
 /* ---------- messages (embedded inbox) ---------- */
 .inbox-frame { flex:1; min-width:0; height:100vh; border:none; background:var(--card); }
-.main.full { padding:16px 20px 20px; }
 details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 
 .side__notif { margin-top:8px; font-size:12px; color:var(--label-2); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -221,8 +220,6 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .act-row .field { padding:6px 9px; font-size:13px; }
 .act-task { font-size:13px; color:var(--label-2); white-space:nowrap; display:inline-flex; gap:4px; align-items:center; }
 .chip { display:inline-block; padding:4px 10px; border-radius:8px; background:var(--blue-soft); color:var(--blue-text); font-family:ui-monospace, Menlo, monospace; font-size:13px; margin:2px 4px 2px 0; }
-.link-list a { display:block; padding:6px 0; border-bottom:1px solid var(--sep); }
-.link-list a:last-child { border-bottom:none; }
 
 /* quick commands: list + variables side by side (one column on phones) */
 .cmd-grid { grid-template-columns:1fr 240px; align-items:start; }

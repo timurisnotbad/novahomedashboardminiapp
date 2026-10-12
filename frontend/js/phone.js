@@ -31,5 +31,5 @@
   const mo = new MutationObserver((muts) => muts.forEach((m) => m.addedNodes.forEach((n) => { if (n.nodeType === 1) scan(n); })));
   const start = () => { scan(document); mo.observe(document.body, { childList: true, subtree: true }); };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
-  window.NHPhone = { format: (v) => format(v, true), digits: (v) => String(v || "").replace(/\D/g, "") };
+
 })();

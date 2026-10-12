@@ -33,44 +33,11 @@
   });
 
   async function req(path, opts) {
-    opts = opts || {};
+    opts = Object.assign({}, opts || {});
     opts.headers = Object.assign({}, headers(), opts.headers || {});
-    if (opts.json !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(opts.json);
-      delete opts.json;
-    }
-    // 20 s timeout (40 s for the long-poll with wait=); a caller's own signal is honoured too
-    const ms = /[?&]wait=/.test(path) ? 40000 : 20000;
-    let timer = null, timedOut = false;
-    if (typeof AbortController !== "undefined") {
-      const ctl = new AbortController();
-      const outer = opts.signal;
-      if (outer) {
-        if (outer.aborted) ctl.abort();
-        else outer.addEventListener("abort", () => ctl.abort(), { once: true });
-      }
-      opts.signal = ctl.signal;
-      timer = setTimeout(() => { timedOut = true; ctl.abort(); }, ms);
-    }
-    let res, data = null;
-    try {
-      res = await fetch(API + path, opts);
-      try { data = await res.json(); } catch (e) { if (timedOut) throw e; /* empty body */ }
-    } catch (e) {
-      if (timedOut) { const err = new Error("Сервер не ответил — проверьте связь"); err.status = 0; throw err; }
-      if (e && e.name === "AbortError") throw e;  // the caller aborted (repoll)
-      const err = new Error("Нет связи с сервером"); err.status = 0; throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) {
-      const err = new Error((data && data.detail) || "Ошибка " + res.status);
-      err.status = res.status;
-      throw err;
-    }
-    return data;
+    return NH.common.request(API + path, opts);  // timeout (40 s for the long-poll), JSON, one error shape; a caller's signal is honoured
   }
+
 
   // ---- state -------------------------------------------------------------
   const S = {
@@ -80,8 +47,8 @@
   };
 
   // ---- helpers -------------------------------------------------------------
-  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
-    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const NH = window.NH;
+  const esc = NH.common.esc;
   function linkify(s) {
     // URLs first (they may contain `_` and `*`), formatting on the rest, then the anchors back
     const urls = [];
@@ -96,7 +63,7 @@
     clearTimeout(toast.t);
     toast.t = setTimeout(() => el.classList.add("hidden"), 3200);
   }
-  const pad = (n) => String(n).padStart(2, "0");
+  const pad = NH.common.pad;
   const hm = (iso) => (iso ? iso.slice(11, 16) : "");
   function shortWhen(iso) {
     if (!iso) return "";
@@ -107,7 +74,7 @@
     if (d.toDateString() === y.toDateString()) return "вчера";
     return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}${d.getFullYear() !== now.getFullYear() ? "." + String(d.getFullYear()).slice(2) : ""}`;
   }
-  const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+  const MONTHS = NH.common.MONTHS_GEN;
   function dayLabel(iso) {
     const d = new Date(iso);
     const now = new Date();
@@ -436,12 +403,7 @@
 
   // template variables that stayed unfilled ({имя} when the chat has no name) and
   // [placeholders] the operator was supposed to type over — asked about before sending
-  function unfilled(text) {
-    const seen = new Set();
-    (text.match(/\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}/g) || []).forEach((t) => seen.add(t));
-    (text.match(/\[[^\[\]\n]{2,40}\]/g) || []).forEach((t) => seen.add(t));
-    return Array.from(seen);
-  }
+  const unfilled = (text) => NH.common.unresolved(text);
   function confirmUnfilled(text) {
     const left = unfilled(text);
     return !left.length || confirm(`В тексте остались незаполненные поля: ${left.join(", ")}. Отправить как есть?`);
@@ -511,18 +473,13 @@
   }
 
   // ---- quick commands: «/wifi» in the composer → template with variables ----
-  const MONTHS_GEN = MONTHS;
   function fillVars(text) {
     const c = S.open && (S.chats.get(S.open.id) || S.open) || {};
     const b = c.booking || {};
-    const fmt = (iso) => { if (!iso) return ""; const d = new Date(iso); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`; };
-    const name = (b.guest || c.title || "").replace(/^\+\d+$/, "").split(" ")[0];
-    const dt = b.default_times || ["14:00", "11:00"]; const tIn = b.arrival_time || dt[0], tOut = b.departure_time || dt[1];
-    const map = { "имя": name, "объект": b.apartment || "", "заезд": fmt(b.begin), "выезд": fmt(b.end), "дата заезда": fmt(b.begin), "дата выезда": fmt(b.end),
-      "время заезда": b.begin ? tIn : "", "время выезда": b.end ? tOut : "", "заезд время": b.begin ? `${fmt(b.begin)} в ${tIn}` : "", "выезд время": b.end ? `${fmt(b.end)} до ${tOut}` : "",
-      "ночей": b.nights ? String(b.nights) : "", "сумма": b.amount != null ? String(b.amount) : "", "телефон": c.phone ? "+" + c.phone : "" };
-    return text.replace(/\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}/g, (m, k) => map[k] || m);
+    return NH.common.fillVars(text, { name: b.guest || c.title, apartment: b.apartment, checkin: b.begin, checkout: b.end, arrival_time: b.arrival_time,
+      departure_time: b.departure_time, nights: b.nights, amount: b.amount, phone: c.phone, times: b.default_times });
   }
+
   let tpls = [];
   let cmdSel = 0;
   function loadTpls() {

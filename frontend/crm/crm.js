@@ -7,16 +7,10 @@
   const S = { times: ["14:00", "11:00"], me: null, users: [], pipelines: [], fields: [], route: "home", cache: {}, navSeq: 0, dragging: false, features: { smtp: true, bot: true } };
 
   // ---- helpers --------------------------------------------------------------
-  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const MONTHS = ["янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек."];
-  const MONTHS_FULL = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
-  const MONTHS_NOM = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
-  const WD = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
-  const pad = (n) => String(n).padStart(2, "0");
-  const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const todayIso = () => iso(new Date());
-  // local «now» as YYYY-MM-DDTHH:MM — task deadlines are local time, toISOString() is UTC (5 hours off in Tashkent)
-  const nowLocal = () => { const d = new Date(); return `${iso(d)}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+  // shared with the chats page: /js/common.js
+  const C = window.NH.common;
+  const { esc, pad, iso, todayIso, nowLocal, plural, WD } = C;
+  const MONTHS = C.MONTHS, MONTHS_FULL = C.MONTHS_GEN, MONTHS_NOM = C.MONTHS_NOM;
   function dShort(s) { if (!s) return ""; const d = new Date(s.slice(0, 10) + "T00:00"); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; }
   function dLong(s) { if (!s) return ""; const d = new Date(s.slice(0, 10) + "T00:00"); return `${d.getDate()} ${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}, ${WD[d.getDay()]}`; }
   function dtShort(s) {
@@ -28,7 +22,6 @@
   function money(v) { if (v == null || v === "") return ""; return Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $"; }
   function toast(t) { const el = $("toast"); el.textContent = t; el.classList.remove("hidden"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), 3200); }
   function nights(a, b) { if (!a || !b) return ""; return Math.round((new Date(b) - new Date(a)) / 86400000); }
-  function plural(n, one, few, many) { const m = n % 10, h = n % 100; return n + " " + (h > 10 && h < 20 ? many : m === 1 ? one : m > 1 && m < 5 ? few : many); }
   const ageDays = (s) => { if (!s) return ""; const n = Math.floor((Date.now() - new Date(s)) / 86400000); return n < 0 ? "" : n + " дн."; };
   // one click — one request: the button is disabled while fn() runs, re-enabled afterwards; errors go to a toast
   async function busy(btn, fn) {
@@ -40,24 +33,14 @@
   const stale = (seq) => seq !== S.navSeq;
 
   async function api(path, opts) {
-    opts = opts || {};
-    opts.credentials = "same-origin";
-    opts.headers = Object.assign({}, opts.headers || {});
-    if (opts.json !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(opts.json); delete opts.json; }
-    // no request hangs forever: 20 s (40 s for the long-poll), then «Сервер не ответил»
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), path.includes("wait=") ? 40000 : 20000);
-    opts.signal = ctl.signal;
-    let res, data = null;
+    opts = Object.assign({ credentials: "same-origin" }, opts || {});
+    const url = path.startsWith("/../") ? (window.NH_API_BASE || "") + "/api" + path.slice(3) : API + path;
     try {
-      res = await fetch(path.startsWith("/../") ? (window.NH_API_BASE || "") + "/api" + path.slice(3) : API + path, opts);
-      try { data = await res.json(); } catch (e) { /* empty */ }
-    } catch (e) {
-      throw new Error(ctl.signal.aborted ? "Сервер не ответил — проверьте связь" : "Нет связи с сервером");
-    } finally { clearTimeout(timer); }
-    if (res.status === 401 && S.me) { S.me = null; showAuth(false); }
-    if (!res.ok) { const err = new Error((data && data.detail) || (res.status === 502 || res.status === 504 ? "Сервер не ответил (ошибка " + res.status + "): окно Nova Backend закрыто или туннель оборван. Попробуйте ещё раз" : "Ошибка " + res.status)); err.status = res.status; throw err; }
-    return data;
+      return await C.request(url, opts);  // timeout, JSON, one error shape — in common.js
+    } catch (err) {
+      if (err.status === 401 && S.me) { S.me = null; showAuth(false); }
+      throw err;
+    }
   }
   const get = (p) => api(p);
   const post = (p, json) => api(p, { method: "POST", json });
@@ -259,7 +242,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=77&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=" + (window.NH_VERSION || "0") + "&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -1093,9 +1076,8 @@
       <div class="row-actions"><button class="btn primary" data-close>Закрыть</button></div>`, true);
     renderBookingTasks(b);
     renderBookingDocs(b);
-    const fillVars = (t) => { const d = (s) => s ? `${new Date(s + "T00:00").getDate()} ${MONTHS_FULL[new Date(s + "T00:00").getMonth()]}` : ""; const nm = (b.guest || "").split(" ")[0]; const tIn = (b.arrival_time || S.times[0]).slice(0, 5), tOut = (b.departure_time || S.times[1]).slice(0, 5);
-      const map = { "имя": nm, "объект": b.apartment || "", "заезд": d(b.checkin), "выезд": d(b.checkout), "дата заезда": d(b.checkin), "дата выезда": d(b.checkout), "время заезда": tIn, "время выезда": tOut, "заезд время": `${d(b.checkin)} в ${tIn}`, "выезд время": `${d(b.checkout)} до ${tOut}`, "ночей": String(b.nights || ""), "сумма": String(b.amount ?? ""), "долг": String(b.debt ?? ""), "оплачено": String(b.paid ?? ""), "телефон": b.phone ? "+" + b.phone : "" };
-      return t.replace(/\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон)\}/g, (m, k) => map[k] || m); };
+    const fillVars = (t) => C.fillVars(t, { name: b.guest, apartment: b.apartment, checkin: b.checkin, checkout: b.checkout, arrival_time: b.arrival_time,
+      departure_time: b.departure_time, nights: b.nights, amount: b.amount, debt: b.debt, paid: b.paid, phone: b.phone, times: S.times });
     if ($("bk-tpl")) {
       get("/commands").then((list) => { if (!$("bk-tpl")) return; $("bk-tpl").innerHTML += list.map((t) => `<option value="${t.id}">${esc(t.command ? "/" + t.command + " " : "")}${esc(t.title)}</option>`).join(""); $("bk-tpl").dataset.list = JSON.stringify(list); }).catch(() => {});
       $("bk-tpl").addEventListener("change", (e) => { const t = JSON.parse(e.target.dataset.list || "[]").find((x) => String(x.id) === e.target.value); if (t) $("bk-msg").value = fillVars(t.text); });

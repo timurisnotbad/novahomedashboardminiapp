@@ -38,7 +38,6 @@
       const paint = () => { const l = label(kind, inp.value); btn.innerHTML = `<span class="pick__ic">${kind === "time" ? "🕐" : "📅"}</span><span class="${l ? "" : "pick__ph"}">${l || (inp.placeholder || (kind === "time" ? "Время" : kind === "month" ? "Месяц" : kind === "date" ? "Дата" : "Дата и время"))}</span>`; };
       paint();
       inp.addEventListener("change", paint);
-      inp.addEventListener("nh-paint", paint);
       btn.addEventListener("click", () => open(inp, btn));
     });
   }
@@ -145,5 +144,5 @@
   const mo = new MutationObserver((muts) => muts.forEach((m) => m.addedNodes.forEach((n) => { if (n.nodeType === 1) enhance(n); })));
   document.addEventListener("DOMContentLoaded", () => { enhance(document); mo.observe(document.body, { childList: true, subtree: true }); });
   if (document.readyState !== "loading") { enhance(document); mo.observe(document.body, { childList: true, subtree: true }); }
-  window.NHPicker = { enhance, close, label };
+  window.NHPicker = { enhance, close, label };  // public hook (tests, console)
 })();

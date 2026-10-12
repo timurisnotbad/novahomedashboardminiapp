@@ -251,7 +251,6 @@ textarea.ib-field { resize:vertical; min-height:80px; }
 /* «прочитано» for the guest: blue when the guest still sees us as not having read */
 .ib-receipt { color:var(--label-2); position:relative; }
 .ib-receipt::after { content:""; position:absolute; top:7px; right:7px; width:8px; height:8px; border-radius:50%; background:var(--tint); }
-.ib-chat__eye { font-size:11px; color:var(--label-2); margin-left:4px; }
 
 /* Booking.com chat: what the extranet says vs the calendar */
 .ib-stay { color:var(--label); font-weight:600; }
