@@ -132,9 +132,17 @@ def subscribe(uid: int, sub: dict, ua: str = "") -> int:
     keys = sub.get("keys") or {}
     if not sub.get("endpoint") or not keys.get("p256dh") or not keys.get("auth"):
         raise ValueError("Подписка браузера неполная")
+    from . import netsafe
+    try:
+        netsafe.check_url(sub["endpoint"], netsafe.PUSH_HOSTS)
+    except netsafe.UnsafeURL as exc:
+        raise ValueError(f"Неизвестный push-сервис: {exc}") from exc
     with database.get_conn() as conn:
+        # an endpoint belongs to the browser that registered it: a second user
+        # presenting the same endpoint does not take over the subscription
         conn.execute("INSERT INTO crm_push_subs (uid, endpoint, p256dh, auth, ua, created_at) VALUES (?, ?, ?, ?, ?, ?) "
-                     "ON CONFLICT(endpoint) DO UPDATE SET uid = excluded.uid, p256dh = excluded.p256dh, auth = excluded.auth, ua = excluded.ua, fails = 0",
+                     "ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, ua = excluded.ua, fails = 0 "
+                     "WHERE crm_push_subs.uid = excluded.uid",
                      (uid, sub["endpoint"], keys["p256dh"], keys["auth"], (ua or "")[:200], datetime.now().isoformat(timespec="seconds")))
         return conn.execute("SELECT COUNT(*) FROM crm_push_subs WHERE uid = ?", (uid,)).fetchone()[0]
 

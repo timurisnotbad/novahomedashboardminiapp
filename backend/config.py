@@ -169,14 +169,18 @@ PAY_VIEWERS = [t for t in os.environ.get("PAY_VIEWERS", "").replace(",", " ").sp
 # the Оплаты block on clients that pass no initData (macOS Telegram).
 PAY_KEY = os.environ.get("PAY_KEY", "").strip()
 
-# Staff access key: the API accepts requests only from people who opened the
-# dashboard through the bot (valid Telegram initData, or this key that the bot
-# appends to the URL for everyone else — desktop clients pass no initData).
-# Derived from the bot token when not set, so no .env change is needed.
-STAFF_KEY = os.environ.get("STAFF_KEY", "").strip()
-if not STAFF_KEY and BOT_TOKEN:
-    import hashlib as _hashlib
-    STAFF_KEY = _hashlib.sha256(("staff:" + BOT_TOKEN).encode()).hexdigest()[:24]
+# Staff access: every employee gets a PERSONAL key from the bot (stored hashed in
+# the database, revocable with /staff_del). The old shared STAFF_KEY is gone:
+# one key for everyone could not be revoked and sat in every chat history.
+# DEV_MODE=1 (plus a loopback client) is the only way to use the dashboard API
+# without a configured bot — a half-configured .env must never open the data
+# to the internet.
+DEV_MODE = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
+
+# Independent random secrets, generated once into data/secrets.json (see secrets_store.py).
+from . import secrets_store as _secrets_store  # noqa: E402
+_SECRETS = _secrets_store.load(BASE_DIR / "data")
+APP_SECRET = os.environ.get("APP_SECRET", "").strip() or _SECRETS["app_secret"]
 
 
 # ---------------------------------------------------------------------------
@@ -186,13 +190,9 @@ if not STAFF_KEY and BOT_TOKEN:
 # ---------------------------------------------------------------------------
 WA_BRIDGE_URL = (os.environ.get("WA_BRIDGE_URL", "").strip()
                  or f"http://127.0.0.1:{_int_env('WA_BRIDGE_PORT', 8100)}").rstrip("/")
-# Shared secret between the bridge and the server; derived from the bot token
-# when not set (wa-bridge/bridge.mjs applies the same rule).
-INBOX_SECRET = os.environ.get("INBOX_SECRET", "").strip()
-if not INBOX_SECRET:
-    import hashlib as _hashlib
-    INBOX_SECRET = (_hashlib.sha256(("inbox:" + BOT_TOKEN).encode()).hexdigest()[:32]
-                    if BOT_TOKEN else "dev-inbox")
+# Shared secret between the bridge and the server: INBOX_SECRET from .env, else
+# the random one in data/secrets.json (wa-bridge/bridge.mjs reads the same file).
+INBOX_SECRET = os.environ.get("INBOX_SECRET", "").strip() or _SECRETS["inbox_secret"]
 INBOX_MEDIA_DIR = Path(os.environ.get("INBOX_MEDIA_DIR", "").strip() or BASE_DIR / "data" / "inbox_media")
 # Who may work in the inbox besides the owners: Telegram ids / @usernames.
 # Empty = every active employee registered in the bot (/staff).
@@ -365,4 +365,15 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "73"
+APP_VERSION = "74"
+
+
+def redact(text: str) -> str:
+    """Strip every secret we know from a string before it reaches a log line or
+    an error shown in the UI (bot tokens travel inside Bot API URLs)."""
+    out = str(text or "")
+    for sec in (BOT_TOKEN, TG_GUEST_BOT_TOKEN, WAZZUP_API_KEY, INBOX_SECRET, APP_SECRET, RC_TOKEN, OWNER_KEY, PAY_KEY,
+                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH):
+        if sec and len(sec) >= 8:
+            out = out.replace(sec, "***")
+    return out

@@ -50,7 +50,9 @@ async def lifespan(app: FastAPI):
     booking_ext.init_db()
     scheduler.start()
     if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
-        logger.warning("META_APP_SECRET is empty: webhook signatures are not checked — set it in .env")
+        logger.error("META_APP_SECRET is empty: the Meta webhook stays CLOSED (404) until it is set in .env")
+    if not config.BOT_TOKEN and not config.DEV_MODE:
+        logger.warning("BOT_TOKEN is empty and DEV_MODE is off: the Telegram dashboard API answers 403 (the CRM login works as usual)")
     wazzup.start()              # Wazzup: check the key, register the webhook (background)
     await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
     tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
@@ -59,7 +61,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="Nova Home Dashboard", version="1.0", lifespan=lifespan)
+app = FastAPI(title="Nova Home Dashboard", version="1.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 # Telegram WebApp is served from t.me / opens with an opaque origin ("null").
 app.add_middleware(

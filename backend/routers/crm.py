@@ -1,6 +1,7 @@
 """Nova Home CRM API (see backend/crm.py). Cookie session; admin-only routes
 for users, pipelines, fields and integrations."""
 import asyncio
+import hmac
 import re
 import logging
 
@@ -30,9 +31,21 @@ def _bad(exc: Exception):
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _set_cookie(resp: Response, user: dict) -> None:
+def _set_cookie(resp: Response, user: dict, request: Request | None = None) -> None:
+    https = config.WEBAPP_URL.startswith("https")
+    if request is not None:  # behind Cloudflare/Caddy the app sees http; the forwarded scheme tells the truth
+        https = https or request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
     resp.set_cookie(crm.COOKIE, crm.make_token(user), max_age=crm.SESSION_DAYS * 86400, httponly=True,
-                    samesite="lax", secure=config.WEBAPP_URL.startswith("https"), path="/")
+                    samesite="lax", secure=https, path="/")
+
+
+def client_ip(request: Request) -> str:
+    """The visitor's address even behind Cloudflare / Caddy / the tunnel."""
+    for h in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+        v = request.headers.get(h)
+        if v:
+            return v.split(",")[0].strip()[:64]
+    return request.client.host if request.client else "?"
 
 
 # ---- auth ---------------------------------------------------------------------
@@ -45,23 +58,55 @@ class SetupIn(BaseModel):
     name: str = "Администратор"
     email: str
     password: str
+    token: str = ""
+
+
+def _setup_token() -> str:
+    """First-run protection: creating the admin needs the code from
+    data/setup_token.txt (written at start-up and logged) unless the request
+    comes from the machine itself. A fresh install on a public address must not
+    hand the admin account to the first visitor."""
+    path = config.BASE_DIR / "data" / "setup_token.txt"
+    try:
+        tok = path.read_text(encoding="utf-8").strip()
+        if len(tok) >= 12:
+            return tok
+    except OSError:
+        pass
+    import secrets
+    tok = secrets.token_hex(6).upper()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(tok, encoding="utf-8")
+    except OSError:
+        pass
+    logger.warning("CRM first run: setup code %s (also in data/setup_token.txt)", tok)
+    return tok
 
 
 @router.get("/session")
 def session(request: Request):
     u = crm.user_from_token(request.cookies.get(crm.COOKIE, ""))
-    return {"user": u, "setup_needed": not crm.has_users(), "version": config.APP_VERSION, "times": crm.default_times()}
+    need = not crm.has_users()
+    local = request.client and request.client.host in ("127.0.0.1", "::1")
+    if need and not local:
+        _setup_token()  # make sure the code exists and is logged
+    return {"user": u, "setup_needed": need, "setup_code_required": bool(need and not local),
+            "version": config.APP_VERSION, "times": crm.default_times()}
 
 
 @router.post("/setup")
-def setup(payload: SetupIn, response: Response):
+def setup(payload: SetupIn, request: Request, response: Response):
     if crm.has_users():
         raise HTTPException(status_code=403, detail="Администратор уже создан")
+    local = request.client and request.client.host in ("127.0.0.1", "::1")
+    if not local and not hmac.compare_digest((payload.token or "").strip().upper(), _setup_token()):
+        raise HTTPException(status_code=403, detail="Неверный код первого запуска: он лежит в файле data/setup_token.txt на сервере и в логе")
     try:
         u = crm.create_user(payload.name, payload.email, payload.password, "admin")
     except ValueError as exc:
         _bad(exc)
-    _set_cookie(response, u)
+    _set_cookie(response, u, request)
     return {"user": u}
 
 
@@ -71,21 +116,29 @@ _fails: dict[str, list[float]] = {}  # ip -> timestamps of failed logins
 @router.post("/login")
 def login(payload: LoginIn, request: Request, response: Response):
     import time
-    ip = request.client.host if request.client else "?"
-    recent = [t for t in _fails.get(ip, []) if time.time() - t < 600]
-    if len(recent) >= 10:
-        raise HTTPException(status_code=429, detail="Слишком много попыток — подождите 10 минут")
+    now = time.time()
+    for k in [k for k, v in _fails.items() if not v or now - v[-1] > 600]:  # forget old entries
+        _fails.pop(k, None)
+    keys = (f"ip:{client_ip(request)}", f"email:{(payload.email or '').strip().lower()[:120]}")
+    for k in keys:
+        if len([t for t in _fails.get(k, []) if now - t < 600]) >= 10:
+            raise HTTPException(status_code=429, detail="Слишком много попыток — подождите 10 минут")
     u = crm.login(payload.email, payload.password)
     if not u:
-        _fails[ip] = recent + [time.time()]
+        for k in keys:
+            _fails[k] = [t for t in _fails.get(k, []) if now - t < 600] + [now]
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
-    _fails.pop(ip, None)
-    _set_cookie(response, u)
+    for k in keys:
+        _fails.pop(k, None)
+    _set_cookie(response, u, request)
     return {"user": u}
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
+    u = crm.user_from_token(request.cookies.get(crm.COOKIE, ""))
+    if u:
+        crm.bump_tver(u["id"])  # «Выйти» invalidates the cookie on every device, not just this one
     response.delete_cookie(crm.COOKIE, path="/")
     return {"ok": True}
 
@@ -124,15 +177,18 @@ def edit_user(uid: int, payload: UserIn, user: dict = Depends(admin_user)):  # n
 
 class PasswordIn(BaseModel):
     password: str
+    current: str = ""
 
 
 @router.post("/me/password")
-def my_password(payload: PasswordIn, response: Response, user: dict = Depends(current_user)):  # noqa: B008
+def my_password(payload: PasswordIn, request: Request, response: Response, user: dict = Depends(current_user)):  # noqa: B008
+    if not crm.login(user["email"], payload.current or ""):
+        raise HTTPException(status_code=400, detail="Текущий пароль неверный")
     try:
         u = crm.update_user(user["id"], password=payload.password)
     except ValueError as exc:
         _bad(exc)
-    _set_cookie(response, u)  # the token version changed
+    _set_cookie(response, u, request)  # the token version changed
     return {"ok": True}
 
 
@@ -202,7 +258,7 @@ def get_pipelines(user: dict = Depends(current_user)):  # noqa: B008
 
 
 @router.post("/deals/backfill")
-async def deals_backfill(user: dict = Depends(current_user)):  # noqa: B008
+async def deals_backfill(user: dict = Depends(admin_user)):  # noqa: B008
     """«Создать сделки из чатов» + move booking deals along the stay."""
     loop = asyncio.get_event_loop()
     n = await loop.run_in_executor(None, crm_amo.backfill_deals)
@@ -336,7 +392,7 @@ def add_client(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
 
 
 @router.post("/clients/import")
-def import_clients(user: dict = Depends(current_user)):  # noqa: B008
+def import_clients(user: dict = Depends(admin_user)):  # noqa: B008
     return {"added": crm.import_clients()}
 
 
@@ -547,6 +603,23 @@ def email_status(user: dict = Depends(current_user)):  # noqa: B008
 
 @router.post("/email")
 def email_send(payload: EmailIn, user: dict = Depends(current_user)):  # noqa: B008
+    import email.utils as _eu
+    to = (_eu.parseaddr(payload.to or "")[1] or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to):
+        raise HTTPException(status_code=400, detail="Некорректный адрес получателя")
+    if user["role"] != "admin":
+        # a manager sends only to addresses the CRM already knows for this guest/booking
+        known = set()
+        with database.get_conn() as conn:
+            if payload.client_id:
+                r = conn.execute("SELECT email FROM crm_clients WHERE id = ?", (payload.client_id,)).fetchone()
+                known.add((r["email"] or "").lower() if r else "")
+            if payload.booking_id:
+                r = conn.execute("SELECT client_email FROM bookings WHERE id = ?", (payload.booking_id,)).fetchone()
+                known.add((r["client_email"] or "").lower() if r else "")
+        if to not in known:
+            raise HTTPException(status_code=403, detail="Менеджер может писать только на email гостя из карточки или брони")
+    payload.to = to
     att = []
     if payload.doc_id:
         d = docs.get_document(payload.doc_id)
@@ -931,6 +1004,25 @@ def del_command(tid: int, user: dict = Depends(current_user)):  # noqa: B008
 
 
 # ---- channels & integrations ------------------------------------------------------
+def _strip_secrets(d: dict, user: dict) -> dict:
+    """Managers see states, not keys: the ext token / Wazzup webhook path / raw
+    page dumps let anyone with them inject or read guest messages."""
+    if user["role"] == "admin":
+        return d
+    bk = d.get("booking_ext") or {}
+    for k in ("token", "debug", "hook_url", "selectors"):
+        bk.pop(k, None)
+    wz = d.get("wazzup") or {}
+    wz.pop("webhook_url", None)
+    wa = d.get("whatsapp") or {}
+    wa.pop("qr", None)
+    tg = d.get("telegram")
+    if isinstance(tg, dict):
+        for f in ("phone", "username"):
+            tg.pop(f, None)
+    return d
+
+
 @router.get("/channels")
 def channels(user: dict = Depends(current_user)):  # noqa: B008
     st = inbox.bridge_status()
@@ -939,7 +1031,7 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
     with database.get_conn() as conn:
         counts = {r[0] or "wa": r[1] for r in conn.execute(
             "SELECT channel, COUNT(*) FROM inbox_chats GROUP BY channel").fetchall()}
-    return {
+    return _strip_secrets({
         "wazzup": wazzup.status(),
         "booking_ext": booking_ext.status(),
         "whatsapp": {**st, "chats": counts.get("wa", 0)},
@@ -950,7 +1042,7 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
         "telegram": {**tg_channels.user_status(), "chats": counts.get("tg", 0)},
         "telegram_guest_bot": {**tg_channels.bot_status(), "chats": counts.get("tgbot", 0)},
         "telegram_bot": {"configured": bool(config.BOT_TOKEN), "notify_targets": config.inbox_notify_targets()},
-    }
+    }, user)
 
 
 @router.post("/channels/wazzup/webhook")
@@ -1070,12 +1162,20 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
     return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}
 
 
+_last_manual_sync = {"at": 0.0}
+
+
 @router.post("/integrations/sync")
 async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
+    import time
+    if time.time() - _last_manual_sync["at"] < 60 and user["role"] != "admin":
+        raise HTTPException(status_code=429, detail="Синхронизация уже запускалась меньше минуты назад")
+    _last_manual_sync["at"] = time.time()
     try:
         n = await asyncio.get_event_loop().run_in_executor(None, rc_sync.sync_to_db)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=424, detail=f"Синхронизация не удалась: {exc}") from exc
+        logger.warning("manual sync failed: %s", exc)
+        raise HTTPException(status_code=424, detail="Синхронизация не удалась: " + config.redact(str(exc))[:200]) from exc
     try:
         await asyncio.get_event_loop().run_in_executor(None, crm.auto_tasks)
         await asyncio.get_event_loop().run_in_executor(None, crm.auto_checklists)

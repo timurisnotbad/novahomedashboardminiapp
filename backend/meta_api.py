@@ -95,14 +95,20 @@ def _media_public_url(name: str) -> str:
 # WhatsApp Cloud API
 # ---------------------------------------------------------------------------
 def _wa_download(media_id: str) -> tuple[bytes, str] | None:
+    import re as _re
+    if not _re.fullmatch(r"\d{3,40}", str(media_id or "")):
+        return None  # a media id is numeric; anything else would steer the Graph path
     meta = _graph("GET", media_id, config.WA_CLOUD_TOKEN)
     url, mime = meta.get("url"), meta.get("mime_type") or ""
     if not url or int(meta.get("file_size") or 0) > MAX_MEDIA:
         return None
-    r = requests.get(url, headers={"Authorization": "Bearer " + config.WA_CLOUD_TOKEN}, timeout=60)
-    if r.status_code != 200:
+    from . import netsafe
+    try:
+        content, _ = netsafe.safe_get(url, netsafe.META_HOSTS, MAX_MEDIA, 60, {"Authorization": "Bearer " + config.WA_CLOUD_TOKEN})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("wa media refused: %s", exc)
         return None
-    return r.content, mime
+    return content, mime
 
 
 def _wa_message(value: dict, msg: dict) -> dict | None:
@@ -243,14 +249,12 @@ def _ig_event(ev: dict) -> dict | None:
         out["kind"] = kind
         if url:
             try:
-                r = requests.get(url, timeout=60, stream=True)
-                content = r.raw.read(MAX_MEDIA + 1)
-                if r.status_code == 200 and len(content) <= MAX_MEDIA:
-                    mime = (r.headers.get("Content-Type") or "").split(";")[0]
-                    out["media"] = _save_media(content, mime, url.split("?")[0])
-                    out["mime"] = mime
-            except Exception:  # noqa: BLE001
-                logger.exception("ig media download failed")
+                from . import netsafe
+                content, mime = netsafe.safe_get(url, netsafe.META_HOSTS, MAX_MEDIA, 60)
+                out["media"] = _save_media(content, mime, url.split("?")[0])
+                out["mime"] = mime
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ig media refused/failed: %s", exc)
         break
     return out
 

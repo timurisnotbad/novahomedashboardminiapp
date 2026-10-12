@@ -224,7 +224,7 @@ def check_password(password: str, stored: str) -> bool:
 
 
 def _secret() -> bytes:
-    return ("crm:" + (config.INBOX_SECRET or "dev")).encode()
+    return ("crm:" + config.APP_SECRET).encode()
 
 
 def make_token(user: dict) -> str:
@@ -323,6 +323,12 @@ def update_user(uid: int, name=None, email=None, password=None, role=None, activ
         if sets:
             conn.execute(f"UPDATE crm_users SET {', '.join(sets)} WHERE id = ?", (*args, uid))  # noqa: S608
     return get_user(uid)
+
+
+def bump_tver(uid: int) -> None:
+    """Invalidate every session cookie of the user (logout everywhere)."""
+    with database.get_conn() as conn:
+        conn.execute("UPDATE crm_users SET tver = tver + 1 WHERE id = ?", (uid,))
 
 
 def login(email: str, password: str) -> dict | None:

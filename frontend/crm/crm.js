@@ -86,6 +86,7 @@
 
   // ---- auth ---------------------------------------------------------------
   let setupMode = false;
+  let setupCode = false;
   function showAuth(setup) {
     setupMode = !!setup;
     if (inboxFrame) { inboxFrame.remove(); inboxFrame = null; } // no chats behind the login form
@@ -94,6 +95,7 @@
     $("auth").classList.remove("hidden");
     $("auth-sub").textContent = setup ? "Первый запуск: создайте администратора" : "Войдите, чтобы продолжить";
     $("auth-name-row").classList.toggle("hidden", !setup);
+    $("auth-code-row").classList.toggle("hidden", !(setup && setupCode));
     $("auth-btn").textContent = setup ? "Создать и войти" : "Войти";
     $("auth-pass").autocomplete = setup ? "new-password" : "current-password";
     $("auth-err").classList.add("hidden");
@@ -103,7 +105,7 @@
     $("auth-btn").disabled = true;
     try {
       const body = { email: val("auth-email"), password: $("auth-pass").value };
-      if (setupMode) body.name = val("auth-name");
+      if (setupMode) { body.name = val("auth-name"); body.token = val("auth-code"); }
       const d = await post(setupMode ? "/setup" : "/login", body);
       S.me = d.user;
       await boot();
@@ -115,10 +117,12 @@
   $("logout").addEventListener("click", async (e) => { e.preventDefault(); await post("/logout"); S.me = null; showAuth(false); });
   $("me-pass").addEventListener("click", (e) => {
     e.preventDefault();
-    modal(`<h2>Сменить пароль</h2><label class="lbl">Новый пароль</label><input class="field" id="np" type="password" minlength="6" />
+    modal(`<h2>Сменить пароль</h2><label class="lbl">Текущий пароль</label><input class="field" id="np-cur" type="password" autocomplete="current-password" />
+      <label class="lbl">Новый пароль</label><input class="field" id="np" type="password" minlength="8" autocomplete="new-password" placeholder="не короче 8 символов" />
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="np-go">Сохранить</button></div>`);
-    $("np-go").addEventListener("click", async () => {
-      try { await post("/me/password", { password: $("np").value }); closeModal(); toast("Пароль изменён"); } catch (err) { toast(err.message); }
+    $("np-go").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try { await post("/me/password", { current: $("np-cur").value, password: $("np").value }); closeModal(); toast("Пароль изменён"); } catch (err) { toast(err.message); e.target.disabled = false; }
     });
   });
 
@@ -208,7 +212,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=73&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=74&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -1325,6 +1329,7 @@
   (async () => {
     try {
       const s = await get("/session");
+      setupCode = !!s.setup_code_required;
       if (s.setup_needed) return showAuth(true);
       if (!s.user) return showAuth(false);
       S.me = s.user; S.times = s.times || ["14:00", "11:00"];

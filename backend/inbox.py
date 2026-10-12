@@ -221,7 +221,7 @@ def personal_key(uid: int) -> str:
 
 
 def media_sig(name: str) -> str:
-    return _sig("media:" + name, 16)
+    return _sig("media:" + name, 32)
 
 
 def _uid_from_key(key: str):
@@ -278,6 +278,9 @@ def _agent_name(uid: int) -> str:
     return "Владелец" if uid in config.OWNER_TELEGRAM_IDS else f"id{uid}"
 
 
+_agent_seen: dict[int, float] = {}
+
+
 def resolve_user(init_data: str, owner_key: str, inbox_key: str, crm_cookie: str = "") -> dict | None:
     """Who is calling, or None. Dev mode (bot not configured) = full access."""
     if crm_cookie:
@@ -285,7 +288,7 @@ def resolve_user(init_data: str, owner_key: str, inbox_key: str, crm_cookie: str
         u = crm.user_from_token(crm_cookie)
         if u:
             return {"uid": -u["id"], "name": u["name"], "owner": u["role"] == "admin", "crm": True}
-    if not config.BOT_TOKEN or not config.OWNER_TELEGRAM_IDS:
+    if auth.dev_mode():
         return {"uid": 0, "name": "Оператор", "owner": True}
     uid = _uid_from_key(inbox_key)
     if uid is None and init_data:
@@ -293,7 +296,9 @@ def resolve_user(init_data: str, owner_key: str, inbox_key: str, crm_cookie: str
         if user and user.get("id"):
             uid = int(user["id"])
             full = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x)
-            remember_agent(uid, full, user.get("username") or "")
+            if time.time() - _agent_seen.get(uid, 0) > 600:  # one write per 10 min, not per long-poll
+                _agent_seen[uid] = time.time()
+                remember_agent(uid, full, user.get("username") or "")
     if uid is not None:
         if not may_use(uid):
             return None

@@ -351,7 +351,8 @@ def export_clients_xlsx() -> bytes:
             v = (c.get("fields") or {}).get(str(f["id"]))
             row.append("да" if f["type"] == "checkbox" and v else ("" if v is None or v is False else v))
         row.append((c["created_at"] or "")[:10])
-        ws.append(row)
+        # a guest's WhatsApp name «=HYPERLINK(...)» must stay text in Excel
+        ws.append([("'" + v) if isinstance(v, str) and v[:1] in "=+-@\t\r" else v for v in row])
     for i, _ in enumerate(head, 1):
         ws.column_dimensions[get_column_letter(i)].width = 16 if i not in (1, 15) else 28
     ws.freeze_panes = "A2"

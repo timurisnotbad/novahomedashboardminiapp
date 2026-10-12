@@ -54,8 +54,12 @@ function loadEnv(file) {
 const ENV = { ...loadEnv(path.join(ROOT, ".env")), ...process.env };
 const PORT = parseInt(ENV.WA_BRIDGE_PORT || "8100", 10);
 const BACKEND = (ENV.INBOX_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-const SECRET = ENV.INBOX_SECRET
-  || (ENV.BOT_TOKEN ? crypto.createHash("sha256").update("inbox:" + ENV.BOT_TOKEN).digest("hex").slice(0, 32) : "dev-inbox");
+function fileSecret() {
+  // the server writes an independent random secret to data/secrets.json (v74+)
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, "data", "secrets.json"), "utf8")).inbox_secret || ""; } catch (e) { return ""; }
+}
+const SECRET = ENV.INBOX_SECRET || fileSecret() || "dev-inbox";
+if (SECRET === "dev-inbox") console.error("INBOX_SECRET missing: start the server once (it writes data/secrets.json) or set INBOX_SECRET in .env");
 const MEDIA_DIR = ENV.INBOX_MEDIA_DIR || path.join(ROOT, "data", "inbox_media");
 const AUTH_DIR = path.join(HERE, "auth");
 const MAX_MEDIA = 30 * 1024 * 1024; // larger files are announced but not downloaded

@@ -122,6 +122,11 @@ def register_webhook() -> dict:
                                       "subscriptions": {"messagesAndStatuses": True, "contactsAndDealsCreation": False, "channelsUpdates": True}})
     _state["webhook_ok"] = True
     _state["webhook_error"] = None
+    try:
+        from . import crm
+        crm.set_setting("wazzup_webhook_registered", webhook_token())
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "url": url}
 
 
@@ -177,19 +182,17 @@ def _jid(chat_type: str, chat_id: str) -> tuple[str, str]:
 
 def _save_media(url: str) -> tuple[str | None, str | None]:
     try:
-        r = requests.get(url, timeout=60, stream=True)
-        content = r.raw.read(MAX_MEDIA + 1)
-        if r.status_code != 200 or len(content) > MAX_MEDIA:
-            return None, None
-        mime = (r.headers.get("Content-Type") or "").split(";")[0] or mimetypes.guess_type(url.split("?")[0])[0] or "application/octet-stream"
+        from . import netsafe
+        content, mime = netsafe.safe_get(url, max_bytes=MAX_MEDIA, timeout=60)
+        mime = mime or mimetypes.guess_type(url.split("?")[0])[0] or "application/octet-stream"
         ext = (mimetypes.guess_extension(mime) or "." + (url.split("?")[0].rsplit(".", 1)[-1] if "." in url.split("?")[0].rsplit("/", 1)[-1] else "bin")).lstrip(".")
         ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:8] or "bin"
         name = f"w{uuid.uuid4().hex}.{ext}"
         config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         (config.INBOX_MEDIA_DIR / name).write_bytes(content)
         return name, mime
-    except Exception:  # noqa: BLE001
-        logger.exception("wazzup media download failed")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("wazzup media download refused/failed: %s", exc)
         return None, None
 
 

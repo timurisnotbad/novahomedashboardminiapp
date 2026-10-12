@@ -83,7 +83,7 @@ async def _connect_loop() -> None:
         except asyncio.TimeoutError:
             _error = "Telegram не отвечает (нет доступа к серверам Telegram?) — пробую снова"
         except Exception as exc:  # noqa: BLE001
-            _error = f"Telegram: {exc}"
+            _error = "Telegram: " + config.redact(str(exc))[:200]
             logger.warning("telegram connect failed: %s", exc)
         await asyncio.sleep(60)
 
@@ -216,7 +216,7 @@ def user_status() -> dict:
 def _err(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "Telegram не отвечает — проверьте интернет (серверы Telegram должны быть доступны с этого компьютера)"
-    return f"Telegram: {exc}" if str(exc) else f"Telegram: {type(exc).__name__}"
+    return ("Telegram: " + config.redact(str(exc))[:200]) if str(exc) else f"Telegram: {type(exc).__name__}"
 
 
 def user_send_code(phone: str) -> dict:
@@ -377,8 +377,11 @@ def _bot_api(method: str, timeout: int = 35, **kw) -> dict:
     try:
         r = requests.post(f"{_BOT_API}/bot{config.TG_GUEST_BOT_TOKEN}/{method}", timeout=timeout, **kw)
         d = r.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise inbox.BridgeError(f"Telegram Bot API: {exc}") from exc
+    except requests.RequestException as exc:
+        logger.warning("guest bot api %s: %s", method, config.redact(str(exc)))
+        raise inbox.BridgeError("Telegram Bot API недоступен (сеть)") from exc
+    except ValueError as exc:
+        raise inbox.BridgeError("Telegram Bot API: некорректный ответ") from exc
     if not d.get("ok"):
         raise inbox.BridgeError(d.get("description") or "Telegram Bot API error")
     return d.get("result")
@@ -417,8 +420,8 @@ def _bot_loop() -> None:
                     except Exception:  # noqa: BLE001
                         logger.exception("guest bot message failed")
         except inbox.BridgeError as exc:
-            _bot_error = str(exc)
-            logger.warning("guest bot: %s", exc)
+            _bot_error = config.redact(str(exc))[:200]
+            logger.warning("guest bot: %s", _bot_error)
             time.sleep(10)
         except Exception:  # noqa: BLE001
             logger.exception("guest bot loop")

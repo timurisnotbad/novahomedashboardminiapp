@@ -222,9 +222,17 @@ def _fonts() -> dict:
     return {"r": "DejaVu", "b": "DejaVu-Bold", "s": "DejaVuSerif", "sb": "DejaVuSerif-Bold"}
 
 
+def _x(v):
+    """Paragraph mini-HTML: every dynamic value is escaped (a guest named
+    «<img src=…>» must not make the server fetch anything)."""
+    from xml.sax.saxutils import escape
+    return escape(str(v)) if isinstance(v, str) else v
+
+
 def _sp(s: str) -> str:
     """Letter-spaced small caps look (N E S T  O N E), like the brand documents."""
-    out = "\u2009".join((s or "").upper())
+    import re as _re
+    out = "\u2009".join(_re.sub(r"[<>&]", "", s or "").upper())
     return out.replace("\u2009 \u2009", "\u00a0\u00a0\u00a0")
 
 
@@ -278,6 +286,8 @@ def render_pdf(doc: dict) -> bytes:
                             title=f"{doc['title']} {doc['number']}", author=comp.get("name") or "")
     W = A4[0] - 40 * mm
     el = []
+    d = {k: _x(v) for k, v in dict(d).items()}
+    comp = {k: _x(v) for k, v in dict(comp).items()}
     nights = int(d.get("nights") or 0)
     total, paid = float(d.get("total") or 0), float(d.get("paid") or 0)
     due = max(0.0, total - paid)

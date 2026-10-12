@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS staff_registry (
     first_seen TIMESTAMP,
     active INTEGER DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS access_keys (
+    uid INTEGER PRIMARY KEY,
+    key_hash TEXT NOT NULL,
+    created_at TEXT,
+    revoked INTEGER DEFAULT 0
+);
 
 -- forum topics in the team group: which thread each kind of message goes to
 CREATE TABLE IF NOT EXISTS chat_topics (
@@ -765,18 +771,69 @@ def distinct_apartments() -> list[str]:
         return [r[0] for r in cur.fetchall()]
 
 
-def upsert_staff(staff_id: int, name: str, username: str) -> None:
-    """Auto-register a staff member on any bot interaction; refresh name and
-    reactivate (a returning person starts being tracked again)."""
+def upsert_staff(staff_id: int, name: str, username: str) -> bool:
+    """Register a person who talks to the bot. New people start INACTIVE
+    (pending): an owner confirms them with /staff_ok. A known person only gets
+    the name refreshed — never reactivated by talking to the bot again.
+    Returns True when the row was created (so the owner can be told)."""
     from datetime import datetime
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO staff_registry (staff_id, name, username, first_seen, active) "
-            "VALUES (?, ?, ?, ?, 1) "
-            "ON CONFLICT(staff_id) DO UPDATE SET name=excluded.name, "
-            "username=excluded.username, active=1",
-            (staff_id, name or "", username or "", datetime.now().isoformat(timespec="seconds")),
-        )
+        known = conn.execute("SELECT 1 FROM staff_registry WHERE staff_id = ?", (staff_id,)).fetchone()
+        if known:
+            conn.execute("UPDATE staff_registry SET name = ?, username = ? WHERE staff_id = ?", (name or "", username or "", staff_id))
+            return False
+        conn.execute("INSERT INTO staff_registry (staff_id, name, username, first_seen, active) VALUES (?, ?, ?, ?, 0)",
+                     (staff_id, name or "", username or "", datetime.now().isoformat(timespec="seconds")))
+        return True
+
+
+def is_active_staff(staff_id: int) -> bool:
+    with get_conn() as conn:
+        r = conn.execute("SELECT active FROM staff_registry WHERE staff_id = ?", (staff_id,)).fetchone()
+        return bool(r and r["active"])
+
+
+def staff_known(staff_id: int) -> bool:
+    with get_conn() as conn:
+        return conn.execute("SELECT 1 FROM staff_registry WHERE staff_id = ?", (staff_id,)).fetchone() is not None
+
+
+# ---- personal dashboard keys (replace the shared STAFF_KEY) -----------------
+def issue_access_key(uid: int) -> str:
+    """A fresh personal key for the WebApp link; only its hash is stored."""
+    import hashlib
+    import secrets as _secrets
+    from datetime import datetime
+    key = f"{uid}.{_secrets.token_urlsafe(24)}"
+    with get_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS access_keys (uid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created_at TEXT, revoked INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO access_keys (uid, key_hash, created_at, revoked) VALUES (?, ?, ?, 0) "
+                     "ON CONFLICT(uid) DO UPDATE SET key_hash = excluded.key_hash, created_at = excluded.created_at, revoked = 0",
+                     (uid, hashlib.sha256(key.encode()).hexdigest(), datetime.now().isoformat(timespec="seconds")))
+    return key
+
+
+def access_key_uid(key: str) -> int | None:
+    """uid behind a personal key, or None (unknown, revoked, malformed)."""
+    import hashlib
+    import hmac as _hmac
+    uid, _, rest = (key or "").partition(".")
+    if not uid.isdigit() or not rest:
+        return None
+    with get_conn() as conn:
+        try:
+            r = conn.execute("SELECT key_hash, revoked FROM access_keys WHERE uid = ?", (int(uid),)).fetchone()
+        except Exception:  # noqa: BLE001 — table not there yet
+            return None
+    if not r or r["revoked"] or not _hmac.compare_digest(r["key_hash"], hashlib.sha256(key.encode()).hexdigest()):
+        return None
+    return int(uid)
+
+
+def revoke_access_key(uid: int) -> None:
+    with get_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS access_keys (uid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created_at TEXT, revoked INTEGER DEFAULT 0)")
+        conn.execute("UPDATE access_keys SET revoked = 1 WHERE uid = ?", (uid,))
 
 
 def all_staff(active_only: bool = True) -> list[dict]:

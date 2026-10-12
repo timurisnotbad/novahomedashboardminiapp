@@ -4,7 +4,7 @@
    the conversations it has not seen yet (new or changed preview); when nobody is
    using the page, the extension opens them one by one and reads them too. */
 const DEF = { crm: "", token: "" };
-async function cfg() { return Object.assign({}, DEF, await chrome.storage.sync.get(DEF)); }
+async function cfg() { return Object.assign({}, DEF, await chrome.storage.local.get(DEF)); }
 async function api(path, opts) {
   const c = await cfg(); if (!c.crm || !c.token) throw new Error("Укажите адрес CRM и ключ в настройках расширения");
   const r = await fetch(c.crm.replace(/\/$/, "") + "/api/inbox/ext" + path, Object.assign({ headers: { "Content-Type": "application/json", "X-Ext-Token": c.token } }, opts || {}));

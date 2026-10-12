@@ -84,10 +84,13 @@ def _webapp_url(uid=None) -> str:
                 return url + "&okey=" + config.PAY_KEY
         except Exception:  # noqa: BLE001
             logger.exception("pay viewer url check failed")
-    if config.STAFF_KEY and uid:
-        # everyone else: the staff key proves the app was opened from the bot
-        # (the API rejects bare visits to the domain)
-        url += "&okey=" + config.STAFF_KEY
+    if uid:
+        # everyone else: a PERSONAL key (hashed in the DB, revoked by /staff_del)
+        # proves who opened the app — desktop clients pass no initData
+        try:
+            url += "&okey=" + database.issue_access_key(uid)
+        except Exception:  # noqa: BLE001
+            logger.exception("access key issue failed")
     return url
 
 
@@ -104,8 +107,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if not msg:
         return
-    _register(update.effective_user)
     uid = update.effective_user.id if update.effective_user else None
+    created = _register(update.effective_user)
     if chat and chat.type != "private":
         # Telegram allows Web App buttons in private chats only — sending them
         # here fails with Bad Request and the person gets nothing
@@ -113,6 +116,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text(
             f"Дашборд открывается из личного чата: напишите /start боту @{me}."
         )
+        return
+    if uid and not _may_open(uid):
+        # unknown person: nothing but a polite note; owners get a one-line alert
+        await msg.reply_text("Здравствуйте! Это рабочий бот Nova Home. Доступ к дашборду выдаёт владелец — "
+                             "я передал ему ваш запрос, после подтверждения напишите /start ещё раз.")
+        if created:
+            await _notify_owners(context.bot, f"👤 Новый человек написал боту: {update.effective_user.full_name} "
+                                 f"(@{update.effective_user.username or '—'}, id {uid}).\nДать доступ: /staff_ok {uid}")
         return
     markup = _webapp_markup(uid)
     apt_count = len(_apartment_names()) or config.TOTAL_APARTMENTS
@@ -476,15 +487,62 @@ async def daily_prices(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to send daily prices to %s: %s", uid, exc)
 
 
-def _register(user) -> None:
-    """Auto-register everyone who talks to the bot (owners excluded) — the
-    roster drives reminders and the roll call, no .env editing needed."""
+def _register(user) -> bool:
+    """Everyone who talks to the bot lands in the registry as PENDING (owners
+    excluded); an owner activates them with /staff_ok. Returns True for a
+    person seen for the first time."""
     if not user or user.id in config.OWNER_TELEGRAM_IDS:
-        return
+        return False
     try:
-        database.upsert_staff(user.id, user.full_name or user.first_name or "", user.username or "")
+        return database.upsert_staff(user.id, user.full_name or user.first_name or "", user.username or "")
     except Exception:  # noqa: BLE001
         logger.exception("staff auto-register failed")
+        return False
+
+
+def _may_open(uid: int) -> bool:
+    """Who gets the dashboard button: owners, confirmed staff, pay viewers.
+    Without a configured owner list (local dev) — everyone."""
+    if not config.OWNER_TELEGRAM_IDS:
+        return True
+    if uid in config.OWNER_TELEGRAM_IDS:
+        return True
+    try:
+        from backend import auth as _auth
+        if uid in _auth.pay_viewer_ids():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return database.is_active_staff(uid)
+
+
+async def _notify_owners(bot, text: str) -> None:
+    for oid in config.OWNER_TELEGRAM_IDS:
+        try:
+            await bot.send_message(oid, text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("owner notify failed for %s: %s", oid, exc)
+
+
+async def staff_ok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Owner: /staff_ok <id> — confirm a person who wrote to the bot."""
+    user = update.effective_user
+    if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
+        return
+    parts = (update.effective_message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await update.effective_message.reply_text("Использование: /staff_ok <id> (id из уведомления или /staff)")
+        return
+    sid = int(parts[1])
+    if not database.staff_known(sid):
+        await update.effective_message.reply_text("Этот человек ещё не писал боту — попросите его отправить /start.")
+        return
+    database.set_staff_active(sid, True)
+    await update.effective_message.reply_text(f"✅ Доступ выдан: {sid}. Сотрудник может нажать /start и открыть дашборд.")
+    try:
+        await context.bot.send_message(sid, "✅ Владелец подтвердил доступ. Нажмите /start, чтобы открыть дашборд.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("staff_ok notify failed: %s", exc)
 
 
 def _staff_roster() -> dict[int, str]:
@@ -524,9 +582,16 @@ async def staff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "напишет боту /start или пришлёт локацию."
         )
         return
-    lines = ["👥 Сотрудники (авто-список):"]
+    lines = ["👥 Сотрудники (с доступом):"]
     for uid, nm in sorted(roster.items(), key=lambda x: x[1].lower()):
         lines.append(f"  • {nm} — {uid}")
+    pending = [r for r in database.all_staff(active_only=False) if not r.get("active")]
+    if pending:
+        lines.append("")
+        lines.append("⏳ Ожидают подтверждения:")
+        for r in pending:
+            nm = f"@{r['username']}" if r.get("username") else (r.get("name") or str(r["staff_id"]))
+            lines.append(f"  • {nm} — {r['staff_id']} → /staff_ok {r['staff_id']}")
     lines.append("")
     lines.append("Убрать уволенного: /staff_del <id>")
     await _reply_long(update.message, "\n".join(lines))
@@ -542,8 +607,9 @@ async def staff_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text("Использование: /staff_del <id> (id смотри в /staff)")
         return
     database.set_staff_active(int(parts[1]), False)
+    database.revoke_access_key(int(parts[1]))
     await update.effective_message.reply_text(
-        "✅ Убран из списка. Если человек снова напишет боту — вернётся автоматически."
+        "✅ Доступ закрыт: ссылка на дашборд и чаты больше не работает. Вернуть можно командой /staff_ok <id>."
     )
 
 
@@ -1770,6 +1836,7 @@ def main() -> None:
     app.add_handler(CommandHandler("myid", myid_cmd))
     app.add_handler(CommandHandler("staff", staff_cmd))
     app.add_handler(CommandHandler("staff_del", staff_del_cmd))
+    app.add_handler(CommandHandler("staff_ok", staff_ok_cmd))
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("supplies", supplies_cmd))

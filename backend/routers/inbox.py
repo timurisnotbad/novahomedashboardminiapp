@@ -37,7 +37,7 @@ public = APIRouter(prefix="/inbox", tags=["inbox"])
 
 
 def _fail(exc: Exception):
-    raise HTTPException(status_code=424, detail=str(exc)) from exc
+    raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
 
 
 class SendIn(BaseModel):
@@ -261,11 +261,11 @@ async def send_file(chat_id: int, request: Request, user: dict = Depends(inbox_u
     """Raw file body (no multipart dependency): name in X-File-Name (URL-encoded),
     type in Content-Type, optional caption in X-Caption (URL-encoded)."""
     from urllib.parse import unquote
-    body = await request.body()
+    if int(request.headers.get("content-length") or 0) > MAX_UPLOAD:
+        raise HTTPException(status_code=413, detail="Файл больше 30 МБ")
+    body = await _read_capped(request, MAX_UPLOAD)
     if not body:
         raise HTTPException(status_code=400, detail="Пустой файл")
-    if len(body) > MAX_UPLOAD:
-        raise HTTPException(status_code=413, detail="Файл больше 30 МБ")
     name = unquote(request.headers.get("x-file-name", "") or "file")[:120]
     mime = (request.headers.get("content-type") or "").split(";")[0].strip() \
         or mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -395,11 +395,34 @@ def ext_outbox_done(oid: int, payload: dict, _=Depends(_ext_auth)):  # noqa: B00
 
 
 # ---- bridge & media ---------------------------------------------------------
+async def _read_capped(request: Request, limit: int) -> bytes:
+    """Read a body without trusting Content-Length: stop at `limit` bytes."""
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > limit:
+            raise HTTPException(status_code=413, detail="Слишком большой запрос")
+    return bytes(buf)
+
+
+async def _json_capped(request: Request, limit: int = 2_000_000):
+    import json
+    if int(request.headers.get("content-length") or 0) > limit:
+        raise HTTPException(status_code=413, detail="Слишком большой запрос")
+    raw = await _read_capped(request, limit)
+    try:
+        return json.loads(raw.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="bad json") from exc
+
+
 @public.post("/hook")
 async def hook(request: Request, x_inbox_secret: str = Header(default="")):  # noqa: B008
     if not hmac.compare_digest(x_inbox_secret, config.INBOX_SECRET):
         raise HTTPException(status_code=403, detail="bad secret")
-    data = await request.json()
+    data = await _json_capped(request, 8_000_000)  # history batches from the bridge can be big
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="bad json")
     from starlette.concurrency import run_in_threadpool
     ev = data.get("event")
     if ev == "message":
@@ -421,7 +444,7 @@ async def hook(request: Request, x_inbox_secret: str = Header(default="")):  # n
 def meta_verify(request: Request):
     """Meta's one-time subscription check (hub.challenge)."""
     q = request.query_params
-    if q.get("hub.mode") == "subscribe" and config.META_VERIFY_TOKEN and q.get("hub.verify_token") == config.META_VERIFY_TOKEN:
+    if q.get("hub.mode") == "subscribe" and config.META_VERIFY_TOKEN and hmac.compare_digest(q.get("hub.verify_token") or "", config.META_VERIFY_TOKEN):
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(q.get("hub.challenge") or "")
     raise HTTPException(status_code=403, detail="bad verify token")
@@ -429,14 +452,22 @@ def meta_verify(request: Request):
 
 @public.post("/meta/webhook")
 async def meta_webhook(request: Request):
-    body = await request.body()
+    # Nothing to receive until Meta is configured WITH its app secret: an open
+    # webhook would let anyone inject «guest» messages and make the server fetch URLs
+    if not config.META_APP_SECRET or not (meta_api.wa_configured() or meta_api.ig_configured()):
+        raise HTTPException(status_code=404)
+    if int(request.headers.get("content-length") or 0) > 1_000_000:
+        raise HTTPException(status_code=413)
+    body = await _read_capped(request, 1_000_000)
     if not meta_api.signature_ok(body, request.headers.get("x-hub-signature-256", "")):
         raise HTTPException(status_code=403, detail="bad signature")
+    import json
     try:
-        data = await request.json()
-    except ValueError:
+        data = json.loads(body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
         return {"ok": False}
-    meta_api.handle_webhook(data)  # answer fast, process in a thread
+    if isinstance(data, dict):
+        meta_api.handle_webhook(data)  # answer fast, process in a thread
     return {"ok": True}
 
 
@@ -445,8 +476,8 @@ async def wazzup_webhook(token: str, request: Request):
     if not hmac.compare_digest(token, wazzup.webhook_token()):
         raise HTTPException(status_code=403, detail="bad token")
     try:
-        data = await request.json()
-    except ValueError:
+        data = await _json_capped(request, 2_000_000)
+    except HTTPException:
         data = {}
     if isinstance(data, dict) and not data.get("test"):
         wazzup.handle_webhook(data)
@@ -461,4 +492,33 @@ def media(name: str, s: str = ""):
     path = config.INBOX_MEDIA_DIR / name
     if not path.exists():
         raise HTTPException(status_code=404)
-    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+    # Guests pick the file names and types. Only media the chat UI renders inline
+    # is served as such; everything else downloads as an opaque attachment —
+    # an uploaded .html/.svg must never run on the CRM origin.
+    ext = name.rsplit(".", 1)[-1].lower()
+    inline = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif",
+              "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime", "m4a": "audio/mp4", "mp3": "audio/mpeg",
+              "ogg": "audio/ogg", "oga": "audio/ogg", "opus": "audio/ogg", "aac": "audio/aac", "wav": "audio/wav", "pdf": "application/pdf"}
+    headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff",
+               "Content-Security-Policy": "sandbox; default-src 'none'"}
+    if ext in inline and _magic_ok(path, ext):
+        return FileResponse(path, media_type=inline[ext], headers=headers)
+    headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return FileResponse(path, media_type="application/octet-stream", headers=headers)
+
+
+def _magic_ok(path, ext: str) -> bool:
+    """The first bytes must match the extension for inline types (a .png that is
+    really HTML is downloaded, not rendered)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    sig = {"jpg": (b"\xff\xd8",), "jpeg": (b"\xff\xd8",), "png": (b"\x89PNG",), "gif": (b"GIF8",), "webp": (b"RIFF",),
+           "pdf": (b"%PDF",), "mp4": (b"ftyp",), "mov": (b"ftyp",), "m4a": (b"ftyp",), "webm": (b"\x1aE\xdf\xa3",),
+           "mp3": (b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"), "ogg": (b"OggS",), "oga": (b"OggS",), "opus": (b"OggS",),
+           "wav": (b"RIFF",), "aac": (b"\xff\xf1", b"\xff\xf9", b"ID3")}.get(ext)
+    if not sig:
+        return False
+    return any(head.startswith(m) or (m == b"ftyp" and head[4:8] == b"ftyp") for m in sig)
