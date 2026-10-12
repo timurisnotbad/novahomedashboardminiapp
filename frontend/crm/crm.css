@@ -76,6 +76,7 @@ select.field { appearance:auto; }
 .grid.c2 { grid-template-columns:1fr 1fr; }
 .grid.c3 { grid-template-columns:repeat(3, 1fr); }
 .grid.c4 { grid-template-columns:repeat(4, 1fr); }
+.grid.c5 { grid-template-columns:repeat(5, 1fr); }
 .stat { background:var(--card); border:1px solid var(--sep); border-radius:var(--r); padding:16px 18px; cursor:pointer; }
 .stat b { display:block; font-size:28px; font-weight:700; letter-spacing:-.02em; }
 .stat span { color:var(--label-2); font-size:13px; }
@@ -112,10 +113,13 @@ label.lbl { display:block; font-size:13px; color:var(--label-2); margin:10px 0 4
 .list__row .actions button { font-weight:600; margin-left:14px; }
 
 /* ---------- kanban ---------- */
-.kanban { display:flex; gap:14px; overflow-x:auto; padding-bottom:12px; align-items:flex-start; }
-.kcol { width:280px; flex:none; background:#EEF0F3; border-radius:var(--r); padding:10px; min-height:120px; }
+/* the board takes the rest of the screen; every stage scrolls on its own, the board scrolls sideways */
+.kanban { display:flex; gap:14px; overflow-x:auto; padding-bottom:12px; align-items:flex-start; height:calc(100dvh - 170px); min-height:320px; overscroll-behavior-x:contain; }
+.kcol { width:280px; flex:none; background:#EEF0F3; border-radius:var(--r); padding:0 10px 10px; min-height:120px; max-height:100%; overflow-y:auto; overscroll-behavior:contain; }
 .kcol.over { outline:2px dashed var(--blue); }
-.kcol__head { display:flex; justify-content:space-between; align-items:center; padding:4px 6px 10px; font-weight:700; font-size:14px; }
+.kcol__head { display:flex; justify-content:space-between; align-items:center; padding:14px 6px 10px; font-weight:700; font-size:14px; position:sticky; top:0; background:#EEF0F3; z-index:1; }
+.kcard__age { color:var(--label-3); white-space:nowrap; }
+.kb-hint { margin-left:auto; }
 .kcol__head small { color:var(--label-2); font-weight:500; }
 .kcol__dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; }
 .kcard { background:var(--card); border:1px solid var(--sep); border-radius:10px; padding:10px 12px; margin-bottom:8px; cursor:grab; }
@@ -220,8 +224,30 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .link-list a { display:block; padding:6px 0; border-bottom:1px solid var(--sep); }
 .link-list a:last-child { border-bottom:none; }
 
+/* quick commands: list + variables side by side (one column on phones) */
+.cmd-grid { grid-template-columns:1fr 240px; align-items:start; }
+/* integrations: four tabs instead of one long page */
+.itabs { margin-bottom:16px; flex-wrap:wrap; }
+.itab[hidden] { display:none !important; }
+/* booking card: collapsible lower sections */
+.bk-sec { margin-top:14px; border-top:1px solid var(--sep); }
+.bk-sec > summary { padding:10px 0 4px; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--label-2); list-style:none; display:flex; gap:8px; align-items:center; }
+.bk-sec > summary::-webkit-details-marker { display:none; }
+.bk-sec > summary::before { content:"▸"; font-size:11px; transition:transform .15s; }
+.bk-sec[open] > summary::before { transform:rotate(90deg); }
+.bk-sec > .bk-tasks { margin-top:0; padding-top:4px; border-top:none; }
+/* home: the morning panel */
+.rep__text { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.5; max-height:320px; overflow:auto; background:#F9FAFB; border:1px solid var(--sep); border-radius:9px; padding:10px 12px; margin-top:8px; color:var(--label); }
+.attn { display:grid; gap:14px; }
+.attn__h { font-size:13px; font-weight:700; color:var(--label); margin-bottom:4px; }
+.attn__row { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--sep); font-size:14px; }
+.attn__row:last-child { border-bottom:none; }
+.attn__row > a { min-width:0; color:var(--label); }
+.attn__row > a:hover { color:var(--blue-text); }
+
 @media (max-width: 900px) {
-  .grid.c4, .grid.c3 { grid-template-columns:1fr 1fr; }
+  .grid.c4, .grid.c3, .grid.c5 { grid-template-columns:1fr 1fr; }
+  .grid.c5 > .stat:nth-child(5) { grid-column:1 / -1; }   /* the odd fifth tile spans the row */
   .bk-cols, .grid.c2, .form-row, .form-row.c3 { grid-template-columns:1fr; }
   .main { padding:18px 16px 50px; }
 }
@@ -260,17 +286,28 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
   .page-head .btn { padding:8px 12px; }
   .toolbar { gap:6px; }
   .field, .btn { font-size:16px; } /* iOS does not zoom the page on focus at 16px */
-  .btn.sm { font-size:14px; }
-  .seg button { padding:7px 10px; }
-  .grid.c4, .grid.c3 { grid-template-columns:1fr 1fr; gap:10px; }
+  .btn.sm { font-size:14px; min-height:36px; }
+  /* finger-sized targets: segmented chips 40 px tall, task row buttons and checkboxes 40×40 */
+  .seg button { padding:7px 10px; min-height:40px; }
+  .seg.sm button { min-height:32px; }
+  .task .task__del { min-width:40px; min-height:40px; display:inline-flex; align-items:center; justify-content:center; font-size:18px; margin:-8px -4px; }
+  .task input[type=checkbox] { appearance:none; -webkit-appearance:none; width:40px; height:40px; flex:none; margin:-9px -9px -9px -8px; position:relative; border:none; background:none; }
+  .task input[type=checkbox]::before { content:""; position:absolute; left:9px; top:9px; width:22px; height:22px; border:2px solid var(--label-3); border-radius:6px; background:var(--card); box-sizing:border-box; }
+  .task input[type=checkbox]:checked::before { background:var(--blue); border-color:var(--blue); }
+  .task input[type=checkbox]:checked::after { content:""; position:absolute; left:17px; top:12px; width:6px; height:12px; border:solid #fff; border-width:0 2.5px 2.5px 0; transform:rotate(45deg); }
+  .task { gap:8px; }
+  .grid.c4, .grid.c3, .grid.c5 { grid-template-columns:1fr 1fr; gap:10px; }
   .stat { padding:12px 14px; } .stat b { font-size:22px; }
   .card { padding:14px 14px; }
-  /* kanban: one column per screen, swipe between stages */
-  .kanban { scroll-snap-type:x mandatory; gap:10px; margin:0 -14px; padding:0 14px 12px; overscroll-behavior-x:contain; }
+  .cmd-grid { grid-template-columns:1fr; }
+  .kb-hint { display:none; }
+  /* kanban: one column per screen, swipe between stages; the board fills what is left of the screen */
+  .kanban { scroll-snap-type:x mandatory; gap:10px; margin:0 -14px; padding:0 14px 12px; overscroll-behavior-x:contain; height:calc(var(--vvh, 100dvh) - 52px - 58px - env(safe-area-inset-bottom, 0px) - 128px); min-height:240px; }
   .kcol { width:84vw; scroll-snap-align:center; min-height:140px; }
-  /* sheets instead of centered dialogs */
+  /* sheets instead of centered dialogs; with the keyboard open the sheet shrinks to the visible viewport (--vvh from the shell) */
   .modal { padding:0; align-items:end; position:fixed; }
-  .modal__card, .modal__card.wide { width:100%; max-height:92dvh; border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); overscroll-behavior:contain; }
+  .modal__card, .modal__card.wide { width:100%; max-height:calc(var(--vvh, 100dvh) - 52px); border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); overscroll-behavior:contain; }
+  .bk-sec > summary { padding:12px 0 6px; min-height:40px; }
   .row-actions { position:sticky; bottom:-18px; background:var(--card); padding:10px 0 0; margin-top:12px; }
   .row-actions .btn { flex:1; justify-content:center; }
   .bk-tasks__add { padding-bottom:6px; } .bk-tasks__add #bkt-add { flex:1; } .bk-tasks__add #bkt-due, .bk-tasks__add #bkt-who { max-width:none; flex:1 1 45%; }

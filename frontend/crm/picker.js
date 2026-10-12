@@ -59,6 +59,8 @@
     });
     el.addEventListener("click", (e) => { const n = e.target.closest(".wheel__item"); if (n) el.scrollTo({ top: parseInt(n.dataset.i, 10) * ITEM, behavior: "smooth" }); });
     el.goto = (i, instant) => { idx = Math.max(0, Math.min(items.length - 1, i)); mark(); el.scrollTo({ top: idx * ITEM, behavior: instant ? "auto" : "smooth" }); };
+    // show only the first n items (the day wheel of a 30-day month); the selection moves up if it falls off the end
+    el.limit = (n) => { el.querySelectorAll(".wheel__item").forEach((it, i) => { it.style.display = i < n ? "" : "none"; }); if (idx >= n) el.goto(n - 1); };
     requestAnimationFrame(() => el.goto(idx, true));
     mark();
     return el;
@@ -93,11 +95,14 @@
       const curIdx = Math.round((new Date(state.y, state.m, state.d) - base) / 86400000) + 400;
       cols.push(wheel(days, curIdx, (d) => { state.y = d.getFullYear(); state.m = d.getMonth(); state.d = d.getDate(); paintTitle(); }));
     } else if (kind === "date") {
-      const dayW = wheel(Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: String(i + 1) })), state.d - 1, (v) => { state.d = v; paintTitle(); });
-      const monW = wheel(MONTHS_FULL.map((n, i) => ({ value: i, label: n })), state.m, (v) => { state.m = v; state.d = Math.min(state.d, dim(state.y, state.m)); paintTitle(); });
+      // the day never exceeds the month: the day callback clamps too, and the wheel shows only dim(y, m) days
+      const dayW = wheel(Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: String(i + 1) })), state.d - 1, (v) => { state.d = Math.min(v, dim(state.y, state.m)); paintTitle(); });
+      const fitDays = () => { state.d = Math.min(state.d, dim(state.y, state.m)); dayW.limit(dim(state.y, state.m)); paintTitle(); };
+      const monW = wheel(MONTHS_FULL.map((n, i) => ({ value: i, label: n })), state.m, (v) => { state.m = v; fitDays(); });
       // any year: birthdays go back a century, bookings a few years ahead
       const years = []; for (let y = now.getFullYear() + 5; y >= 1920; y--) years.push({ value: y, label: String(y) });
-      const yrW = wheel(years, years.findIndex((x) => x.value === state.y), (v) => { state.y = v; state.d = Math.min(state.d, dim(state.y, state.m)); paintTitle(); });
+      const yrW = wheel(years, years.findIndex((x) => x.value === state.y), (v) => { state.y = v; fitDays(); });
+      dayW.limit(dim(state.y, state.m));
       cols.push(dayW, monW, yrW);
     } else if (kind === "month") {
       const monW = wheel(MONTHS_FULL.map((n, i) => ({ value: i, label: n })), state.m, (v) => { state.m = v; paintTitle(); });
