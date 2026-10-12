@@ -80,6 +80,29 @@ def _prune_auto_log() -> None:
         logger.warning("auto log prune failed: %s", exc)
 
 
+def _housekeeping():
+    """Once a day: rows nobody will read again (reply map of Telegram alerts,
+    «seen» previews of the Booking.com extension, finished extension outbox,
+    stale access attempts) — the DB stops growing without bound."""
+    from datetime import datetime as _dt, timedelta as _td
+    from . import database
+    old30 = (_dt.now() - _td(days=30)).isoformat(timespec="seconds")
+    old180 = (_dt.now() - _td(days=180)).isoformat(timespec="seconds")
+    stmts = [
+        ("DELETE FROM inbox_tg_map WHERE created_at < ?", (old30,)),
+        ("DELETE FROM inbox_ext_seen WHERE at < ? AND preview != '*full*'", (old180,)),
+        ("DELETE FROM inbox_ext_outbox WHERE status IN ('done', 'failed') AND created_at < ?", (old30,)),
+    ]
+    with database.get_conn() as conn:
+        for sql, args in stmts:
+            try:
+                conn.execute(sql, args)
+            except Exception as exc:  # noqa: BLE001 — a table that this install never created
+                logger.debug("housekeeping skipped: %s (%s)", sql[:40], exc)
+    _prune_auto_log()
+    logger.info("Housekeeping done")
+
+
 def _notify_job():
     try:
         from . import inbox
@@ -165,6 +188,7 @@ def start() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(_housekeeping, "cron", hour=4, minute=17, id="housekeeping", max_instances=1, coalesce=True)
     _scheduler.start()
     logger.info("Scheduler started (sync %s min, reminders 10 min, summary 22:00, watchdog 1 min)",
                 config.SYNC_INTERVAL_MINUTES)

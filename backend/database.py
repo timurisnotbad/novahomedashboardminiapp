@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterable
 
-from . import config
+from . import config, util
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bookings (
@@ -258,6 +258,8 @@ def get_conn():
     # timeout lets the bot and the server share the DB without "database is locked"
     conn = sqlite3.connect(config.DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
+    # per-connection setting (journal_mode=WAL is stored in the file once, in init_db)
+    conn.execute("PRAGMA synchronous=NORMAL")
     try:
         yield conn
         conn.commit()
@@ -268,8 +270,9 @@ def get_conn():
 def init_db() -> None:
     with get_conn() as conn:
         # WAL + relaxed sync = snappier concurrent reads for the dashboard.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if str(mode).lower() != "wal":  # network drive / exotic FS: say so instead of pretending
+            logging.getLogger("nova.db").warning("SQLite journal_mode is %s, not WAL — concurrent reads will block on writes", mode)
         conn.executescript(SCHEMA)
         # Migrations. The server and the bot start at the same moment and both
         # run this; the loser of the race gets "duplicate column name" — harmless.
@@ -369,12 +372,7 @@ def upsert_bookings(bookings: Iterable[dict]) -> int:
 
 
 def _num(value):
-    if value is None:
-        return 0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0
+    return util.num(value, 0)
 
 
 def replace_all_bookings(bookings: list[dict]) -> int:
@@ -786,25 +784,9 @@ def get_topic(chat_id: int, role: str):
     return None
 
 
-def topic_binding(chat_id: int, role: str):
-    """The binding row for exactly this role (no fallback to 'general'), or
-    None when the chat has no such binding."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM chat_topics WHERE chat_id = ? AND role = ?", (chat_id, role)
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-
 def chat_topics(chat_id: int) -> list[dict]:
     with get_conn() as conn:
         cur = conn.execute("SELECT * FROM chat_topics WHERE chat_id = ? ORDER BY role", (chat_id,))
-        return [dict(r) for r in cur.fetchall()]
-
-
-def all_topics() -> list[dict]:
-    with get_conn() as conn:
-        cur = conn.execute("SELECT * FROM chat_topics ORDER BY chat_id, role")
         return [dict(r) for r in cur.fetchall()]
 
 

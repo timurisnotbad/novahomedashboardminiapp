@@ -14,7 +14,7 @@ from email.message import EmailMessage
 from io import BytesIO
 from pathlib import Path
 
-from . import config, database
+from . import config, database, util
 
 logger = logging.getLogger("nova.docs")
 
@@ -76,8 +76,8 @@ T = {
            "st_unpaid": "Оплата при заезде", "conf_text": "Документ подтверждает, что бронирование выше зарегистрировано в системе бронирования {brand}.",
            "director": "ДИРЕКТОР"},
 }
-MONTHS_EN = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+MONTHS_EN = util.EN_MONTHS
+MONTHS_RU = util.RU_MONTHS_GEN
 DEFAULT_COMPANY = {"brand": "NOVA HOME", "name": "NOVA HOME Apartments", "legal": "YATT Zakirov Timur Sadriddinovich",
                    "tagline": "NEST ONE · TASHKENT, UZBEKISTAN", "property": "NOVA HOME Apartments — Nest One",
                    "address": "Nest One, Tashkent City 100100, Uzbekistan", "phone": "+998 33 320 05 28",
@@ -117,8 +117,7 @@ def _fmt_money(v, cur="USD") -> str:
     return f"{s} {'$' if cur == 'USD' else cur}"
 
 
-def _dmy(iso: str) -> str:
-    return f"{iso[8:10]}.{iso[5:7]}.{iso[:4]}" if iso and len(iso) >= 10 else (iso or "")
+_dmy = util.dmy
 
 
 def _unit_code(apartment: str) -> str:

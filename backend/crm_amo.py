@@ -3,7 +3,7 @@ attached to deals; a chat nobody attached yet is «Неразобранное» 
 the deal card is a timeline — messages, notes, tasks — with a composer.
 """
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from . import crm, database, inbox
 
@@ -165,8 +165,17 @@ def backfill_deals() -> int:
         logger.exception("deal merge failed")
     if crm.get_setting("auto_deal", "1") != "1":
         return 0
+    # only chats with recent activity become deals by themselves: a year-old
+    # conversation on the board is noise, not a lead (setting auto_deal_days)
+    try:
+        days = int(crm.get_setting("auto_deal_days", "30") or 30)
+    except ValueError:
+        days = 30
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
     n = 0
     for c in unsorted():
+        if days > 0 and (c.get("last_at") or "") < since:
+            continue
         try:
             on_incoming(c["id"])
             n += 1

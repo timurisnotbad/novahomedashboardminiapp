@@ -11,7 +11,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta
 
-from . import config, crm, database, inbox
+from . import config, crm, database, inbox, util
 
 logger = logging.getLogger("nova.crm2")
 
@@ -139,6 +139,18 @@ def booking_card(bid: int) -> dict | None:
     b["client"] = client and {k: client[k] for k in ("id", "name", "phone", "email", "source", "notes", "fields", "status")}
     b["history"] = client_history(b["phone"]) if b["phone"] else None
     b["chats"] = chats
+    # no linked chat and no phone (Airbnb / Booking.com): offer the chats whose
+    # name matches the guest, so the card is not a dead end
+    b["chat_candidates"] = []
+    if not chats and (b.get("guest") or "").strip():
+        words = [w for w in re.split(r"[\s,]+", b["guest"].strip()) if len(w) >= 3][:2]
+        seen = set()
+        for w in words:
+            for c in inbox.chat_list(w, "all", "", 5):
+                if c["id"] not in seen:
+                    seen.add(c["id"])
+                    b["chat_candidates"].append({k: c.get(k) for k in ("id", "title", "channel", "channel_name", "last_text", "last_at")})
+    b["features"] = config.features()
     crm._contact_states([b])  # noqa: SLF001
     b["deal"] = dict(deal) if deal else None
     b["auto_log"] = auto
@@ -240,20 +252,9 @@ def unlink_chat(bid: int, chat_id: int) -> None:
 
 
 def pinned_booking_for_chat(chat_id: int) -> dict | None:
-    """The booking the team pinned to a chat — current/next first, else the latest."""
-    with database.get_conn() as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT b.* FROM crm_booking_chats l JOIN bookings b ON b.id = l.booking_id "
-            "WHERE l.chat_id = ? AND COALESCE(b.is_delete, 0) = 0", (chat_id,)).fetchall()]
-    if not rows:
-        return None
-    today = date.today().isoformat()
-    cur = [r for r in rows if r["begin_date"] <= today <= r["end_date"]]
-    nxt = sorted((r for r in rows if r["begin_date"] > today), key=lambda r: r["begin_date"])
-    past = sorted(rows, key=lambda r: r["end_date"], reverse=True)
-    b = dict((cur or nxt or past)[0])
-    b["when"] = "now" if cur else "next" if nxt else "past"
-    return b
+    """The booking the team pinned to a chat — current/next first, else the latest
+    (one resolver: the cached join in inbox)."""
+    return inbox._pinned_booking(chat_id)  # noqa: SLF001
 
 
 def chats_for_booking(bid: int) -> list[int]:
@@ -267,9 +268,8 @@ def chats_for_booking(bid: int) -> list[int]:
 def _history_index() -> dict[str, dict]:
     """phone(last 9) -> visits, nights, amount, first/last stay, apartments."""
     idx: dict[str, dict] = {}
-    with database.get_conn() as conn:
-        rows = conn.execute("SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND client_phone IS NOT NULL "
-                            "AND client_phone != '' ORDER BY begin_date").fetchall()
+    # the one phone → stays index (inbox._bookings_by_phone), not a fifth query
+    rows = sorted((r for rs in inbox._bookings_by_phone().values() for r in rs), key=lambda r: r["begin_date"])  # noqa: SLF001
     today = date.today().isoformat()
     for r in rows:
         d = crm.digits(r["client_phone"])
@@ -375,6 +375,36 @@ def export_clients_xlsx() -> bytes:
 # ---------------------------------------------------------------------------
 # Revenue by channel (RC mirror; refreshed by every sync)
 # ---------------------------------------------------------------------------
+def debts() -> dict:
+    """Bookings with money owed: stays that end in the last 60 days or later,
+    not fully paid. Sorted: living now first, then upcoming by check-in."""
+    today = date.today()
+    since = (today - timedelta(days=60)).isoformat()
+    with database.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND end_date >= ? AND COALESCE(status, '') NOT IN ('cancelled', 'canceled') "
+            "ORDER BY begin_date", (since,)).fetchall()]
+        deals = {r["booking_id"]: r["id"] for r in conn.execute("SELECT id, booking_id FROM crm_deals WHERE booking_id IS NOT NULL").fetchall()}
+        cm = {}
+        for r in conn.execute("SELECT id, phone FROM crm_clients WHERE phone != ''").fetchall():
+            cm[r["phone"][-9:]] = r["id"]
+    items = []
+    for r in rows:
+        b = crm._booking_out(r)  # noqa: SLF001
+        if b.get("pay") not in ("unpaid", "prepaid") or not (float(b.get("debt") or 0) > 0):
+            continue
+        t = today.isoformat()
+        b["when"] = "now" if b["checkin"] <= t < b["checkout"] else "next" if b["checkin"] > t else "past"
+        b["deal_id"] = deals.get(b["id"])
+        b["client_id"] = cm.get((b["phone"] or "")[-9:]) if b.get("phone") else None
+        items.append(b)
+    crm._contact_states(items)  # noqa: SLF001
+    items.sort(key=lambda b: ({"now": 0, "next": 1, "past": 2}[b["when"]], b["checkin"]))
+    keep = ("id", "apartment", "guest", "phone", "checkin", "checkout", "amount", "paid", "debt", "pay", "contact", "deal_id", "client_id", "when", "source")
+    out = [{k: b.get(k) for k in keep} for b in items]
+    return {"items": out, "total": round(sum(float(b["debt"] or 0) for b in out), 2), "count": len(out)}
+
+
 def revenue(month: str) -> dict:
     """Bookings by check-in month, grouped by source; plus 12-month trend."""
     y, m = (int(x) for x in month.split("-")[:2])
@@ -659,7 +689,7 @@ def auto_log(limit: int = 100) -> list[dict]:
         return [dict(r) for r in conn.execute("SELECT * FROM crm_auto_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
 
 
-RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+RU_MONTHS = util.RU_MONTHS_GEN
 
 
 def guest_lang(chat: dict | None) -> str:
@@ -675,7 +705,7 @@ def guest_lang(chat: dict | None) -> str:
         return ""
 
 
-EN_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+EN_MONTHS = util.EN_MONTHS
 
 
 def fill(text: str, booking: dict | None, chat: dict | None, lang: str = "ru") -> str:
@@ -875,6 +905,15 @@ def run_auto_rules(dry: bool = False) -> list[dict]:
     return results
 
 
+UNRESOLVED = re.compile(r"\{[^{}\n]{1,40}\}|\[[^\[\]\n]{1,40}\]")
+
+
+def unresolved(text: str) -> str:
+    """Template tokens still in a message about to go to a guest:
+    «{имя}» that stayed unfilled or a «[код двери]» placeholder."""
+    return ", ".join(dict.fromkeys(m.group(0) for m in UNRESOLVED.finditer(text or "")))
+
+
 def _send_rule(rule: dict, b: dict | None, key: str, now: datetime, chat: dict | None = None) -> dict:
     with database.get_conn() as conn:
         if not _log(conn, rule, b and b["id"], None, "", "pending", None, key):
@@ -886,6 +925,8 @@ def _send_rule(rule: dict, b: dict | None, key: str, now: datetime, chat: dict |
     status, error, reached = "sent", None, []
     if not chat:
         status, error = "skipped", why or "нет чата"
+    elif unresolved(text):
+        status, error = "skipped", "в тексте незаполненные поля: " + unresolved(text)[:120]
     else:
         status, error, reached = _send_everywhere(b, chat, lambda c: fill(rule["text"], b, c), AUTHOR)
     with database.get_conn() as conn:
@@ -921,6 +962,8 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
     status, error, reached = "sent", None, []
     if not chat:
         status, error = "skipped", why or "нет чата с гостем"
+    elif unresolved(text) and not force:
+        status, error = "skipped", "в тексте незаполненные поля: " + unresolved(text)[:120]
     else:
         def text_for(c):  # each chat in the guest's own language (card language is shared, but be safe)
             src, lg = (t["auto_text_en"], "en") if t["auto_text_en"] and guest_lang(c) not in ("RU", "UZ", "") else (t["auto_text"], "ru")

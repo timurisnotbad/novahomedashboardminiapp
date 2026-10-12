@@ -89,8 +89,11 @@ def logout(user: dict = Depends(owner_user)):  # noqa: B008
 
 
 @router.get("/chats")
-def chats(q: str = "", only: str = "all", user: dict = Depends(inbox_user)):  # noqa: B008
-    return {"rev": inbox.current_rev(), "chats": inbox.chat_list(q, only, user["name"])}
+def chats(q: str = "", only: str = "all", before: str = "", limit: int = 300, user: dict = Depends(inbox_user)):  # noqa: B008
+    """`before` = last_at of the last chat shown → the next (older) page."""
+    limit = max(20, min(limit, 500))
+    rows = inbox.chat_list(q, only, user["name"], limit, before[:19])
+    return {"rev": inbox.current_rev(), "chats": rows, "more": len(rows) >= limit and not q}
 
 
 @router.get("/poll")

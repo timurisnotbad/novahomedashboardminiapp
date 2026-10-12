@@ -18,7 +18,7 @@ from datetime import date, datetime
 
 import requests
 
-from . import config, database, rc_sync
+from . import config, database, rc_sync, util
 
 logger = logging.getLogger("nova.rc.push")
 
@@ -52,9 +52,7 @@ class RCError(Exception):
     pass
 
 
-def _dmy(iso: str) -> str:
-    d = date.fromisoformat(iso[:10])
-    return d.strftime("%d.%m.%Y")
+_dmy = util.dmy
 
 
 def _payload(changes: dict) -> dict:

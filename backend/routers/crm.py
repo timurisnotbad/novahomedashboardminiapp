@@ -245,7 +245,8 @@ async def badges(rev: int = 0, wait: float = 0, user: dict = Depends(current_use
 
 def _badges(user: dict) -> dict:
     with database.get_conn() as conn:
-        unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
+        # one metric everywhere: chats waiting for an answer (not a sum of messages)
+        unread = conn.execute("SELECT COUNT(*) FROM inbox_chats WHERE unread > 0").fetchone()[0]
         mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
                             (user["id"], crm._view_until("today"))).fetchone()[0]  # noqa: SLF001
         last = conn.execute(
@@ -919,6 +920,12 @@ def unlink_chat(bid: int, chat_id: int, user: dict = Depends(current_user)):  # 
 def chats_search(q: str = "", user: dict = Depends(current_user)):  # noqa: B008
     return [{k: c.get(k) for k in ("id", "title", "phone", "channel", "channel_name", "last_text", "last_at")}
             for c in inbox.chat_list(q, "all", "", 30)]
+
+
+@router.get("/debts")
+def debts(user: dict = Depends(current_user)):  # noqa: B008
+    """Who owes money: unpaid / partly paid stays, current and recent."""
+    return crm_ext.debts()
 
 
 @router.get("/revenue")

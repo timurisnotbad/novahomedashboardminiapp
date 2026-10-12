@@ -24,7 +24,7 @@ from datetime import date, datetime
 
 import requests
 
-from . import auth, bg, config, database
+from . import auth, bg, config, database, util
 
 logger = logging.getLogger("nova.inbox")
 
@@ -138,8 +138,7 @@ def init_db() -> None:
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+_now = util.now
 
 
 def _local(iso: str | None) -> str:
@@ -206,8 +205,7 @@ def current_rev() -> int:
         return conn.execute("SELECT rev FROM inbox_rev WHERE id = 1").fetchone()[0]
 
 
-def digits(s) -> str:
-    return re.sub(r"\D", "", str(s or ""))
+digits = util.digits
 
 
 def phone_of_jid(jid: str | None) -> str:
@@ -485,7 +483,9 @@ def _msg_out(r) -> dict:
     return m
 
 
-def chat_list(q: str = "", only: str = "all", me: str = "", limit: int = 300) -> list[dict]:
+def chat_list(q: str = "", only: str = "all", me: str = "", limit: int = 300, before: str = "") -> list[dict]:
+    """`before` = last_at cursor: the page of chats older than that (the list
+    used to stop silently at 300)."""
     sql = "SELECT * FROM inbox_chats"
     where, args = [], []
     if only == "unread":
@@ -493,6 +493,9 @@ def chat_list(q: str = "", only: str = "all", me: str = "", limit: int = 300) ->
     elif only == "mine":
         where.append("assignee = ?")
         args.append(me)
+    if before:
+        where.append("last_at < ?")
+        args.append(before)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY last_at DESC LIMIT ?"
@@ -553,7 +556,8 @@ def poll(since: int, chat_id: int | None) -> dict:
                 "SELECT * FROM inbox_messages WHERE chat_id = ? AND rev > ? ORDER BY at, id",
                 (chat_id, since)).fetchall()]
         unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
-    return {"rev": rev, "chats": chats, "messages": msgs, "unread_total": unread}
+        need = conn.execute("SELECT COUNT(*) FROM inbox_chats WHERE unread > 0").fetchone()[0]
+    return {"rev": rev, "chats": chats, "messages": msgs, "unread_total": unread, "need_reply": need}
 
 
 # ---------------------------------------------------------------------------
@@ -1091,12 +1095,6 @@ def templates() -> list[dict]:
         return [dict(r) for r in conn.execute(
             "SELECT * FROM inbox_templates ORDER BY CASE WHEN command IS NULL OR command = '' THEN 1 ELSE 0 END, command, title, id"
         ).fetchall()]
-
-
-def add_template(title: str, text: str) -> int:
-    with database.get_conn() as conn:
-        return conn.execute("INSERT INTO inbox_templates (title, text, created_at) VALUES (?, ?, ?)",
-                            (title.strip(), text.strip(), _now())).lastrowid
 
 
 def delete_template(tid: int) -> None:

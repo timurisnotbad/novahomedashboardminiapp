@@ -368,6 +368,15 @@ API_PREFIX = "/api"
 APP_VERSION = "76"
 
 
+def features() -> dict:
+    """What the UI may offer: buttons for unconfigured services are hidden."""
+    return {
+        "smtp": bool(SMTP_HOST and SMTP_USER),
+        "bot": bool(BOT_TOKEN and notify_targets()),
+        "wa_cloud": bool(WA_CLOUD_TOKEN),
+    }
+
+
 def redact(text: str) -> str:
     """Strip every secret we know from a string before it reaches a log line or
     an error shown in the UI (bot tokens travel inside Bot API URLs)."""

@@ -1,13 +1,10 @@
 """Business logic: turns raw bookings into the aggregates the frontend needs."""
 from datetime import date, datetime, timedelta
 
-from . import config, database
+from . import config, database, util
 
-RU_MONTHS = [
-    "", "января", "февраля", "марта", "апреля", "мая", "июня",
-    "июля", "августа", "сентября", "октября", "ноября", "декабря",
-]
-RU_WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+RU_MONTHS = [""] + util.RU_MONTHS_GEN  # 1-based here
+RU_WEEKDAYS = util.RU_WEEKDAYS
 
 
 def _iso(d: date) -> str:

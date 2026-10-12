@@ -124,6 +124,26 @@ def me(request: Request):
     }
 
 
-# Serve the Mini App frontend (single-origin deploy: one URL for ngrok/nginx).
+# The app shells carry «?v=NN» on every script/style tag so browsers pick up a
+# new build; the number used to be edited by hand in 25 places. The HTML is
+# served through this route, which stamps the current APP_VERSION into the
+# tags and exposes it as window.NH_VERSION (api.js and the chats iframe use it).
+_HTML_PAGES = {"/": "index.html", "/index.html": "index.html", "/crm/": "crm/index.html", "/crm/index.html": "crm/index.html",
+               "/inbox/": "inbox/index.html", "/inbox/index.html": "inbox/index.html"}
+
+
+def _stamped_html(rel: str) -> str:
+    import re as _re
+    text = (FRONTEND_DIR / rel).read_text(encoding="utf-8")
+    text = _re.sub(r"\?v=\d+", f"?v={config.APP_VERSION}", text)
+    tag = f'<script>window.NH_VERSION="{config.APP_VERSION}";</script>'
+    return text.replace("<head>", "<head>" + tag, 1) if "<head>" in text else tag + text
+
+
 if FRONTEND_DIR.exists():
+    from fastapi.responses import HTMLResponse
+
+    for _path, _rel in _HTML_PAGES.items():
+        if (FRONTEND_DIR / _rel).exists():
+            app.add_api_route(_path, (lambda rel: (lambda: HTMLResponse(_stamped_html(rel))))(_rel), methods=["GET"], include_in_schema=False)
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

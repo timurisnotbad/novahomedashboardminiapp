@@ -466,8 +466,7 @@ def outbox() -> list[dict]:
         for r in rows:
             conn.execute("UPDATE inbox_ext_outbox SET status = 'taken', taken_at = ? WHERE id = ?", (datetime.now().isoformat(timespec="seconds"), r["id"]))
         # anything taken but not confirmed in 3 minutes goes back to pending
-        conn.execute("UPDATE inbox_ext_outbox SET status = 'pending' WHERE status = 'taken' AND taken_at < ?",
-                     ((datetime.now()).replace(microsecond=0).isoformat() if False else _minutes_ago(3),))
+        conn.execute("UPDATE inbox_ext_outbox SET status = 'pending' WHERE status = 'taken' AND taken_at < ?", (_minutes_ago(3),))
     return rows
 
 

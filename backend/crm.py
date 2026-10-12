@@ -19,7 +19,7 @@ import re
 import time
 from datetime import date, datetime, timedelta
 
-from . import config, database
+from . import config, database, util
 
 logger = logging.getLogger("nova.crm")
 
@@ -155,8 +155,7 @@ COOKIE = "nh_crm"
 SESSION_DAYS = 30
 
 
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+_now = util.now
 
 
 def init_db() -> None:
@@ -521,8 +520,7 @@ def reorder(table: str, ids: list[int]) -> None:
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
-def digits(s) -> str:
-    return re.sub(r"\D", "", str(s or ""))
+digits = util.digits
 
 
 def _client_out(r) -> dict:
@@ -650,11 +648,6 @@ def set_client_status(cid: int, status: str) -> None:
     status = (status or "").strip()
     with database.get_conn() as conn:
         conn.execute("UPDATE crm_clients SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), cid))
-
-
-def _phone_match_sql(phone: str) -> tuple[str, tuple]:
-    # the last 9 digits identify a number whatever the country-code spelling
-    return "phone LIKE ?", ("%" + phone[-9:],)
 
 
 def clients(q: str = "", limit: int = 500, status: str | None = None) -> list[dict]:
@@ -940,13 +933,7 @@ def save_deal(did: int | None, data: dict, uid: int) -> dict:
     return get_deal(did)
 
 
-def _num(v):
-    if v in (None, ""):
-        return None
-    try:
-        return float(str(v).replace(",", ".").replace(" ", ""))
-    except ValueError:
-        return None
+_num = util.num
 
 
 def delete_deal(did: int) -> None:
@@ -1444,7 +1431,7 @@ def _contact_states(rows: list[dict]) -> None:
         b["contact"] = "none" if not outs else ("contacted" if any(outs) else "incoming")
 
 
-RU_MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+RU_MONTHS_GEN = util.RU_MONTHS_GEN
 
 
 # ---- time of arrival the guest told us (chat / card) — a light note, not calendar data ----
@@ -1668,7 +1655,8 @@ def home(uid: int) -> dict:
     today = date.today().isoformat()
     day = bookings_day(today)
     with database.get_conn() as conn:
-        unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
+        unread = conn.execute("SELECT COUNT(*) FROM inbox_chats WHERE unread > 0").fetchone()[0]
+        unread_msgs = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
         my_open = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
                                (uid, _view_until("today"))).fetchone()[0]
         overdue = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND due < ?", (_now(),)).fetchone()[0]
@@ -1682,7 +1670,12 @@ def home(uid: int) -> dict:
     return {
         "date": today, "arrivals": len(day["arrivals"]), "departures": len(day["departures"]), "staying": len(day["staying"]),
         "report": arrivals_report(today, day), "report_last_sent": get_setting("report_last_sent", ""),
-        "unread": unread, "my_open_tasks": my_open, "overdue_tasks": overdue, "clients": clients_n,
+        "unread": unread, "need_reply": unread, "unread_msgs": unread_msgs, "my_open_tasks": my_open, "overdue_tasks": overdue, "clients": clients_n,
+        # the morning questions: who has not paid, whom we never reached
+        "arrivals_unpaid": [{"id": b["id"], "apartment": b["apartment"], "guest": b["guest"], "amount": b["amount"], "paid": b.get("paid"),
+                             "debt": b.get("debt"), "pay": b.get("pay")} for b in day["arrivals"] if b.get("pay") in ("unpaid", "prepaid", "unconfirmed")],
+        "arrivals_nocontact": [{"id": b["id"], "apartment": b["apartment"], "guest": b["guest"]} for b in day["arrivals"] if b.get("contact") == "none"],
+        "features": config.features(),
         "stages": by_stage, "recent_chats": recent_chats, "last_sync": database.last_sync(),
         "today_tasks": tasks(status="open", view="today", limit=10),
     }
