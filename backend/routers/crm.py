@@ -238,7 +238,7 @@ async def badges(rev: int = 0, wait: float = 0, user: dict = Depends(current_use
     """Sidebar counters + the latest incoming message (sound / popup in the shell).
     With rev+wait the request is held until the inbox changes (long-poll)."""
     from starlette.concurrency import run_in_threadpool
-    if wait > 0 and rev > 0:
+    if wait > 0:
         await inbox.wait_for_change(rev, wait)
     return await run_in_threadpool(_badges, user)
 
@@ -428,7 +428,8 @@ def _push_client_bg(cid: int, who: str, only_booking: int | None = None) -> None
         except Exception:  # noqa: BLE001
             logger.exception("client → RC push failed")
     if not config.DEMO_MODE:
-        threading.Thread(target=go, daemon=True).start()
+        from .. import bg
+        bg.run(go)
 
 
 @router.put("/clients/{cid}")
@@ -1044,7 +1045,7 @@ def _strip_secrets(d: dict, user: dict) -> dict:
 
 @router.get("/channels")
 def channels(user: dict = Depends(current_user)):  # noqa: B008
-    st = inbox.bridge_status()
+    st = inbox.bridge_status(fresh=True)  # the QR / connection page must not show a stale state
     if user["role"] != "admin":
         st.pop("qr", None)
     with database.get_conn() as conn:

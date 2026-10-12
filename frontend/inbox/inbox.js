@@ -463,7 +463,8 @@
     try {
       // long-poll: the server answers at once when something changed, otherwise
       // holds the request up to 25 s — far fewer round trips over the tunnel
-      const d = await req(`/poll?since=${since}${reqChat ? "&chat=" + reqChat : ""}${since && document.visibilityState === "visible" ? "&wait=25" : ""}`, pollCtl ? { signal: pollCtl.signal } : undefined);
+      // always long-poll while visible (on an empty base rev is 0 and the old «since &&» made this a 300 ms loop)
+      const d = await req(`/poll?since=${since}${reqChat ? "&chat=" + reqChat : ""}${document.visibilityState === "visible" ? "&wait=25" : ""}`, pollCtl ? { signal: pollCtl.signal } : undefined);
       if (S.open && S.open.id !== reqChat && d.chats.some((c) => c.id === S.open.id)) {
         // another chat was opened while this request waited: its new messages are
         // not in this answer — keep `since` so the next poll (with the chat) brings them
@@ -497,7 +498,7 @@
     } finally {
       pollCtl = null;
       polling = false;
-      pollTimer = setTimeout(pollNow, pollFailed ? 4000 : document.visibilityState === "visible" ? 300 : 10000);
+      pollTimer = setTimeout(pollNow, pollFailed ? 4000 : document.visibilityState === "visible" ? 300 : 30000);
     }
   }
   let pollFailed = false;
@@ -788,7 +789,8 @@
       document.querySelectorAll("#filters button").forEach((x) => x.classList.toggle("is-on", x === b));
       renderList();
     });
-    $("search").addEventListener("input", (e) => { S.q = e.target.value.trim(); renderList(); });
+    let qT = null;
+    $("search").addEventListener("input", (e) => { S.q = e.target.value.trim(); clearTimeout(qT); qT = setTimeout(renderList, 150); });
     $("back").addEventListener("click", closeChat);
     $("send").addEventListener("click", sendText);
     $("text").addEventListener("input", () => { autosize(); renderCmd(); });
@@ -970,7 +972,7 @@
     renderList();
     refreshWa();
     loadTpls();
-    setInterval(refreshWa, 30000);
+    setInterval(() => { if (document.visibilityState === "visible") refreshWa(); }, 60000);  // the QR modal has its own 3 s timer
     const m = /chat=(\d+)/.exec(location.hash);
     if (m) openChat(parseInt(m[1], 10));
     pollTimer = setTimeout(pollNow, 2500);

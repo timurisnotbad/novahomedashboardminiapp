@@ -13,7 +13,6 @@ import hmac
 import logging
 import mimetypes
 import re
-import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -307,8 +306,9 @@ def ig_status() -> dict:
 # Webhook entry point
 # ---------------------------------------------------------------------------
 def handle_webhook(data: dict) -> None:
-    """Runs in a thread: Meta expects a fast 200, media downloads can be slow."""
-    threading.Thread(target=_handle, args=(data,), daemon=True).start()
+    """Runs in the background pool: Meta expects a fast 200, media downloads can be slow."""
+    from . import bg
+    bg.run(_handle, data)
 
 
 def _handle(data: dict) -> None:

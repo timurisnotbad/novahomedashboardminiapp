@@ -98,7 +98,7 @@ async def no_cache_frontend(request, call_next):
     """Always revalidate the app shell so updates load without a hard refresh."""
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.endswith((".html", ".js", ".css")):
+    if path.endswith(("/", ".html", ".js", ".css")):  # directory indexes (/crm/, /inbox/) too
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 

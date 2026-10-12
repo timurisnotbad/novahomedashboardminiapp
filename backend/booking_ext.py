@@ -181,6 +181,7 @@ def ingest(payload: dict, imported: bool = False, unread_item: bool = False) -> 
                          (c["id"], reservation, guest, payload.get("checkin"), payload.get("checkout"), payload.get("room"),
                           datetime.now().isoformat(timespec="seconds"), payload.get("guests"), payload.get("total"), payload.get("lang"),
                           (payload.get("raw") or "")[:6000], (payload.get("url") or "")[:300]))
+            inbox._ext_meta_cache["at"] = 0.0  # noqa: SLF001 — the chat list shows the new stay at once
     linked = None
     if c:
         try:

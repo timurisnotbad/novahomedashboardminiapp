@@ -214,7 +214,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=75&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=76&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -707,7 +707,9 @@
       on("tg-off", async () => { if (!confirm("Выйти из Telegram-аккаунта? Чаты останутся, новые сообщения приходить перестанут.")) return; await post("/channels/telegram/logout"); tgStep = null; render(); });
     };
     await render();
-    chTimer = setInterval(() => { if (!document.activeElement || !/^tg-/.test(document.activeElement.id)) render(); }, 5000);
+    // the page fans out to the bridge, Wazzup, Meta and Telegram on every render: not more often
+    // than every 30 s, and not at all while the tab is hidden
+    chTimer = setInterval(() => { if (document.visibilityState === "visible" && (!document.activeElement || !/^tg-/.test(document.activeElement.id))) render(); }, 30000);
   };
 
   // ---- integrations -------------------------------------------------------------
@@ -1279,7 +1281,10 @@
   async function badges() {
     try {
       // long-poll: answered at once on a new message, otherwise held ~25 s
-      const d = await get(`/badges?rev=${badges.rev || 0}${badges.rev && document.visibilityState === "visible" ? "&wait=25" : ""}`);
+      // the very first call answers at once (the counters must show up); after that every
+      // visible-tab call waits — including on an empty base, where rev stays 0
+      const first = badges.rev === undefined;
+      const d = await get(`/badges?rev=${badges.rev || 0}${!first && document.visibilityState === "visible" ? "&wait=25" : ""}`);
       badges.rev = d.rev || 0;
       $("nav-unread").textContent = d.unread || "";
       $("nav-unread").classList.toggle("hidden", !d.unread);
@@ -1298,8 +1303,10 @@
       badges.failed = false;
     } catch (e) { badges.failed = true; }
     clearTimeout(boot.t);
-    boot.t = setTimeout(badges, badges.failed ? 5000 : document.visibilityState === "visible" ? 300 : 15000);
+    boot.t = setTimeout(badges, badges.failed ? 5000 : document.visibilityState === "visible" ? 300 : 30000);
   }
+  // a hidden tab polls every 30 s; the moment it is back, ask at once
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && badges.rev !== undefined) { clearTimeout(boot.t); boot.t = setTimeout(badges, 50); } });
   // iOS keyboard on the phone: Safari shrinks the visual viewport and scrolls the
   // layout viewport under it; fixed elements drift. Size <body> to the visible box
   // and shift it by the offset — the header, the chats frame and the tab bar

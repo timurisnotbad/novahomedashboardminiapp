@@ -235,8 +235,7 @@ def link_chat(bid: int, chat_id: int, who: str) -> None:
 def unlink_chat(bid: int, chat_id: int) -> None:
     with database.get_conn() as conn:
         conn.execute("DELETE FROM crm_booking_chats WHERE booking_id = ? AND chat_id = ?", (bid, chat_id))
-        conn.execute("UPDATE inbox_chats SET rev = (SELECT rev FROM inbox_rev WHERE id = 1) + 1 WHERE id = ?", (chat_id,))
-        conn.execute("UPDATE inbox_rev SET rev = rev + 1 WHERE id = 1")
+        conn.execute("UPDATE inbox_chats SET rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
     inbox._pin_cache["at"] = 0  # noqa: SLF001
 
 
@@ -467,6 +466,7 @@ def ensure_flow_stages() -> None:
                         conn.execute("INSERT INTO crm_stage_actions (stage_id, kind, text, days, at_time, sort) VALUES (?, ?, ?, ?, ?, ?)",
                                      (r["id"], kind, text, days, at, i))
             conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES ('flow_actions_v1', '1')")
+    crm.settings_dirty()
 
 
 def booking_flow() -> int:
@@ -849,7 +849,12 @@ def run_auto_rules(dry: bool = False) -> list[dict]:
     with database.get_conn() as conn:
         rows = [dict(r) for r in conn.execute(
             "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND end_date >= ? AND begin_date <= ?", (lo, hi)).fetchall()]
-        done = {r[0] for r in conn.execute("SELECT dedupe FROM crm_auto_log").fetchall()}
+        # only the keys these bookings could have, not the whole log
+        keys = [f"{rule['id']}:b{b['id']}" for b in rows for rule in booking_rules]
+        done = set()
+        for i in range(0, len(keys), 400):
+            chunk = keys[i:i + 400]
+            done.update(r[0] for r in conn.execute(f"SELECT dedupe FROM crm_auto_log WHERE dedupe IN ({','.join('?' * len(chunk))})", chunk).fetchall())  # noqa: S608
     for raw in rows:
         if raw.get("status") in ("cancelled", "canceled"):
             continue

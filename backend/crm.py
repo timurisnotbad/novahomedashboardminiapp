@@ -188,6 +188,7 @@ def init_db() -> None:
         old = conn.execute("SELECT value FROM crm_settings WHERE key = 'booking_checklist'").fetchone()
         if old and old[0].strip() == OLD_CHECKLIST_V42.strip():
             conn.execute("DELETE FROM crm_settings WHERE key = 'booking_checklist'")  # the v42 default → new default with messages
+        _settings_cache["at"] = 0.0
         ccols = [r[1] for r in conn.execute("PRAGMA table_info(crm_clients)").fetchall()]
         for col in ("status", "instagram", "telegram", "phone2", "birthday", "passport", "city", "lang"):
             if col not in ccols:
@@ -352,10 +353,29 @@ def user_names() -> dict[int, str]:
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+_settings_cache: dict = {"at": 0.0, "map": {}}
+SETTINGS_TTL = 10.0
+
+
+def settings_dirty() -> None:
+    """Call after any direct write to crm_settings."""
+    _settings_cache["at"] = 0.0
+
+
+def _settings() -> dict:
+    """The whole table, cached for a few seconds: get_setting runs in loops
+    (every chat row, task, step, scheduler tick) and used to open a connection
+    each time."""
+    if time.time() - _settings_cache["at"] > SETTINGS_TTL:
+        with database.get_conn() as conn:
+            _settings_cache["map"] = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM crm_settings").fetchall()}
+        _settings_cache["at"] = time.time()
+    return _settings_cache["map"]
+
+
 def get_setting(key: str, default: str = "") -> str:
-    with database.get_conn() as conn:
-        r = conn.execute("SELECT value FROM crm_settings WHERE key = ?", (key,)).fetchone()
-    return r[0] if r else default
+    v = _settings().get(key)
+    return default if v is None else v
 
 
 def _hm(value, default: str = "00:00") -> str:
@@ -378,6 +398,7 @@ def default_times() -> tuple[str, str]:
 def set_setting(key: str, value: str) -> None:
     with database.get_conn() as conn:
         conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES (?, ?)", (key, value))
+    _settings_cache["map"][key] = value  # visible at once, whatever the TTL
 
 
 # ---------------------------------------------------------------------------
@@ -597,10 +618,15 @@ def refresh_client_statuses(cancelled_ids: set | None = None) -> int:
     n = 0
     with database.get_conn() as conn:
         rows = [dict(r) for r in conn.execute("SELECT id, phone, status FROM crm_clients WHERE phone != ''").fetchall()]
+    # one phone → stays index for the whole pass (was: a scan of every booking
+    # with a regex per client — a million regex calls on a big base)
+    from . import inbox
+    idx = inbox._bookings_by_phone()  # noqa: SLF001
     for r in rows:
         if r["status"] and r["status"] not in AUTO_STATUSES:
             continue  # set by a person: keep
-        c = {"bookings": client_bookings(r["phone"])}
+        ph = digits(r["phone"])
+        c = {"bookings": [{"checkin": b["begin_date"], "checkout": b["end_date"]} for b in (idx.get(ph[-9:]) if len(ph) >= 7 else None) or []]}
         want = auto_client_status(c, cancelled=r["id"] in (cancelled_ids or set()))
         if want and want in names and want != (r["status"] or ""):
             set_client_status(r["id"], want)
@@ -675,15 +701,16 @@ def _chat_id_for_phone(phone: str):
 
 def client_bookings(phone: str, name: str = "") -> list[dict]:
     phone = digits(phone)
+    if phone and len(phone) >= 7:
+        from . import inbox
+        rows = sorted(inbox._bookings_by_phone().get(phone[-9:]) or [], key=lambda r: r["begin_date"], reverse=True)  # noqa: SLF001
+        return [_booking_out(dict(r)) for r in rows[:50]]
+    if not name:
+        return []
     with database.get_conn() as conn:
-        rows = conn.execute("SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 ORDER BY begin_date DESC").fetchall()
-    out = []
-    for r in rows:
-        if phone and len(phone) >= 7 and digits(r["client_phone"]).endswith(phone[-9:]):
-            out.append(_booking_out(dict(r)))
-        elif not phone and name and (r["client_name"] or "").strip().lower() == name.strip().lower():
-            out.append(_booking_out(dict(r)))
-    return out[:50]
+        rows = conn.execute("SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND LOWER(TRIM(COALESCE(client_name, ''))) = ? "
+                            "ORDER BY begin_date DESC LIMIT 50", (name.strip().lower(),)).fetchall()
+    return [_booking_out(dict(r)) for r in rows]
 
 
 def save_client(cid: int | None, data: dict) -> dict:
@@ -761,16 +788,37 @@ def import_clients() -> int:
         bk = conn.execute("SELECT client_name, client_phone, source_id FROM bookings WHERE COALESCE(is_delete, 0) = 0 "
                           "AND client_phone IS NOT NULL AND client_phone != '' ORDER BY begin_date DESC").fetchall()
         ch = conn.execute("SELECT id, phone, name, push_name, channel FROM inbox_chats").fetchall()
-    before = len(clients(limit=100000))
+        known = {}  # last 9 digits → (name, chat_id): skip the lookup for everyone already on file
+        for r in conn.execute("SELECT phone, name, chat_id FROM crm_clients WHERE phone != ''").fetchall():
+            d = digits(r["phone"])
+            if len(d) >= 7:
+                known.setdefault(d[-9:], (r["name"] or "", r["chat_id"]))
+        chat_known = {r[0] for r in conn.execute("SELECT chat_id FROM crm_clients WHERE chat_id IS NOT NULL").fetchall()}
+        before = conn.execute("SELECT COUNT(*) FROM crm_clients").fetchone()[0]
+
+    def needs(phone, name, chat_id=None):
+        d = digits(phone)
+        if len(d) < 7:
+            return False
+        k = known.get(d[-9:])
+        if k is None:
+            return True
+        return bool(name and (not k[0] or k[0].startswith("+"))) or bool(chat_id and not k[1])
+
     for r in bk:
-        ensure_client(r["client_phone"], r["client_name"] or "", config.SOURCE_NAMES.get(r["source_id"], "") or "")
+        if needs(r["client_phone"], r["client_name"]):
+            ensure_client(r["client_phone"], r["client_name"] or "", config.SOURCE_NAMES.get(r["source_id"], "") or "")
+            known[digits(r["client_phone"])[-9:]] = (r["client_name"] or "", None)
     for r in ch:
         src = {"ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram"}.get(r["channel"] or "wa", "WhatsApp")
         if r["phone"]:
-            ensure_client(r["phone"], r["name"] or r["push_name"] or "", src, r["id"])
-        else:
+            if needs(r["phone"], r["name"] or r["push_name"], r["id"]):
+                ensure_client(r["phone"], r["name"] or r["push_name"] or "", src, r["id"])
+                known[digits(r["phone"])[-9:]] = (r["name"] or r["push_name"] or "", r["id"])
+        elif r["id"] not in chat_known:
             ensure_client_for_chat(r["id"], r["name"] or r["push_name"] or "", src)
-    n = len(clients(limit=100000)) - before
+    with database.get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM crm_clients").fetchone()[0] - before
     return n
 
 
@@ -801,7 +849,7 @@ def deals(pipeline_id: int | None = None, client_id: int | None = None, q: str =
     sql = "SELECT * FROM crm_deals" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY updated_at DESC, id DESC"
     with database.get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()
-        cmap = {r["id"]: dict(r) for r in conn.execute("SELECT id, name, phone FROM crm_clients").fetchall()}
+        cmap = _clients_map(conn, [r["client_id"] for r in rows], "id, name, phone")
         act: dict = {}
         try:
             for a in conn.execute("SELECT l.deal_id, COALESCE(SUM(c.unread), 0) AS unread, MAX(c.last_at) AS last_at, COUNT(c.id) AS chats "
@@ -825,7 +873,7 @@ def deals(pipeline_id: int | None = None, client_id: int | None = None, q: str =
 def get_deal(did: int) -> dict | None:
     with database.get_conn() as conn:
         r = conn.execute("SELECT * FROM crm_deals WHERE id = ?", (did,)).fetchone()
-        cmap = {r2["id"]: dict(r2) for r2 in conn.execute("SELECT id, name, phone FROM crm_clients").fetchall()}
+        cmap = _clients_map(conn, [r["client_id"]], "id, name, phone") if r else {}
     if not r:
         return None
     d = _deal_out(r, user_names(), cmap)
@@ -950,6 +998,17 @@ def _task_out(r, names, cmap, bmap=None) -> dict:
     return t
 
 
+def _clients_map(conn, ids, cols: str = "id, name") -> dict:
+    """{client_id: row} for the ids at hand — not the whole table per request."""
+    ids = [i for i in set(ids) if i]
+    out = {}
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        for r in conn.execute(f"SELECT {cols} FROM crm_clients WHERE id IN ({','.join('?' * len(chunk))})", chunk).fetchall():  # noqa: S608
+            out[r["id"]] = dict(r)
+    return out
+
+
 def _bookings_map(conn, ids) -> dict:
     ids = [i for i in set(ids) if i]
     if not ids:
@@ -994,7 +1053,7 @@ def tasks(assignee_uid: int | None = None, status: str | None = None, client_id:
     args += [max(1, min(int(limit or 500), 2000)), max(0, int(offset or 0))]
     with database.get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()
-        cmap = {r["id"]: dict(r) for r in conn.execute("SELECT id, name FROM crm_clients").fetchall()}
+        cmap = _clients_map(conn, [r["client_id"] for r in rows])
         bmap = _bookings_map(conn, [r["booking_id"] for r in rows])
     names = user_names()
     return [_task_out(r, names, cmap, bmap) for r in rows]
@@ -1069,7 +1128,7 @@ def save_task(tid: int | None, data: dict, uid: int) -> dict:
             tid = conn.execute("INSERT INTO crm_tasks (title, due, assignee_uid, client_id, deal_id, status, done_at, booking_id, created_by, created_at) "
                                "VALUES (?,?,?,?,?,?,?,?,?,?)", (*vals, uid, _now())).lastrowid
         r = conn.execute("SELECT * FROM crm_tasks WHERE id = ?", (tid,)).fetchone()
-        cmap = {x["id"]: dict(x) for x in conn.execute("SELECT id, name FROM crm_clients").fetchall()}
+        cmap = _clients_map(conn, [r["client_id"]])
         bmap = _bookings_map(conn, [r["booking_id"]])
     return _task_out(r, user_names(), cmap, bmap)
 
@@ -1416,16 +1475,17 @@ def set_eta(bid: int, eta: str, note: str, who: str) -> dict | None:
             conn.execute("INSERT OR REPLACE INTO crm_eta (booking_id, eta, note, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
                          (bid, eta, (note or "").strip()[:120], who, _now()))
     new = eta_map(force=True).get(bid)
-    import threading
-    threading.Thread(target=refresh_arrivals_report, args=(bid, old, new, who), daemon=True).start()
+    from . import bg
+    bg.run(refresh_arrivals_report, bid, old, new, who)
     return new
 
 
-def arrivals_report(day: str) -> dict:
+def arrivals_report(day: str, d: dict | None = None) -> dict:
     """The morning list for the housekeepers: who arrives when (ETA from the chat
     first, then the calendar's arrival time, else the house default with «?»),
-    plus departures and tight turnovers. Returned as rows + ready-to-send text."""
-    d = bookings_day(day)
+    plus departures and tight turnovers. Returned as rows + ready-to-send text.
+    `d` = an already computed bookings_day(day) (the home page has it)."""
+    d = d or bookings_day(day)
     etas = eta_map(force=True)
     dci, dco = default_times()
     rows = []
@@ -1621,7 +1681,7 @@ def home(uid: int) -> dict:
             "SELECT id, name, push_name, phone, last_text, last_at, unread FROM inbox_chats ORDER BY last_at DESC LIMIT 8").fetchall()]
     return {
         "date": today, "arrivals": len(day["arrivals"]), "departures": len(day["departures"]), "staying": len(day["staying"]),
-        "report": arrivals_report(today), "report_last_sent": get_setting("report_last_sent", ""),
+        "report": arrivals_report(today, day), "report_last_sent": get_setting("report_last_sent", ""),
         "unread": unread, "my_open_tasks": my_open, "overdue_tasks": overdue, "clients": clients_n,
         "stages": by_stage, "recent_chats": recent_chats, "last_sync": database.last_sync(),
         "today_tasks": tasks(status="open", view="today", limit=10),

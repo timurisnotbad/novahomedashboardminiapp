@@ -13,7 +13,7 @@ from .. import config, database, inbox, meta_api, wazzup
 MAX_UPLOAD = 30 * 1024 * 1024
 
 
-async def inbox_user(
+def inbox_user(  # sync on purpose: it reads the DB, so it runs in the threadpool, not in the event loop
     request: Request,
     x_telegram_init_data: str = Header(default=""),  # noqa: B008
     x_owner_key: str = Header(default=""),  # noqa: B008
@@ -25,7 +25,7 @@ async def inbox_user(
     return user
 
 
-async def owner_user(user: dict = Depends(inbox_user)) -> dict:  # noqa: B008
+def owner_user(user: dict = Depends(inbox_user)) -> dict:  # noqa: B008
     if not user["owner"]:
         raise HTTPException(status_code=403, detail="Только для владельца")
     return user
@@ -73,7 +73,7 @@ def me(user: dict = Depends(inbox_user)):  # noqa: B008
 
 @router.get("/status")
 def status(user: dict = Depends(inbox_user)):  # noqa: B008
-    st = inbox.bridge_status()
+    st = inbox.bridge_status(fresh=True)  # the QR modal polls this
     if not user["owner"]:
         st.pop("qr", None)  # only owners link the phone
     return st
@@ -97,7 +97,7 @@ def chats(q: str = "", only: str = "all", user: dict = Depends(inbox_user)):  # 
 async def poll(since: int = 0, chat: int | None = None, wait: float = 0, user: dict = Depends(inbox_user)):  # noqa: B008
     """`wait` > 0: hold the request until something changes (long-poll)."""
     from starlette.concurrency import run_in_threadpool
-    if wait > 0 and since > 0:
+    if wait > 0:
         await inbox.wait_for_change(since, wait)
     return await run_in_threadpool(inbox.poll, since, chat)
 

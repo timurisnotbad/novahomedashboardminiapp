@@ -56,6 +56,15 @@ def unsorted() -> list[dict]:
     return [inbox._chat_out(r) for r in rows]  # noqa: SLF001
 
 
+def unsorted_count() -> int:
+    with database.get_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM inbox_chats c WHERE c.last_at IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM crm_deal_chats l WHERE l.chat_id = c.id) "
+            "AND NOT EXISTS (SELECT 1 FROM crm_unsorted_rejected r WHERE r.chat_id = c.id) "
+            "AND EXISTS (SELECT 1 FROM inbox_messages m WHERE m.chat_id = c.id AND m.direction = 'in')").fetchone()[0]
+
+
 def _client_for_chat(chat: dict) -> int:
     src = chat.get("channel_name") or "WhatsApp"
     if chat.get("phone"):
@@ -336,7 +345,7 @@ def kanban(pipeline_id: int, q: str = "") -> dict:
 def home(uid: int) -> dict:
     """Рабочий стол: what needs attention today."""
     base = crm.home(uid)
-    base["unsorted"] = len(unsorted())
+    base["unsorted"] = unsorted_count()
     now = datetime.now().isoformat(timespec="minutes")
     with database.get_conn() as conn:
         base["no_task_deals"] = conn.execute(
@@ -346,5 +355,5 @@ def home(uid: int) -> dict:
                                           (uid, now)).fetchone()[0]
         base["unanswered"] = [inbox._chat_out(r) for r in conn.execute(  # noqa: SLF001
             "SELECT * FROM inbox_chats WHERE last_dir = 'in' AND unread > 0 ORDER BY last_at LIMIT 10").fetchall()]
-    base["my_tasks"] = crm.tasks(uid, "open")[:15]
+    base["my_tasks"] = crm.tasks(uid, "open", limit=15)
     return base

@@ -18,14 +18,13 @@ import hashlib
 import hmac
 import logging
 import re
-import threading
 import time
 import uuid
 from datetime import date, datetime
 
 import requests
 
-from . import auth, config, database
+from . import auth, bg, config, database
 
 logger = logging.getLogger("nova.inbox")
 
@@ -188,7 +187,17 @@ async def wait_for_change(since: int, timeout: float) -> None:
     while time.time() < deadline:
         if rev_hint() > since:
             await asyncio.sleep(0.15)  # let the writing transaction commit
-            return
+            # _mem_rev is bumped inside the transaction; after a rollback
+            # (duplicate wa_id) the DB is behind it and every poll would
+            # return at once with nothing — confirm against the DB first
+            try:
+                real = await asyncio.get_running_loop().run_in_executor(None, current_rev)
+            except Exception:  # noqa: BLE001
+                return
+            if real > since:
+                return
+            _mem_rev["rev"] = real
+            _mem_rev["read_at"] = time.time()
         await asyncio.sleep(0.4)
 
 
@@ -248,13 +257,24 @@ def _allowed_ids() -> set[int] | None:
     return ids
 
 
+_staff_cache: dict = {"at": 0.0, "ids": set()}
+
+
+def _active_staff_ids() -> set:
+    """Active staff ids, 10 s cache: checked on every long-poll of the Mini App."""
+    if time.time() - _staff_cache["at"] > 10:
+        _staff_cache["ids"] = {r["staff_id"] for r in database.all_staff(active_only=True)}
+        _staff_cache["at"] = time.time()
+    return _staff_cache["ids"]
+
+
 def may_use(uid: int) -> bool:
     if uid in config.OWNER_TELEGRAM_IDS:
         return True
     allowed = _allowed_ids()
     if allowed is not None:
         return uid in allowed
-    return any(r["staff_id"] == uid for r in database.all_staff(active_only=True))
+    return uid in _active_staff_ids()
 
 
 def remember_agent(uid: int, name: str, username: str = "") -> None:
@@ -279,13 +299,21 @@ def _agent_name(uid: int) -> str:
 
 
 _agent_seen: dict[int, float] = {}
+_cookie_cache: dict[str, tuple[float, dict | None]] = {}
 
 
 def resolve_user(init_data: str, owner_key: str, inbox_key: str, crm_cookie: str = "") -> dict | None:
     """Who is calling, or None. Dev mode (bot not configured) = full access."""
     if crm_cookie:
-        from . import crm
-        u = crm.user_from_token(crm_cookie)
+        hit = _cookie_cache.get(crm_cookie)
+        if hit and time.time() - hit[0] < 5:  # one DB read per cookie per 5 s, not per long-poll
+            u = hit[1]
+        else:
+            from . import crm
+            u = crm.user_from_token(crm_cookie)
+            if len(_cookie_cache) > 500:
+                _cookie_cache.clear()
+            _cookie_cache[crm_cookie] = (time.time(), u)
         if u:
             return {"uid": -u["id"], "name": u["name"], "owner": u["role"] == "admin", "crm": True}
     if auth.dev_mode():
@@ -321,9 +349,7 @@ def _bookings_by_phone() -> dict[str, list[dict]]:
     try:
         with database.get_conn() as conn:
             rows = conn.execute(
-                "SELECT id, apartment_name, begin_date, end_date, client_name, client_phone, "
-                "arrival_time, departure_time, amount, debt FROM bookings "
-                "WHERE COALESCE(is_delete, 0) = 0 AND client_phone IS NOT NULL AND client_phone != ''"
+                "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND client_phone IS NOT NULL AND client_phone != ''"
             ).fetchall()
         for r in rows:
             d = digits(r["client_phone"])
@@ -401,33 +427,55 @@ def _chat_out(r) -> dict:
     if c["channel"] == "bk" and not pb:
         # Booking.com chat without a confirmed calendar booking: show what Booking says
         # and let a person pick the calendar booking (rooms/dates differ too often to guess)
-        with database.get_conn() as conn:
-            m = conn.execute("SELECT reservation, checkin, checkout, room FROM inbox_ext_meta WHERE chat_id = ?", (c["id"],)).fetchone()
-        c["bk_stay"] = dict(m) if m else None
+        c["bk_stay"] = _ext_meta().get(c["id"])
     return c
+
+
+_ext_meta_cache: dict = {"at": 0.0, "map": {}}
+
+
+def _ext_meta() -> dict:
+    """{chat_id: Booking.com stay} for every extension chat, 30 s cache (was a
+    query per chat row in the list). booking_ext resets it on every write."""
+    if time.time() - _ext_meta_cache["at"] > 30:
+        m: dict = {}
+        try:
+            with database.get_conn() as conn:
+                for r in conn.execute("SELECT chat_id, reservation, checkin, checkout, room FROM inbox_ext_meta").fetchall():
+                    m[r["chat_id"]] = {"reservation": r["reservation"], "checkin": r["checkin"], "checkout": r["checkout"], "room": r["room"]}
+        except Exception:  # noqa: BLE001 — table not there yet
+            pass
+        _ext_meta_cache.update(at=time.time(), map=m)
+    return _ext_meta_cache["map"]
 
 
 _pin_cache: dict = {"at": 0.0, "map": {}}
 
 
 def _pinned_booking(chat_id: int):
-    """Booking the team pinned to the chat (crm_booking_chats), 30 s cache."""
+    """Booking the team pinned to the chat (crm_booking_chats): current/next
+    first, else the latest. One JOIN for all chats, 30 s cache (link/unlink
+    reset it) — not a query per chat row."""
     if time.time() - _pin_cache["at"] > 30:
         m: dict = {}
         try:
             with database.get_conn() as conn:
-                for r in conn.execute("SELECT chat_id, booking_id FROM crm_booking_chats").fetchall():
-                    m.setdefault(r["chat_id"], []).append(r["booking_id"])
+                for r in conn.execute("SELECT l.chat_id, b.* FROM crm_booking_chats l JOIN bookings b ON b.id = l.booking_id "
+                                      "WHERE COALESCE(b.is_delete, 0) = 0").fetchall():
+                    m.setdefault(r["chat_id"], []).append(dict(r))
         except Exception:  # noqa: BLE001 — table not there yet
             pass
         _pin_cache.update(at=time.time(), map=m)
-    if chat_id not in _pin_cache["map"]:
+    rows = _pin_cache["map"].get(chat_id)
+    if not rows:
         return None
-    try:
-        from . import crm_ext
-        return crm_ext.pinned_booking_for_chat(chat_id)
-    except Exception:  # noqa: BLE001
-        return None
+    today = date.today().isoformat()
+    cur = [r for r in rows if r["begin_date"] <= today <= r["end_date"]]
+    nxt = sorted((r for r in rows if r["begin_date"] > today), key=lambda r: r["begin_date"])
+    past = sorted(rows, key=lambda r: r["end_date"], reverse=True)
+    b = dict((cur or nxt or past)[0])
+    b["when"] = "now" if cur else "next" if nxt else "past"
+    return b
 
 
 def _msg_out(r) -> dict:
@@ -658,9 +706,9 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
     if notify and not out and not history:
         st = _notify_settings()
         if st["delay"] == 0:  # «сразу»: push + Telegram right now, in the background
-            threading.Thread(target=_notify_chat, args=(chat_id, 1, st), daemon=True).start()
+            bg.run(_notify_chat, chat_id, 1, st, key=f"notify:{chat_id}")
         # auto-replies (first message / off hours) — in the background
-        threading.Thread(target=_auto_incoming, args=(chat_id, is_first), daemon=True).start()
+        bg.run(_auto_incoming, chat_id, is_first)
     return {"chat_id": chat_id}
 
 
@@ -756,11 +804,22 @@ def _bridge(method: str, path: str, payload: dict | None = None, timeout: int = 
     return data
 
 
-def bridge_status() -> dict:
-    try:
-        return _bridge("GET", "/status", timeout=5)
-    except BridgeError as exc:
-        return {"status": "offline", "error": str(exc), "qr": None}
+_bridge_cache: dict = {"at": 0.0, "st": None}
+
+
+def bridge_status(fresh: bool = False) -> dict:
+    """The QR bridge's state. Cached 10 s (3 s while it is not connected):
+    it was an HTTP round-trip (up to 5 s when the bridge is down) before every
+    send, on the home page and in every chat-list refresh."""
+    st = _bridge_cache["st"]
+    ttl = 10 if st and st.get("status") == "connected" else 3
+    if fresh or st is None or time.time() - _bridge_cache["at"] > ttl:
+        try:
+            st = _bridge("GET", "/status", timeout=5)
+        except BridgeError as exc:
+            st = {"status": "offline", "error": str(exc), "qr": None}
+        _bridge_cache.update(at=time.time(), st=st)
+    return dict(st)
 
 
 def bridge_logout() -> None:
@@ -792,7 +851,7 @@ def send_receipt(chat_id: int, how: str = "button") -> bool:
             "SELECT wa_id FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 30", (chat_id,)).fetchall()]
         conn.execute("UPDATE inbox_chats SET receipt_pending = 0, unread = 0, receipt_info = ?, rev = ? WHERE id = ?",
                      (f"{how}|{_now()}", _bump(conn), chat_id))
-    threading.Thread(target=_safe_read, args=(r["channel"] or "wa", r["jid"], ids), daemon=True).start()
+    bg.run(_safe_read, r["channel"] or "wa", r["jid"], ids)
     return True
 
 
@@ -1102,7 +1161,7 @@ def _alert(chat_id: int, m: dict) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("inbox alert failed")
 
-    threading.Thread(target=run, daemon=True).start()
+    bg.run(run)
 
 
 def _notify_settings() -> dict:
@@ -1131,10 +1190,10 @@ def notify_pending() -> int:
             continue
         stage = c["notify_stage"] or 0
         if stage == 0 and age >= st["delay"]:
-            _notify_chat(c["id"], 1, st)
+            bg.run(_notify_chat, c["id"], 1, st, key=f"notify:{c['id']}")
             n += 1
         elif stage == 1 and st["escalate"] > 0 and age >= st["delay"] + st["escalate"]:
-            _notify_chat(c["id"], 2, st)
+            bg.run(_notify_chat, c["id"], 2, st, key=f"notify:{c['id']}")
             n += 1
     return n
 

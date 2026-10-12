@@ -211,6 +211,11 @@ def sync_to_db() -> int:
         # readers never see an empty table mid-sync, and a booking has to be
         # missing twice in a row before it is treated as cancelled.
         stats = database.replace_window_bookings(bookings, d0.isoformat(), d1.isoformat())
+        try:
+            from . import inbox
+            inbox._phone_cache["at"] = 0.0  # noqa: SLF001 — phone → booking index follows the calendar at once
+        except Exception:  # noqa: BLE001
+            pass
         if stats["removed"] or stats["missing"]:
             logger.info("sync: %d written, %d removed, %d missing (pending)", stats["written"], stats["removed"], stats["missing"])
         database.log_sync(len(bookings), True)

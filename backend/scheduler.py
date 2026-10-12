@@ -63,8 +63,21 @@ def _job():
         crm_ext.booking_flow()  # ...and move along the stay: ожидает оплаты → забронировано → заселён → выехал
         if n:
             logger.info("CRM deals refreshed from bookings: %s", n)
+        _prune_auto_log()
     except Exception as exc:  # noqa: BLE001
         logger.warning("CRM deal sync failed: %s", exc)
+
+
+def _prune_auto_log() -> None:
+    """The auto-message log is read on every run for its dedupe keys; rows
+    older than 90 days can never match a booking in the ±15-day window."""
+    from datetime import datetime as _dt, timedelta as _td
+    from . import database
+    try:
+        with database.get_conn() as conn:
+            conn.execute("DELETE FROM crm_auto_log WHERE at < ?", ((_dt.now() - _td(days=90)).isoformat(timespec="seconds"),))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("auto log prune failed: %s", exc)
 
 
 def _notify_job():
