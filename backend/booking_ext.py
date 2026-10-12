@@ -444,16 +444,18 @@ def cleanup_garbage() -> int:
 def enqueue(payload: dict) -> dict:
     """CRM reply for a Booking.com chat → the extension types it in the extranet."""
     jid = payload["jid"]
+    if payload.get("media"):
+        raise inbox.BridgeError("В Booking.com через расширение уходит только текст")
+    # checked before the row is written: a message queued while the extension
+    # is away would otherwise go out hours later, unexpectedly
+    if not status()["alive"]:
+        raise inbox.BridgeError("Расширение Booking.com не на связи: откройте экстранет в Chrome на офисном компьютере")
     with database.get_conn() as conn:
         c = conn.execute("SELECT id, name FROM inbox_chats WHERE jid = ?", (jid,)).fetchone()
         meta = conn.execute("SELECT reservation, guest FROM inbox_ext_meta WHERE chat_id = ?", (c["id"],)).fetchone() if c else None
-        if payload.get("media"):
-            raise inbox.BridgeError("В Booking.com через расширение уходит только текст")
         rid = conn.execute("INSERT INTO inbox_ext_outbox (chat_id, jid, reservation, guest, text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                            (c["id"] if c else None, jid, (meta["reservation"] if meta else jid.split(":")[1]), (meta["guest"] if meta else (c["name"] if c else "")),
                             payload.get("text") or "", datetime.now().isoformat(timespec="seconds"))).lastrowid
-    if not status()["alive"]:
-        raise inbox.BridgeError("Расширение Booking.com не на связи: откройте экстранет в Chrome на офисном компьютере")
     return {"id": f"bk:out:{rid}", "status": "pending"}
 
 

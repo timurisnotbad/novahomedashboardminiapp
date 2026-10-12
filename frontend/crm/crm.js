@@ -13,6 +13,8 @@
   const pad = (n) => String(n).padStart(2, "0");
   const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const todayIso = () => iso(new Date());
+  // local «now» as YYYY-MM-DDTHH:MM — task deadlines are local time, toISOString() is UTC (5 hours off in Tashkent)
+  const nowLocal = () => { const d = new Date(); return `${iso(d)}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
   function dShort(s) { if (!s) return ""; const d = new Date(s.slice(0, 10) + "T00:00"); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; }
   function dLong(s) { if (!s) return ""; const d = new Date(s.slice(0, 10) + "T00:00"); return `${d.getDate()} ${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}, ${WD[d.getDay()]}`; }
   function dtShort(s) {
@@ -165,7 +167,7 @@
         <div class="stat" onclick="location.hash='#bookings'"><b>${d.arrivals}</b><span>заездов сегодня</span></div>
         <div class="stat" onclick="location.hash='#bookings'"><b>${d.departures}</b><span>выездов сегодня · живут ${d.staying}</span></div>
         <div class="stat" onclick="location.hash='#messages'"><b>${d.unread}</b><span>непрочитанных сообщений</span></div>
-        <div class="stat ${d.overdue_tasks ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач${d.overdue_tasks ? " · просрочено " + d.overdue_tasks : ""}</span></div>
+        <div class="stat ${d.overdue_tasks ? "warn" : ""}" onclick="location.hash='#tasks'"><b>${d.my_open_tasks}</b><span>моих задач на сегодня${d.overdue_tasks ? " · просрочено " + d.overdue_tasks : ""}</span></div>
       </div>
       ${(() => { const r = d.report || { rows: [], departures: [] }; const last = (d.report_last_sent || "").split("|"); return `
       <div class="card" style="margin-bottom:16px"><div class="card__title" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span>Заезды сегодня · список для горничных</span>
@@ -212,7 +214,7 @@
       inboxFrame = document.createElement("iframe");
       inboxFrame.className = "inbox-frame";
       inboxFrame.title = "Чаты";
-      inboxFrame.src = "/inbox/?v=74&embed=1" + (chatId ? "#chat=" + chatId : "");
+      inboxFrame.src = "/inbox/?v=75&embed=1" + (chatId ? "#chat=" + chatId : "");
       document.getElementById("app").appendChild(inboxFrame);
     } else if (chatId) {
       try { inboxFrame.contentWindow.postMessage({ nh: "open", chat: parseInt(chatId, 10) }, location.origin); } catch (e) { /* ignore */ }
@@ -459,12 +461,14 @@
 
   // ---- tasks ------------------------------------------------------------------
   ROUTES.tasks = async () => {
-    const f = S.cache.taskF || { mine: 1, status: "open", view: "list" };
+    const f = S.cache.taskF || { mine: 1, status: "open", view: "list", range: "today" };
     S.cache.taskF = f;
+    if (!f.range) f.range = "today";
     const byBooking = f.view === "booking";
-    const data = await get(`/tasks?mine=${f.mine}&status=${f.status}${byBooking ? "&group=booking" : ""}`);
+    const range = f.status === "open" && !byBooking ? f.range : "all";
+    const data = await get(`/tasks?mine=${f.mine}&status=${f.status}${byBooking ? "&group=booking" : ""}${range !== "all" ? `&view=${range}` : ""}`);
     const list = byBooking ? data.flatMap((g) => g.tasks) : data;
-    const now = new Date().toISOString().slice(0, 16);
+    const now = nowLocal();
     const today = todayIso();
     const groups = [["Просрочено", (t) => t.due && t.due < now && t.status === "open"], ["Сегодня", (t) => t.due && t.due.slice(0, 10) === today && !(t.due < now)],
       ["В работе", (t) => t.status === "open" && (!t.due || t.due.slice(0, 10) > today)], ["Выполнено", (t) => t.status === "done"]];
@@ -476,7 +480,8 @@
       <div class="page-head"><h1>Задачи</h1></div>
       <div class="toolbar"><div class="seg"><button data-tview="list" class="${!byBooking ? "is-on" : ""}">Список</button><button data-tview="booking" class="${byBooking ? "is-on" : ""}">По броням</button></div>
         <div class="seg"><button data-mine="1" class="${f.mine ? "is-on" : ""}">Мои</button><button data-mine="0" class="${!f.mine ? "is-on" : ""}">Все</button></div>
-        <div class="seg"><button data-status="open" class="${f.status === "open" ? "is-on" : ""}">Открытые</button><button data-status="done" class="${f.status === "done" ? "is-on" : ""}">Выполненные</button>${byBooking ? `<button data-status="all" class="${f.status === "all" ? "is-on" : ""}">Все</button>` : ""}</div></div>
+        <div class="seg"><button data-status="open" class="${f.status === "open" ? "is-on" : ""}">Открытые</button><button data-status="done" class="${f.status === "done" ? "is-on" : ""}">Выполненные</button>${byBooking ? `<button data-status="all" class="${f.status === "all" ? "is-on" : ""}">Все</button>` : ""}</div>
+        ${f.status === "open" && !byBooking ? `<div class="seg" title="Срок задачи"><button data-range="today" class="${f.range === "today" ? "is-on" : ""}">Сегодня</button><button data-range="week" class="${f.range === "week" ? "is-on" : ""}">Неделя</button><button data-range="all" class="${f.range === "all" ? "is-on" : ""}">Все</button></div>` : ""}</div>
       ${byBooking ? `<div class="page-sub">Задачи по каждой брони: чек-лист создаётся в карточке брони (кнопка «Чек-лист») или автоматически — Интеграции → Чек-лист брони.</div>` : ""}
       ${byBooking ? (data.map((g) => { const b = g.booking; const total = g.open + g.done; return `<div class="card bkt ${g.overdue ? "late" : ""}"><div class="bkt__head"><div><a href="#" data-bopen="${b.id}" class="bkt__title">${esc(b.apartment || "Бронь")} · ${esc(dShort(b.checkin))}${b.checkout ? " – " + esc(dShort(b.checkout)) : ""}</a> <span class="muted">${esc(b.guest || "")}</span></div>
           <div class="bkt__prog"><span class="${g.overdue ? "bad" : g.open ? "" : "ok"}">${g.done}/${total}</span>${g.overdue ? `<span class="tag red">просрочено ${g.overdue}</span>` : ""}<div class="prog"><i style="width:${total ? Math.round(100 * g.done / total) : 0}%"></i></div></div></div>${g.tasks.map(row).join("")}</div>`; }).join("") || `<div class="card empty">Задач по броням нет. Откройте бронь и нажмите «Чек-лист».</div>`) : ""}
@@ -484,12 +489,13 @@
         <input class="field" id="t-title" placeholder="Новая задача, например «Отправить адрес и код домофона»" />
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input class="field" id="t-due" type="datetime-local" style="width:auto" />
           <select class="field" id="t-who" style="width:auto">${userOptions(S.me.id)}</select><button class="btn" id="t-add">Добавить</button></div></div>
-      ${byBooking ? "" : groups.map(([name, fn]) => { const items = list.filter(fn); return items.length ? `<div class="card"><div class="card__title">${name} · ${items.length}</div>${items.map(row).join("")}</div>` : ""; }).join("") || `<div class="card empty">Задач нет</div>`}`;
+      ${byBooking ? "" : groups.map(([name, fn]) => { const items = list.filter(fn); return items.length ? `<div class="card"><div class="card__title">${name} · ${items.length}</div>${items.map(row).join("")}</div>` : ""; }).join("") || `<div class="card empty">${range === "today" ? "На сегодня задач нет — посмотрите «Неделя» или «Все»" : range === "week" ? "На неделю задач нет — посмотрите «Все»" : "Задач нет"}</div>`}`;
     onMain(async (e) => {
       const tv = e.target.closest("[data-tview]"); if (tv) { f.view = tv.dataset.tview; if (f.view !== "booking" && f.status === "all") f.status = "open"; navigate(); return; }
       const bo = e.target.closest("[data-bopen]"); if (bo) { e.preventDefault(); openBooking(parseInt(bo.dataset.bopen, 10)); return; }
       const m = e.target.closest("[data-mine]"); if (m) { f.mine = parseInt(m.dataset.mine, 10); navigate(); return; }
       const st = e.target.closest("[data-status]"); if (st) { f.status = st.dataset.status; navigate(); return; }
+      const rg = e.target.closest("[data-range]"); if (rg) { f.range = rg.dataset.range; navigate(); return; }
       if (e.target.id === "t-add") { addTask(); return; }
       const ts = e.target.closest("[data-tsend]"); if (ts) { ts.disabled = true; try { const r = await post(`/tasks/${ts.dataset.tsend}/send`); toast(r.status === "sent" ? `Отправлено: ${r.chat}` : `Не отправлено: ${r.error}`); } catch (err) { toast(err.message); } navigate(); return; }
       const dn = e.target.closest("[data-done]"); if (dn) { try { await patch(`/tasks/${dn.dataset.done}`, { status: dn.checked ? "done" : "open" }); navigate(); } catch (err) { toast(err.message); } return; }
@@ -1078,7 +1084,7 @@
   function renderBookingTasks(b) {
     const box = $("bk-tasks"); if (!box) return;
     const list = b.tasks || [];
-    const now = new Date().toISOString().slice(0, 16);
+    const now = nowLocal();
     const open = list.filter((t) => t.status === "open"), done = list.filter((t) => t.status === "done");
     const late = open.filter((t) => t.due && t.due < now).length;
     const row = (t) => `<div class="task ${t.status}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-tdone="${t.id}" />

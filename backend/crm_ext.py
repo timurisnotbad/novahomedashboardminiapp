@@ -221,8 +221,7 @@ def link_chat(bid: int, chat_id: int, who: str) -> None:
             else:
                 conn.execute("UPDATE crm_clients SET phone = ?, name = CASE WHEN name LIKE 'Гость%' OR name = '' THEN ? ELSE name END, updated_at = ? WHERE id = ?",
                              (phone, b["client_name"] or "", crm._now(), c["id"]))
-        conn.execute("UPDATE inbox_chats SET rev = (SELECT rev FROM inbox_rev WHERE id = 1) + 1 WHERE id = ?", (chat_id,))
-        conn.execute("UPDATE inbox_rev SET rev = rev + 1 WHERE id = 1")
+        conn.execute("UPDATE inbox_chats SET rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001 — wakes the long-poll too
     inbox._pin_cache["at"] = 0  # noqa: SLF001 — chat header shows the booking right away
     # the chat's own deal now carries this booking: if the booking already had a
     # deal (another chat of the same guest), the two become one right away
@@ -474,7 +473,10 @@ def booking_flow() -> int:
     """Deals with a booking move by themselves: unpaid before check-in → «Ожидает оплаты»,
     paid/prepaid → «Забронировано», during the stay → «Заселён», after → «Выехал».
     Stage actions (messages, tasks) fire on every move — that is the scenario.
-    Deals in a «lost» stage are left alone. Off with the «booking_flow» setting."""
+    A deal is moved only when the booking's *state* changes (flow_key): a stage
+    the team picked by hand is kept until the booking itself moves on.
+    Deals in a «lost» stage are left alone, except a cancelled booking that is
+    back in the calendar. Off with the «booking_flow» setting."""
     if crm.get_setting("booking_flow", "1") != "1":
         return 0
     today = date.today().isoformat()
@@ -483,8 +485,8 @@ def booking_flow() -> int:
     moved = 0
     with database.get_conn() as conn:
         deals = [dict(r) for r in conn.execute(
-            "SELECT d.id, d.stage_id, d.pipeline_id, d.client_id, d.checkin AS d_checkin, d.checkout AS d_checkout, d.apartment AS d_apartment, d.notes, "
-            "b.id AS b_id, b.begin_date, b.end_date, b.status AS b_status, b.amount, b.debt, b.prepayment, "
+            "SELECT d.id, d.stage_id, d.pipeline_id, d.client_id, d.flow_key, d.title, d.checkin AS d_checkin, d.checkout AS d_checkout, "
+            "d.apartment AS d_apartment, d.notes, b.id AS b_id, b.begin_date, b.end_date, b.status, b.amount, b.debt, b.prepayment, "
             "b.prepayment_progress, COALESCE(b.is_delete, 0) AS del, s.kind, s.name AS stage_name FROM crm_deals d "
             "LEFT JOIN bookings b ON b.id = d.booking_id JOIN crm_stages s ON s.id = d.stage_id WHERE d.booking_id IS NOT NULL").fetchall()]
         synced = database.last_sync()
@@ -492,38 +494,64 @@ def booking_flow() -> int:
         for r in conn.execute("SELECT id, pipeline_id, name FROM crm_stages").fetchall():
             stages.setdefault(r["pipeline_id"], {})[r["name"]] = r["id"]
     cancelled_clients: set = set()
+    cancelled_notes: list[str] = []
+
+    def stage_for(d, key):
+        return next((stages.get(d["pipeline_id"], {}).get(n) for n in FLOW_STAGES[key] if stages.get(d["pipeline_id"], {}).get(n)), None)
+
+    def set_key(did, key):
+        with database.get_conn() as conn:
+            conn.execute("UPDATE crm_deals SET flow_key = ? WHERE id = ?", (key, did))
+
     for d in deals:
-        gone = (d["b_id"] is None or d["del"] or d["b_status"] in ("cancelled", "canceled"))
+        # the booking row disappears only after it was missing from two syncs
+        # in a row (database.replace_window_bookings) — or the calendar says so
+        gone = (d["b_id"] is None or d["del"] or (d["status"] or "") in ("cancelled", "canceled"))
         horizon = (date.today() + timedelta(days=config.SYNC_DAYS_AHEAD)).isoformat()
         if gone and synced and (d["d_checkout"] or "9999") >= today and (d["d_checkin"] or "0000") <= horizon:
-            # the booking vanished from the calendar before check-out = cancelled there
-            if d["kind"] == "lost":
+            if d["kind"] == "lost" or d["flow_key"] == "cancelled":
                 continue
-            target = next((stages.get(d["pipeline_id"], {}).get(n) for n in FLOW_STAGES["cancelled"] if stages.get(d["pipeline_id"], {}).get(n)), None)
+            target = stage_for(d, "cancelled")
             if target and target != d["stage_id"]:
                 try:
                     note = (d["notes"] or "").rstrip()
                     note = (note + "\n" if note else "") + f"Бронь {d['d_apartment'] or ''} {d['d_checkin'] or ''}–{d['d_checkout'] or ''} отменена в календаре {today}"
                     crm.save_deal(d["id"], {"stage_id": target, "notes": note}, uid)
+                    set_key(d["id"], "cancelled")
                     moved += 1
                     if d["client_id"]:
                         cancelled_clients.add(d["client_id"])
+                    _on_booking_cancelled(d)
+                    cancelled_notes.append(f"{d['d_apartment'] or ''} {crm._dm(d['d_checkin'])}–{crm._dm(d['d_checkout'])} · {d['title']}")
                 except Exception:  # noqa: BLE001
                     logger.exception("booking flow (cancel) failed for deal %s", d["id"])
             continue
-        if gone or d["kind"] == "lost":
+        if gone:
             continue
+        if d["kind"] == "lost":
+            if d["flow_key"] != "cancelled" or "отменена в календаре" not in (d["notes"] or ""):
+                continue  # lost by the team, not by the calendar — leave it
+            # the booking is back: the deal returns to the flow below
         if d["end_date"] <= today:
             key = "out"
         elif d["begin_date"] <= today:
             key = "living"
         else:
             key = "unpaid" if crm._pay_state(d) == "unpaid" else "booked"  # noqa: SLF001
-        target = next((stages.get(d["pipeline_id"], {}).get(n) for n in FLOW_STAGES[key] if stages.get(d["pipeline_id"], {}).get(n)), None)
-        if not target or target == d["stage_id"]:
+        if key == d["flow_key"] and d["kind"] != "lost":
+            continue  # the booking has not changed state; a manual stage stays
+        target = stage_for(d, key)
+        if not target:
+            continue
+        if target == d["stage_id"]:
+            set_key(d["id"], key)
             continue
         try:
-            crm.save_deal(d["id"], {"stage_id": target}, uid)
+            data = {"stage_id": target}
+            if d["kind"] == "lost":
+                data["notes"] = ((d["notes"] or "").rstrip() + f"\nБронь снова в календаре {today}").strip()
+            crm.save_deal(d["id"], data, uid)
+            set_key(d["id"], key)
             moved += 1
             if key == "out" and d["client_id"]:  # a returning guest becomes «Постоянник»
                 c = crm.get_client(d["client_id"])
@@ -535,7 +563,29 @@ def booking_flow() -> int:
         crm.refresh_client_statuses(cancelled_clients)
     except Exception:  # noqa: BLE001
         logger.exception("client statuses refresh failed")
+    if cancelled_notes:
+        try:
+            from . import notify
+            notify.send("❌ Бронь отменена в календаре:\n" + "\n".join(cancelled_notes[:20]))
+        except Exception:  # noqa: BLE001
+            logger.exception("cancel notice failed")
     return moved
+
+
+def _on_booking_cancelled(d: dict) -> None:
+    """A cancelled booking leaves no automatic work behind: the open checklist
+    messages close (nothing is sent to a guest who is not coming) and the
+    arrival time it had is forgotten."""
+    bid = d.get("b_id") or None
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT booking_id FROM crm_deals WHERE id = ?", (d["id"],)).fetchone()
+        bid = (r["booking_id"] if r else None) or bid
+        if not bid:
+            return
+        conn.execute("UPDATE crm_tasks SET status = 'done', done_at = ?, auto_status = 'skipped: бронь отменена' "
+                     "WHERE booking_id = ? AND status = 'open' AND auto_text IS NOT NULL", (crm._now(), bid))
+        conn.execute("DELETE FROM crm_eta WHERE booking_id = ?", (bid,))
+    crm.eta_map(force=True)
 
 
 def sync_deals_from_bookings() -> int:
@@ -634,7 +684,10 @@ def fill(text: str, booking: dict | None, chat: dict | None, lang: str = "ru") -
     def d(s):
         if not s:
             return ""
-        dt = date.fromisoformat(s[:10])
+        try:
+            dt = date.fromisoformat(str(s)[:10])
+        except ValueError:
+            return str(s)[:10]
         return f"{dt.day} {EN_MONTHS[dt.month - 1]}" if en else f"{dt.day} {RU_MONTHS[dt.month - 1]}"
     name = ""
     if booking and booking.get("guest"):
@@ -644,8 +697,8 @@ def fill(text: str, booking: dict | None, chat: dict | None, lang: str = "ru") -
     name = re.sub(r"^\+?\d+$", "", name).split(" ")[0]
     b = booking or {}
     dci, dco = crm.default_times()
-    t_in = (b.get("arrival_time") or dci)[:5]
-    t_out = (b.get("departure_time") or dco)[:5]
+    t_in = crm._hm(b.get("arrival_time"), dci)  # noqa: SLF001
+    t_out = crm._hm(b.get("departure_time"), dco)  # noqa: SLF001
     vals = {"имя": name, "объект": b.get("apartment") or "", "заезд": d(b.get("checkin")), "выезд": d(b.get("checkout")),
             "дата заезда": d(b.get("checkin")), "дата выезда": d(b.get("checkout")),
             "время заезда": t_in, "время выезда": t_out, "заезд время": f"{d(b.get('checkin'))} {'at' if en else 'в'} {t_in}" if b.get("checkin") else "",
@@ -764,14 +817,20 @@ def _due(rule: dict, b: dict, now: datetime) -> bool:
     a rule enabled later than that moment (same day) still catches up."""
     t = rule["trigger"]
     if t == "new_booking":
-        synced = b.get("synced_at") or b.get("created_at") or ""
-        return bool(synced) and (now - datetime.fromisoformat(synced[:19])).total_seconds() < 6 * 3600
+        # «new» = we first saw it in the last 6 hours (not «it was synced
+        # again»), and it is a stay that still lies ahead
+        seen = b.get("first_seen") or b.get("created_at") or ""
+        try:
+            fresh = bool(seen) and (now - datetime.fromisoformat(seen[:19])).total_seconds() < 6 * 3600
+        except ValueError:
+            fresh = False
+        return fresh and (b.get("checkout") or "") >= now.date().isoformat()
     base = {"before_checkin": b["checkin"], "checkin_day": b["checkin"], "checkout_day": b["checkout"], "after_checkout": b["checkout"]}.get(t)
     if not base:
         return False
     sign = -1 if t == "before_checkin" else 1 if t == "after_checkout" else 0
     day = date.fromisoformat(base) + timedelta(days=sign * abs(int(rule["offset_days"] or 0)))
-    h, m = (int(x) for x in (rule["at_time"] or "10:00").split(":"))
+    h, m = (int(x) for x in crm._hm(rule["at_time"], "10:00").split(":"))  # noqa: SLF001
     moment = datetime(day.year, day.month, day.day, h, m)
     return moment <= now < moment + timedelta(hours=12)
 
@@ -795,7 +854,7 @@ def run_auto_rules(dry: bool = False) -> list[dict]:
         if raw.get("status") in ("cancelled", "canceled"):
             continue
         b = crm._booking_out(raw)
-        b["synced_at"] = raw.get("synced_at")
+        b["first_seen"] = raw.get("first_seen")
         b["created_at"] = raw.get("created_at")
         for rule in booking_rules:
             key = f"{rule['id']}:b{b['id']}"
@@ -867,20 +926,28 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
             conn.execute("UPDATE crm_tasks SET status = 'done', done_at = ?, auto_status = ? WHERE id = ?",
                          (crm._now(), "sent:" + ", ".join(reached)[:280], tid))
         else:
-            conn.execute("UPDATE crm_tasks SET auto_status = ? WHERE id = ?", (f"{status}:{error}"[:300], tid))
+            conn.execute("UPDATE crm_tasks SET auto_status = ?, auto_tries = COALESCE(auto_tries, 0) + 1, auto_at = ? WHERE id = ?",
+                         (f"{status}:{error}"[:300], crm._now(), tid))
     logger.info("task message %s → %s: %s %s", tid, chat and chat.get("title"), status, error or "")
     return {"status": status, "error": error, "chat": chat and chat.get("title"), "text": text}
 
 
+MAX_TASK_TRIES = 3
+
+
 def run_task_messages() -> int:
     """Every 5 minutes: due message-tasks go out; tasks overdue by more than a day
-    are left to people (no late spam)."""
+    are left to people (no late spam). A task that could not be sent is retried
+    at most MAX_TASK_TRIES times, an hour apart, then stays open for a person."""
     now = crm._now()[:16]
     cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+    retry_before = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
     with database.get_conn() as conn:
         ids = [r["id"] for r in conn.execute(
             "SELECT id FROM crm_tasks WHERE status = 'open' AND auto_text IS NOT NULL AND due IS NOT NULL AND due <= ? AND due >= ? "
-            "AND (auto_status IS NULL OR auto_status LIKE 'skipped:%' OR auto_status LIKE 'failed:%') ORDER BY due LIMIT 50", (now, cutoff)).fetchall()]
+            "AND (auto_status IS NULL OR auto_status LIKE 'skipped:%' OR auto_status LIKE 'failed:%') "
+            "AND COALESCE(auto_tries, 0) < ? AND (auto_at IS NULL OR auto_at <= ?) ORDER BY due LIMIT 50",
+            (now, cutoff, MAX_TASK_TRIES, retry_before)).fetchall()]
     n = 0
     for tid in ids:
         try:
@@ -972,11 +1039,16 @@ def run_stage_actions(deal_id: int, stage_id: int, uid: int) -> list[dict]:
         stage = conn.execute("SELECT name FROM crm_stages WHERE id = ?", (stage_id,)).fetchone()
         vars_ = _deal_vars(d, conn)
         chat = _deal_chat(d, conn)
-    stamp = crm._now()
+    stamp = crm._now()[:10]  # one run per action, deal and day: a move processed twice does not send twice
     out = []
+    with database.get_conn() as conn:
+        done = {r[0] for r in conn.execute("SELECT dedupe FROM crm_auto_log WHERE dedupe LIKE ?", (f"stage:%:d{deal_id}:{stamp}",)).fetchall()}
     for a in actions:
         rule = {"id": 0, "name": f"Этап «{stage['name'] if stage else stage_id}»"}
         key = f"stage:{a['id']}:d{deal_id}:{stamp}"
+        if key in done:
+            out.append({"kind": a["kind"], "status": "skipped", "error": "уже выполнено сегодня"})
+            continue
         text = fill(a["text"], vars_, chat)
         status, error = "sent", None
         try:
@@ -987,7 +1059,7 @@ def run_stage_actions(deal_id: int, stage_id: int, uid: int) -> list[dict]:
                     inbox.send(chat["id"], AUTHOR, text)
             elif a["kind"] == "task":
                 from datetime import datetime as _dt
-                h, m = (int(x) for x in (a["at_time"] or "10:00").split(":"))
+                h, m = (int(x) for x in crm._hm(a["at_time"], "10:00").split(":"))  # noqa: SLF001
                 due = (_dt.now() + timedelta(days=int(a["days"] or 0))).replace(hour=h, minute=m, second=0, microsecond=0)
                 crm.save_task(None, {"title": text, "due": due.isoformat(timespec="minutes"), "assignee_uid": d.get("owner_uid") or uid,
                                      "deal_id": deal_id, "client_id": d.get("client_id")}, uid)

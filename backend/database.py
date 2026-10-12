@@ -4,6 +4,7 @@ Uses the standard-library ``sqlite3`` module with a thin helper API. Access is
 synchronous; FastAPI runs sync path operations in a threadpool, which is more
 than enough for a single-property operations dashboard.
 """
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -62,6 +63,22 @@ CREATE TABLE IF NOT EXISTS sync_log (
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     bookings_count INTEGER,
     success BOOLEAN
+);
+
+-- bookings the calendar stopped returning inside the sync window: a booking
+-- is removed only after it has been missing from two consecutive fetches, so
+-- a half-empty answer from the calendar never cancels deals in the CRM
+CREATE TABLE IF NOT EXISTS bookings_missing (
+    id INTEGER PRIMARY KEY,
+    since TIMESTAMP,
+    misses INTEGER DEFAULT 1
+);
+
+-- the last copy of a booking removed from the calendar (for the deal history)
+CREATE TABLE IF NOT EXISTS bookings_cancelled (
+    id INTEGER PRIMARY KEY,
+    data TEXT,
+    cancelled_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -271,6 +288,10 @@ def init_db() -> None:
         _add_column("tasks", "deadline_time", "TEXT")
         _add_column("bookings", "client_email", "TEXT")
         _add_column("bookings", "client_phone2", "TEXT")
+        # when *we* first saw the booking (the calendar's created_at is not
+        # reliable); drives the "new booking" rule and the checklist anchors
+        if _add_column("bookings", "first_seen", "TEXT"):
+            conn.execute("UPDATE bookings SET first_seen = COALESCE(created_at, synced_at) WHERE first_seen IS NULL")
         # items the bot pulled out of the «Поломки» topic: who wrote it, and
         # the chat-line id so an edited message is not recorded twice
         _add_column("tasks", "created_by", "TEXT")
@@ -290,6 +311,7 @@ BOOKING_COLUMNS = [
     "days_count", "amount", "debt", "prepayment", "prepayment_progress",
     "is_external", "source_id", "client_name", "client_phone", "arrival_time",
     "departure_time", "short_notes", "is_delete", "created_at", "synced_at", "client_email", "client_phone2",
+    "first_seen",
 ]
 
 
@@ -322,20 +344,24 @@ def _booking_rows(bookings: Iterable[dict]) -> list[tuple]:
             now,
             b.get("client_email") or client.get("email"),
             b.get("client_phone2") or client.get("additional_phone") or client.get("phone2") or client.get("second_phone"),
+            now,
         ))
     return rows
 
 
 def _insert_sql() -> str:
+    """Upsert that keeps `first_seen` of an existing row (INSERT OR REPLACE
+    would reset it on every sync and make every booking look brand new)."""
     placeholders = ",".join(["?"] * len(BOOKING_COLUMNS))
+    updates = ", ".join(f"{c}=excluded.{c}" for c in BOOKING_COLUMNS if c not in ("id", "first_seen"))
     return (
-        f"INSERT OR REPLACE INTO bookings ({','.join(BOOKING_COLUMNS)}) "
-        f"VALUES ({placeholders})"
+        f"INSERT INTO bookings ({','.join(BOOKING_COLUMNS)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}"
     )
 
 
 def upsert_bookings(bookings: Iterable[dict]) -> int:
-    """Insert or replace bookings by primary key. Returns the count written."""
+    """Insert or update bookings by primary key. Returns the count written."""
     rows = _booking_rows(bookings)
     with get_conn() as conn:
         conn.executemany(_insert_sql(), rows)
@@ -353,15 +379,60 @@ def _num(value):
 
 def replace_all_bookings(bookings: list[dict]) -> int:
     """Full refresh: clear the table then insert, in a single transaction.
-
-    Used on every sync so the table stays an exact mirror of the source and
-    never mixes stale rows (e.g. demo data) with a fresh fetch.
-    """
+    Kept for tests / demo resets; the regular sync uses the window variant."""
     rows = _booking_rows(bookings)
     with get_conn() as conn:
         conn.execute("DELETE FROM bookings")
+        conn.execute("DELETE FROM bookings_missing")
         conn.executemany(_insert_sql(), rows)
     return len(rows)
+
+
+MISSES_TO_CANCEL = 2
+
+
+def replace_window_bookings(bookings: list[dict], d0: str, d1: str) -> dict:
+    """Mirror the calendar for the fetched window [d0, d1] without touching
+    bookings outside it (history stays), and without a DELETE-all gap.
+
+    A booking that overlaps the window but is absent from the fetch is counted
+    as "missing"; it is removed (and archived in bookings_cancelled) only after
+    MISSES_TO_CANCEL consecutive misses — one truncated answer from the
+    calendar therefore cannot cancel deals. Returns counters for the log.
+    """
+    rows = _booking_rows(bookings)
+    ids = {r[0] for r in rows}
+    now = datetime.now().isoformat(timespec="seconds")
+    removed = 0
+    with get_conn() as conn:
+        conn.executemany(_insert_sql(), rows)
+        if ids:
+            conn.executemany("DELETE FROM bookings_missing WHERE id = ?", [(i,) for i in ids])
+        present = conn.execute(
+            "SELECT * FROM bookings WHERE begin_date <= ? AND end_date >= ? AND is_delete = 0",
+            (d1, d0),
+        ).fetchall()
+        for r in present:
+            if r["id"] in ids:
+                continue
+            m = conn.execute("SELECT misses FROM bookings_missing WHERE id = ?", (r["id"],)).fetchone()
+            misses = (m["misses"] if m else 0) + 1
+            if misses >= MISSES_TO_CANCEL:
+                conn.execute(
+                    "INSERT OR REPLACE INTO bookings_cancelled (id, data, cancelled_at) VALUES (?, ?, ?)",
+                    (r["id"], json.dumps(dict(r), ensure_ascii=False, default=str), now),
+                )
+                conn.execute("DELETE FROM bookings WHERE id = ?", (r["id"],))
+                conn.execute("DELETE FROM bookings_missing WHERE id = ?", (r["id"],))
+                removed += 1
+            else:
+                conn.execute(
+                    "INSERT INTO bookings_missing (id, since, misses) VALUES (?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET misses = excluded.misses",
+                    (r["id"], now, misses),
+                )
+        missing = conn.execute("SELECT COUNT(*) FROM bookings_missing").fetchone()[0]
+    return {"written": len(rows), "removed": removed, "missing": missing}
 
 
 def get_bookings(

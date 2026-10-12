@@ -168,12 +168,17 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_templates ADD COLUMN command TEXT")
         if "entity" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_fields)").fetchall()]:
             conn.execute("ALTER TABLE crm_fields ADD COLUMN entity TEXT DEFAULT 'client'")
-        if "fields" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]:
+        dcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]
+        if "fields" not in dcols:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
+        if "flow_key" not in dcols:  # the last stage the booking flow put the deal in (manual moves are respected)
+            conn.execute("ALTER TABLE crm_deals ADD COLUMN flow_key TEXT")
         tcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_tasks)").fetchall()]
-        for col in ("auto_text", "auto_status", "auto_text_en"):
+        for col in ("auto_text", "auto_status", "auto_text_en", "auto_at"):
             if col not in tcols:
                 conn.execute(f"ALTER TABLE crm_tasks ADD COLUMN {col} TEXT")  # noqa: S608
+        if "auto_tries" not in tcols:
+            conn.execute("ALTER TABLE crm_tasks ADD COLUMN auto_tries INTEGER DEFAULT 0")
         if "booking_id" not in tcols:
             conn.execute("ALTER TABLE crm_tasks ADD COLUMN booking_id INTEGER")
             # tasks «Заезд/Выезд» created before this version: attach them to their booking
@@ -353,11 +358,21 @@ def get_setting(key: str, default: str = "") -> str:
     return r[0] if r else default
 
 
+def _hm(value, default: str = "00:00") -> str:
+    """'9:5' / '14:00:00' / garbage → 'HH:MM' (string compare of times is only
+    safe when every time has the same shape)."""
+    m = re.match(r"^\s*(\d{1,2})[:.](\d{1,2})", str(value or ""))
+    if not m:
+        return default
+    h, mi = int(m.group(1)), int(m.group(2))
+    if h > 23 or mi > 59:
+        return default
+    return f"{h:02d}:{mi:02d}"
+
+
 def default_times() -> tuple[str, str]:
     """House check-in / check-out time (Интеграции → Время заезда и выезда)."""
-    ci = get_setting("checkin_time", "14:00") or "14:00"
-    co = get_setting("checkout_time", "11:00") or "11:00"
-    return ci[:5], co[:5]
+    return _hm(get_setting("checkin_time", "14:00"), "14:00"), _hm(get_setting("checkout_time", "11:00"), "11:00")
 
 
 def set_setting(key: str, value: str) -> None:
@@ -431,6 +446,7 @@ def delete_pipeline(pid: int) -> None:
             raise ValueError("Нельзя удалить последнюю воронку")
         if conn.execute("SELECT 1 FROM crm_deals WHERE pipeline_id = ? LIMIT 1", (pid,)).fetchone():
             raise ValueError("В воронке есть сделки — сначала перенесите их")
+        conn.execute("DELETE FROM crm_stage_actions WHERE stage_id IN (SELECT id FROM crm_stages WHERE pipeline_id = ?)", (pid,))
         conn.execute("DELETE FROM crm_stages WHERE pipeline_id = ?", (pid,))
         conn.execute("DELETE FROM crm_pipelines WHERE id = ?", (pid,))
 
@@ -837,6 +853,8 @@ def save_deal(did: int | None, data: dict, uid: int) -> dict:
         if not st:
             raise ValueError("В воронке нет этапов")
         client_id = data.get("client_id") if "client_id" in data else (cur and cur["client_id"])
+        if not title and cur and "title" not in data:
+            title = cur["title"]  # a stage move / note edit keeps the name
         if not title:
             cn = conn.execute("SELECT name FROM crm_clients WHERE id = ?", (client_id,)).fetchone() if client_id else None
             title = (cn["name"] if cn else "Сделка") + (f" · {data.get('apartment')}" if data.get("apartment") else "")
@@ -886,6 +904,8 @@ def _num(v):
 def delete_deal(did: int) -> None:
     with database.get_conn() as conn:
         conn.execute("UPDATE crm_tasks SET deal_id = NULL WHERE deal_id = ?", (did,))
+        conn.execute("DELETE FROM crm_deal_chats WHERE deal_id = ?", (did,))
+        conn.execute("DELETE FROM crm_notes WHERE deal_id = ?", (did,))
         conn.execute("DELETE FROM crm_deals WHERE id = ?", (did,))
 
 
@@ -943,8 +963,18 @@ def _bookings_map(conn, ids) -> dict:
     return out
 
 
+def _view_until(view: str | None) -> str | None:
+    """Tasks page filter: today = due by tonight, week = by the end of +7 days."""
+    if view == "today":
+        return date.today().isoformat() + "T23:59"
+    if view == "week":
+        return (date.today() + timedelta(days=7)).isoformat() + "T23:59"
+    return None
+
+
 def tasks(assignee_uid: int | None = None, status: str | None = None, client_id: int | None = None,
-          deal_id: int | None = None, booking_id: int | None = None) -> list[dict]:
+          deal_id: int | None = None, booking_id: int | None = None, view: str | None = None,
+          limit: int = 500, offset: int = 0) -> list[dict]:
     where, args = [], []
     if assignee_uid:
         where.append("assignee_uid = ?"); args.append(assignee_uid)
@@ -956,8 +986,12 @@ def tasks(assignee_uid: int | None = None, status: str | None = None, client_id:
         where.append("deal_id = ?"); args.append(deal_id)
     if booking_id:
         where.append("booking_id = ?"); args.append(booking_id)
+    until = _view_until(view)
+    if until:  # tasks without a date are always «current»
+        where.append("(due IS NULL OR due <= ?)"); args.append(until)
     sql = "SELECT * FROM crm_tasks" + (" WHERE " + " AND ".join(where) if where else "")
-    sql += " ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, COALESCE(due, '9999') , id DESC LIMIT 500"
+    sql += " ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, COALESCE(due, '9999') , id DESC LIMIT ? OFFSET ?"
+    args += [max(1, min(int(limit or 500), 2000)), max(0, int(offset or 0))]
     with database.get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()
         cmap = {r["id"]: dict(r) for r in conn.execute("SELECT id, name FROM crm_clients").fetchall()}
@@ -1020,9 +1054,7 @@ def save_task(tid: int | None, data: dict, uid: int) -> dict:
         client_id = data.get("client_id") if "client_id" in data else (cur and cur["client_id"])
         if booking_id and not client_id:  # a booking task is also the guest's task
             b = conn.execute("SELECT client_name, client_phone FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-            if not b:
-                raise ValueError("Бронь не найдена")
-            if b["client_phone"]:
+            if b and b["client_phone"]:  # a booking already gone from the calendar still keeps its tasks editable
                 client_id = ensure_client(b["client_phone"], b["client_name"] or "")
         vals = (title, due,
                 data.get("assignee_uid") if "assignee_uid" in data else ((cur and cur["assignee_uid"]) or uid),
@@ -1200,13 +1232,20 @@ def checklist_preview(text: str | None = None) -> list[dict]:
 
 def _cl_due(item: dict, b: dict) -> str:
     if item["anchor"] == "now":
-        return datetime.now().strftime("%Y-%m-%dT%H:%M")
+        # «right after the booking appeared» counts from when we first saw the
+        # booking, not from when the checklist happened to be created
+        seen = (b.get("first_seen") or b.get("created_at") or "")[:16]
+        try:
+            base_dt = datetime.fromisoformat(seen) if seen else datetime.now()
+        except ValueError:
+            base_dt = datetime.now()
+        return (base_dt + timedelta(days=int(item.get("offset") or 0))).strftime("%Y-%m-%dT%H:%M")
     base = date.today() if item["anchor"] == "today" else date.fromisoformat((b["end_date"] if item["anchor"] == "checkout" else b["begin_date"])[:10])
-    d = base + timedelta(days=item["offset"])
+    d = base + timedelta(days=int(item.get("offset") or 0))
     ci, co = default_times()
-    t = item["time"] or ((b.get("departure_time") if item["anchor"] == "checkout" else b.get("arrival_time")) or (co if item["anchor"] == "checkout" else ci))[:5]
-    hh, mm = t.split(":")
-    return f"{d.isoformat()}T{int(hh):02d}:{int(mm):02d}"
+    t = _hm(item.get("time")) if item.get("time") else _hm((b.get("departure_time") if item["anchor"] == "checkout" else b.get("arrival_time")),
+                                                             co if item["anchor"] == "checkout" else ci)
+    return f"{d.isoformat()}T{t}"
 
 
 def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force: bool = False) -> dict:
@@ -1227,12 +1266,19 @@ def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force:
         n = 0
         from . import crm_ext
         bo = _booking_out(b)
+        stale = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
         for it in items:
             key = f"cl:{bid}:{hashlib.sha1(it['title'].lower().encode()).hexdigest()[:10]}"
             title = crm_ext.fill(it["title"], bo, None)
+            due = _cl_due(it, b)
+            # a «right away» step for a booking we have known for more than a
+            # day is history, not a message to send now (import / re-enable)
+            old_now = it["anchor"] == "now" and due < stale
             cur = conn.execute(
-                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id, auto_text, auto_text_en) "
-                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)", (title, _cl_due(it, b), assignee_uid or uid, cid, uid, _now(), key, bid, it.get("message") or None, it.get("message_en") or None))
+                "INSERT OR IGNORE INTO crm_tasks (title, due, assignee_uid, client_id, status, created_by, created_at, src_key, booking_id, auto_text, auto_text_en, done_at, auto_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (title, due, assignee_uid or uid, cid, "done" if old_now else "open", uid, _now(), key, bid, it.get("message") or None, it.get("message_en") or None,
+                 _now() if old_now else None, "skipped: бронь старше суток" if old_now else None))
             n += cur.rowcount
         conn.execute("INSERT OR REPLACE INTO crm_booking_checklist (booking_id, created_by, created_at, n) VALUES (?, ?, ?, ?)",
                      (bid, uid, _now(), n))
@@ -1478,8 +1524,8 @@ def bookings_day(day: str) -> dict:
         b["tasks"] = tc.get(b["id"])
     _contact_states(rows)
     dci, dco = default_times()
-    t_in = lambda b: (b.get("arrival_time") or dci)[:5]  # noqa: E731
-    t_out = lambda b: (b.get("departure_time") or dco)[:5]  # noqa: E731
+    t_in = lambda b: _hm(b.get("arrival_time"), dci)  # noqa: E731
+    t_out = lambda b: _hm(b.get("departure_time"), dco)  # noqa: E731
     arrivals = sorted([b for b in rows if b["checkin"] == day], key=lambda b: (t_in(b), b["apartment"] or ""))
     departures = sorted([b for b in rows if b["checkout"] == day], key=lambda b: (t_out(b), b["apartment"] or ""))
     # preparation plan: which apartments to get ready first — by arrival time, with the
@@ -1563,12 +1609,13 @@ def home(uid: int) -> dict:
     day = bookings_day(today)
     with database.get_conn() as conn:
         unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
-        my_open = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ?", (uid,)).fetchone()[0]
+        my_open = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
+                               (uid, _view_until("today"))).fetchone()[0]
         overdue = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND due < ?", (_now(),)).fetchone()[0]
         by_stage = [dict(r) for r in conn.execute(
             "SELECT s.id, s.name, s.color, s.kind, p.name AS pipeline, COUNT(d.id) AS n, COALESCE(SUM(d.amount), 0) AS amount "
             "FROM crm_stages s JOIN crm_pipelines p ON p.id = s.pipeline_id "
-            "LEFT JOIN crm_deals d ON d.stage_id = s.id ORDER BY p.sort, s.sort").fetchall()]
+            "LEFT JOIN crm_deals d ON d.stage_id = s.id GROUP BY s.id ORDER BY p.sort, s.sort").fetchall()]
         clients_n = conn.execute("SELECT COUNT(*) FROM crm_clients").fetchone()[0]
         recent_chats = [dict(r) for r in conn.execute(
             "SELECT id, name, push_name, phone, last_text, last_at, unread FROM inbox_chats ORDER BY last_at DESC LIMIT 8").fetchall()]
@@ -1577,5 +1624,5 @@ def home(uid: int) -> dict:
         "report": arrivals_report(today), "report_last_sent": get_setting("report_last_sent", ""),
         "unread": unread, "my_open_tasks": my_open, "overdue_tasks": overdue, "clients": clients_n,
         "stages": by_stage, "recent_chats": recent_chats, "last_sync": database.last_sync(),
-        "today_tasks": [t for t in tasks(status="open") if (t["due"] or "")[:10] <= today][:10],
+        "today_tasks": tasks(status="open", view="today", limit=10),
     }

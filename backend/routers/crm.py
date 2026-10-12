@@ -200,15 +200,27 @@ def home(user: dict = Depends(current_user)):  # noqa: B008
     return d
 
 
+def _date(value, default: str | None = None) -> str:
+    """A ?date= / ?start= parameter as YYYY-MM-DD, or 400 (garbage used to
+    reach SQL string comparisons and quietly return nothing)."""
+    v = str(value or "").strip()[:10]
+    if not v and default:
+        return default
+    try:
+        return crm.date.fromisoformat(v).isoformat()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Дата в формате ГГГГ-ММ-ДД") from None
+
+
 @router.get("/report/arrivals")
 def report_arrivals(date: str | None = None, user: dict = Depends(current_user)):  # noqa: B008
-    return crm.arrivals_report(date or crm.date.today().isoformat())
+    return crm.arrivals_report(_date(date, crm.date.today().isoformat()))
 
 
 @router.post("/report/arrivals/send")
 def report_arrivals_send(payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
     try:
-        return crm.send_arrivals_report((payload or {}).get("date") or crm.date.today().isoformat(), user["name"])
+        return crm.send_arrivals_report(_date((payload or {}).get("date"), crm.date.today().isoformat()), user["name"])
     except ValueError as exc:
         _bad(exc)
 
@@ -234,7 +246,8 @@ async def badges(rev: int = 0, wait: float = 0, user: dict = Depends(current_use
 def _badges(user: dict) -> dict:
     with database.get_conn() as conn:
         unread = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
-        mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ?", (user["id"],)).fetchone()[0]
+        mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
+                            (user["id"], crm._view_until("today"))).fetchone()[0]  # noqa: SLF001
         last = conn.execute(
             "SELECT m.id, m.chat_id, m.kind, m.text, m.at, c.name, c.push_name, c.phone, c.channel FROM inbox_messages m "
             "JOIN inbox_chats c ON c.id = m.chat_id WHERE m.direction = 'in' ORDER BY m.id DESC LIMIT 1").fetchone()
@@ -777,10 +790,13 @@ def booking_deal(bid: int, user: dict = Depends(current_user)):  # noqa: B008
 
 # ---- tasks --------------------------------------------------------------------
 @router.get("/tasks")
-def get_tasks(mine: int = 0, status: str = "open", booking: int = 0, group: str = "", user: dict = Depends(current_user)):  # noqa: B008
+def get_tasks(mine: int = 0, status: str = "open", booking: int = 0, group: str = "", view: str = "", limit: int = 500, offset: int = 0,
+              user: dict = Depends(current_user)):  # noqa: B008
+    """view = today | week | all (open tasks due by tonight / within 7 days / every one)."""
     if group == "booking":
         return crm.tasks_by_booking(user["id"] if mine else None, status)
-    return crm.tasks(user["id"] if mine else None, status if status != "all" else None, booking_id=booking or None)
+    return crm.tasks(user["id"] if mine else None, status if status != "all" else None, booking_id=booking or None,
+                     view=view if view in ("today", "week") else None, limit=limit, offset=offset)
 
 
 @router.post("/tasks")
@@ -868,7 +884,7 @@ def checklist_preview_text(payload: dict, user: dict = Depends(current_user)):  
     with database.get_conn() as conn:
         bid = payload.get("booking_id")
         r = conn.execute("SELECT * FROM bookings WHERE id = ?", (bid,)).fetchone() if bid else conn.execute(
-            "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date >= date('now') ORDER BY begin_date LIMIT 1").fetchone()
+            "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date >= ? ORDER BY begin_date LIMIT 1", (crm.date.today().isoformat(),)).fetchone()
     b = crm._booking_out(dict(r)) if r else None  # noqa: SLF001
     return {"text": crm_ext.fill(str(payload.get("text") or ""), b, None), "booking": b and {"id": b["id"], "apartment": b["apartment"], "guest": b["guest"]}}
 
@@ -907,7 +923,10 @@ def chats_search(q: str = "", user: dict = Depends(current_user)):  # noqa: B008
 @router.get("/revenue")
 def revenue(month: str = "", user: dict = Depends(current_user)):  # noqa: B008
     from datetime import date as _d
-    return crm_ext.revenue(month[:7] if month else _d.today().strftime("%Y-%m"))
+    m = (month or "").strip()[:7]
+    if m and not re.match(r"^\d{4}-\d{2}$", m):
+        raise HTTPException(status_code=400, detail="Месяц в формате ГГГГ-ММ")
+    return crm_ext.revenue(m or _d.today().strftime("%Y-%m"))
 
 
 # ---- auto-message rules ---------------------------------------------------------
@@ -961,12 +980,12 @@ def run_rules(user: dict = Depends(admin_user)):  # noqa: B008
 
 @router.get("/bookings/day")
 def bookings_day(date: str, user: dict = Depends(current_user)):  # noqa: B008
-    return crm.bookings_day(date[:10])
+    return crm.bookings_day(_date(date))
 
 
 @router.get("/bookings/grid")
 def bookings_grid(start: str, days: int = 30, user: dict = Depends(current_user)):  # noqa: B008
-    return crm.bookings_grid(start[:10], max(7, min(days, 90)))
+    return crm.bookings_grid(_date(start), max(7, min(days, 90)))
 
 
 # ---- quick commands -------------------------------------------------------------
@@ -1144,7 +1163,7 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
     if payload.report_chat_ids is not None:
         crm.set_setting("report_chat_ids", payload.report_chat_ids.strip())
     if payload.report_time is not None and re.match(r"^\d{1,2}:\d{2}$", payload.report_time.strip()):
-        crm.set_setting("report_time", payload.report_time.strip())
+        crm.set_setting("report_time", crm._hm(payload.report_time, "09:00"))  # noqa: SLF001
     if payload.auto_deal is not None:
         crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
     if payload.booking_flow is not None:
@@ -1156,7 +1175,7 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         if val is not None:
             if not _re.match(r"^\d{1,2}:\d{2}$", val.strip()):
                 raise HTTPException(status_code=400, detail="Время в формате 14:00")
-            crm.set_setting(key, val.strip())
+            crm.set_setting(key, crm._hm(val, "14:00" if key == "checkin_time" else "11:00"))  # noqa: SLF001
     if payload.checklist is not None:
         crm.set_setting("booking_checklist", payload.checklist.strip())
     return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}

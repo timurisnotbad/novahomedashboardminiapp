@@ -604,6 +604,9 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
     voice, lat, lng, quoted_id, reaction_to; channel (default wa), phone."""
     try:
         return _store_message(m, notify, history)
+    except Exception:
+        _new_chat_ids.clear()  # the transaction rolled back: those chats do not exist
+        raise
     finally:
         _flush_new_clients()
 

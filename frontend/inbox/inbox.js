@@ -173,7 +173,7 @@
     const stayText = stay ? `<span class="ib-stay">Booking.com${stayDates ? ": " + stayDates : ""}${roomShort ? " · " + esc(roomShort) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
     const bkBtn = c.channel === "bk" ? `<button class="ib-link ib-bkinfo" id="bk-info" title="Все данные гостя и брони из экстранета">ℹ️ Данные Booking</button>` : "";
     const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
-    const today = new Date().toISOString().slice(0, 10);
+    const d0 = new Date(); const today = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(d0.getDate()).padStart(2, "0")}`;
     const etaChip = c.booking && c.booking.begin >= today ? `<button class="ib-eta ${c.booking.eta ? "set" : ""}" id="bk-eta" title="Во сколько гость приедет — попадёт в утренний список для горничных">🕒 ${c.booking.eta ? "приедет в " + esc(c.booking.eta) + (c.booking.eta_note ? " · " + esc(c.booking.eta_note) : "") : "время приезда?"}</button>` : "";
     b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");

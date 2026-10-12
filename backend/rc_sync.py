@@ -196,21 +196,51 @@ def sync_to_db() -> int:
     today = date.today()
     try:
         if config.DEMO_MODE:
+            d0, d1 = today - timedelta(days=7), today + timedelta(days=13)
             bookings = generate_demo_bookings(today)
         else:
             refresh_apartments()  # pick up units newly added in RC
-            bookings = fetch_bookings(today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD))
+            d0, d1 = today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD)
+            bookings = fetch_bookings(d0, d1)
             # An expired session sometimes yields "200 OK, 0 items" rather than
             # an error. 18 units never have zero bookings for a month — treat
             # that as a failed sync instead of wiping the calendar.
             if not bookings and database.count_bookings() > 0:
                 raise RuntimeError("RC returned 0 bookings — keeping the previous data (token/cookies?)")
-        database.replace_all_bookings(bookings)
+        # Window mirror instead of DELETE-all: history outside the window stays,
+        # readers never see an empty table mid-sync, and a booking has to be
+        # missing twice in a row before it is treated as cancelled.
+        stats = database.replace_window_bookings(bookings, d0.isoformat(), d1.isoformat())
+        if stats["removed"] or stats["missing"]:
+            logger.info("sync: %d written, %d removed, %d missing (pending)", stats["written"], stats["removed"], stats["missing"])
         database.log_sync(len(bookings), True)
+        if not config.DEMO_MODE:
+            _sync_history(today)
         return len(bookings)
     except Exception:  # noqa: BLE001 - log failure, keep the app alive
         database.log_sync(0, False)
         raise
+
+
+HISTORY_DAYS = 400
+
+
+def _sync_history(today: date) -> None:
+    """Once a day pull the past year so the CRM keeps a guest's previous stays
+    (the regular sync only covers [yesterday, +60d]). Failures are logged and
+    never break the main sync."""
+    from . import crm  # noqa: WPS433 - lazy, crm imports database
+    key = "rc_history_synced"
+    try:
+        if (crm.get_setting(key) or "")[:10] == today.isoformat():
+            return
+        rows = fetch_bookings(today - timedelta(days=HISTORY_DAYS), today - timedelta(days=2))
+        if rows:
+            database.upsert_bookings(rows)
+        crm.set_setting(key, today.isoformat())
+        logger.info("history sync: %d past bookings", len(rows))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history sync failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
