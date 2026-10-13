@@ -180,6 +180,35 @@ class PasswordIn(BaseModel):
     current: str = ""
 
 
+@router.get("/me/telegram")
+def me_telegram(user: dict = Depends(current_user)):  # noqa: B008
+    u = crm.get_user(user["id"]) or {}
+    return {"linked": bool(u.get("tg_id")), "bot": getattr(config, "BOT_USERNAME", "") or "", "configured": bool(config.BOT_TOKEN)}
+
+
+@router.post("/me/telegram/code")
+def me_telegram_code(user: dict = Depends(current_user)):  # noqa: B008
+    return {"code": crm.link_code(user["id"])}
+
+
+@router.post("/me/telegram/unlink")
+def me_telegram_unlink(user: dict = Depends(current_user)):  # noqa: B008
+    crm.unlink_telegram(user["id"])
+    return {"ok": True}
+
+
+@router.get("/apartments/info")
+def apartments_info(user: dict = Depends(current_user)):  # noqa: B008
+    return {"items": crm.apartment_info(), "review_url": crm.get_setting("review_url", ""), "vars": list(crm.APT_VARS)}
+
+
+@router.post("/apartments/info")
+def apartments_info_save(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    if "review_url" in payload:
+        crm.set_setting("review_url", str(payload.get("review_url") or "").strip()[:300])
+    return {"items": crm.save_apartment_info(payload.get("items") or []), "review_url": crm.get_setting("review_url", "")}
+
+
 @router.post("/me/password")
 def my_password(payload: PasswordIn, request: Request, response: Response, user: dict = Depends(current_user)):  # noqa: B008
     if not crm.login(user["email"], payload.current or ""):
@@ -867,13 +896,16 @@ def booking_checklist(bid: int, payload: dict | None = None, user: dict = Depend
 @router.get("/checklist")
 def checklist_settings(user: dict = Depends(current_user)):  # noqa: B008
     return {"steps": crm.steps(), "default": crm.DEFAULT_STEPS, "auto": crm.get_setting("auto_checklist", "1") == "1",
-            "vars": ["имя", "объект", "блок", "заезд время", "выезд время", "время заезда", "время выезда", "дата заезда", "дата выезда", "ночей", "сумма", "долг", "оплачено", "телефон", "адрес", "телефон компании"]}
+            "bilingual": crm.get_setting("auto_bilingual", "1") == "1",
+            "vars": ["имя", "объект", "блок", "заезд время", "выезд время", "время заезда", "время выезда", "дата заезда", "дата выезда", "ночей", "сумма", "долг", "оплачено", "телефон", "адрес", "телефон компании",
+                     "код домофона", "ключи", "ключи при выезде", "wifi", "заметка квартиры", "ссылка на отзыв"]}
 
 
 class ChecklistIn(BaseModel):
     steps: list | None = None
     auto: bool | None = None
     reset: bool | None = None
+    bilingual: bool | None = None
 
 
 @router.post("/checklist")
@@ -885,6 +917,8 @@ def set_checklist(payload: ChecklistIn, user: dict = Depends(admin_user)):  # no
         crm.save_steps(payload.steps)
     if payload.auto is not None:
         crm.set_setting("auto_checklist", "1" if payload.auto else "0")
+    if payload.bilingual is not None:
+        crm.set_setting("auto_bilingual", "1" if payload.bilingual else "0")
     return {"ok": True, "steps": crm.steps()}
 
 
@@ -1147,6 +1181,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
                      "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
                      "checkin_time": crm.default_times()[0], "checkout_time": crm.default_times()[1],
                      "auto_checklist": crm.get_setting("auto_checklist", "1") == "1",
+                     "auto_bilingual": crm.get_setting("auto_bilingual", "1") == "1",
                      "steps": crm.steps()},
     }
 

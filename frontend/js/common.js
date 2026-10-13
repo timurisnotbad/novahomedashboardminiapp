@@ -32,7 +32,8 @@
   // the chats page, the booking card and the step editor preview. `ctx`:
   // { name, apartment, checkin, checkout, arrival_time, departure_time, nights,
   //   amount, debt, paid, phone, times: [checkin_default, checkout_default], lang }
-  C.VARS = ["имя", "объект", "заезд", "выезд", "время заезда", "время выезда", "заезд время", "выезд время", "дата заезда", "дата выезда", "ночей", "сумма", "долг", "оплачено", "телефон", "блок", "адрес", "телефон компании"];
+  C.VARS = ["имя", "объект", "заезд", "выезд", "время заезда", "время выезда", "заезд время", "выезд время", "дата заезда", "дата выезда", "ночей", "сумма", "долг", "оплачено", "телефон", "блок", "адрес", "телефон компании",
+    "код домофона", "ключи при выезде", "ключи", "wifi", "заметка квартиры", "ссылка на отзыв"];
   C.fillVars = (text, ctx) => {
     ctx = ctx || {};
     const en = ctx.lang === "en";
@@ -53,6 +54,7 @@
       "блок": /^[AB]/.test(apt) ? (en ? `Block ${apt[0]}` : `блок ${apt[0]}`) : "",
       "адрес": ctx.address || "", "телефон компании": ctx.company_phone || "",
     };
+    Object.assign(map, ctx.extra || {});  // per-apartment values (door code, keys, Wi-Fi) when the caller has them
     const re = new RegExp("\\{(" + C.VARS.join("|") + ")\\}", "g");
     return String(text || "").replace(re, (m, k) => map[k] || m);
   };

@@ -167,6 +167,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_templates ADD COLUMN command TEXT")
         if "entity" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_fields)").fetchall()]:
             conn.execute("ALTER TABLE crm_fields ADD COLUMN entity TEXT DEFAULT 'client'")
+        if "tg_id" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_users)").fetchall()]:
+            conn.execute("ALTER TABLE crm_users ADD COLUMN tg_id INTEGER")  # personal Telegram for alerts (/link in the bot)
+        conn.execute("CREATE TABLE IF NOT EXISTS crm_apartment_info (apartment TEXT PRIMARY KEY, door_code TEXT, keys_in TEXT, keys_out TEXT, "
+                     "wifi TEXT, note TEXT, updated_at TEXT)")
         dcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]
         if "fields" not in dcols:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
@@ -276,6 +280,110 @@ def get_user(uid: int) -> dict | None:
     with database.get_conn() as conn:
         r = conn.execute("SELECT * FROM crm_users WHERE id = ?", (uid,)).fetchone()
     return _user_out(r) if r else None
+
+
+def link_code(uid: int) -> str:
+    """A one-time code the user sends to the work bot as «/link CODE»: the bot
+    then knows which Telegram account gets this user's alerts."""
+    import secrets as _s
+    code = _s.token_hex(3).upper()
+    set_setting(f"tg_link:{code}", f"{uid}|{(datetime.now() + timedelta(minutes=30)).isoformat(timespec='seconds')}")
+    return code
+
+
+def link_telegram(code: str, tg_id: int, tg_name: str = "") -> dict | None:
+    """Called by the bot: «/link CODE» → the CRM user behind the code gets tg_id."""
+    code = (code or "").strip().upper()
+    raw = get_setting(f"tg_link:{code}")
+    if not raw:
+        return None
+    uid, _, exp = raw.partition("|")
+    if not uid.isdigit() or exp < datetime.now().isoformat(timespec="seconds"):
+        return None
+    with database.get_conn() as conn:
+        conn.execute("UPDATE crm_users SET tg_id = NULL WHERE tg_id = ?", (tg_id,))  # one Telegram = one CRM user
+        conn.execute("UPDATE crm_users SET tg_id = ? WHERE id = ?", (tg_id, int(uid)))
+        conn.execute("DELETE FROM crm_settings WHERE key = ?", (f"tg_link:{code}",))
+    settings_dirty()
+    return get_user(int(uid))
+
+
+def unlink_telegram(uid: int) -> None:
+    with database.get_conn() as conn:
+        conn.execute("UPDATE crm_users SET tg_id = NULL WHERE id = ?", (uid,))
+
+
+def users_tg_ids(uids=None, admins_only: bool = False) -> list[int]:
+    """Telegram ids of active users (all, the given ones, or admins only)."""
+    out = []
+    for u in list_users():
+        if not u["active"] or not u.get("tg_id"):
+            continue
+        if uids is not None and u["id"] not in uids:
+            continue
+        if admins_only and u["role"] != "admin":
+            continue
+        out.append(int(u["tg_id"]))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Apartments: door codes, keys, Wi-Fi — the «…» of the check-in instruction
+# ---------------------------------------------------------------------------
+APT_FIELDS = ("door_code", "keys_in", "keys_out", "wifi", "note")
+APT_VARS = {"код домофона": "door_code", "ключи": "keys_in", "ключи при выезде": "keys_out", "wifi": "wifi", "заметка квартиры": "note"}
+
+
+def apartment_info() -> list[dict]:
+    """One row per apartment from the calendar plus the fallbacks «A», «B»
+    (per block) and «*» (every apartment); saved values on top."""
+    with database.get_conn() as conn:
+        saved = {r["apartment"]: dict(r) for r in conn.execute("SELECT * FROM crm_apartment_info").fetchall()}
+    names = ["*", "A", "B"] + sorted(set(config.APARTMENTS.values()) | {k for k in saved if k not in ("*", "A", "B")})
+    out = []
+    for n in names:
+        row = {"apartment": n, **{f: "" for f in APT_FIELDS}}
+        row.update({k: v or "" for k, v in (saved.get(n) or {}).items() if k in APT_FIELDS})
+        row["kind"] = "all" if n == "*" else "block" if n in ("A", "B") else "apt"
+        out.append(row)
+    return out
+
+
+def save_apartment_info(rows: list) -> list[dict]:
+    with database.get_conn() as conn:
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            name = str(r.get("apartment") or "").strip()[:40]
+            if not name:
+                continue
+            vals = [str(r.get(f) or "").strip()[:500] for f in APT_FIELDS]
+            if not any(vals):
+                conn.execute("DELETE FROM crm_apartment_info WHERE apartment = ?", (name,))
+            else:
+                conn.execute("INSERT OR REPLACE INTO crm_apartment_info (apartment, door_code, keys_in, keys_out, wifi, note, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             (name, *vals, _now()))
+    _apt_cache["at"] = 0.0
+    return apartment_info()
+
+
+_apt_cache: dict = {"at": 0.0, "map": {}}
+
+
+def apartment_vars(apartment: str | None) -> dict:
+    """{var: value} for a booking's apartment: the apartment's own value, else
+    its block's («A»/«B»), else «*». Cached 30 s (filled on every message)."""
+    if time.time() - _apt_cache["at"] > 30:
+        with database.get_conn() as conn:
+            _apt_cache["map"] = {r["apartment"]: dict(r) for r in conn.execute("SELECT * FROM crm_apartment_info").fetchall()}
+        _apt_cache["at"] = time.time()
+    m = _apt_cache["map"]
+    apt = (apartment or "").strip().upper()
+    chain = [m.get((apartment or "").strip()), m.get(apt[:1]) if apt[:1] in ("A", "B") else None, m.get("*")]
+    out = {}
+    for var, field in APT_VARS.items():
+        out[var] = next((r[field] for r in chain if r and (r.get(field) or "").strip()), "")
+    return out
 
 
 def list_users() -> list[dict]:
@@ -1195,20 +1303,20 @@ DEFAULT_STEPS = [
      "message": "{имя}, добрый день! Завтра ждём вас в {объект}. Подскажите, во сколько примерно приедете и откуда (самолёт, поезд, авто)? Заезд с {время заезда}; если нужно раньше — напишите, постараемся подстроиться. Нужен ли трансфер из аэропорта / с вокзала?",
      "message_en": "Hello {имя}! We are expecting you tomorrow at {объект}. What time will you arrive, and how (plane, train, car)? Check-in starts at {время заезда}; if you need an earlier check-in, let us know and we will try to arrange it. Do you need an airport / railway station transfer?"},
     {"title": "Отправить инструкцию по заселению", "anchor": "checkin", "offset": 0, "time": "10:00", "enabled": True,
-     "message": "{имя}, инструкция по заселению в {объект}:\n📍 Nest One, Ташкент — {блок}.\n🅰️ Блок A: вход со стороны улицы Ислама Каримова, рядом с табличкой NOVA HOME.\n🅱️ Блок B: западное здание комплекса, вход со стороны улицы Янги Тошкент.\n🔑 Ключи и карта доступа: [где получить / код сейфа].\n📶 Wi-Fi: [название сети] / [пароль].\n⏰ Заезд с {время заезда}. Если что-то не получается — звоните {телефон компании}, поможем.",
-     "message_en": "{имя}, your check-in instructions for {объект}:\n📍 Nest One, Tashkent — {блок}.\n🅰️ Block A: entrance from Islam Karimov Street, next to the NOVA HOME sign.\n🅱️ Block B: western building of the complex, entrance from Yangi Toshkent Street.\n🔑 Keys and access card: [where to collect / safe code].\n📶 Wi-Fi: [network] / [password].\n⏰ Check-in from {время заезда}. If anything goes wrong, call {телефон компании} — we will help."},
+     "message": "{имя}, инструкция по заселению в {объект}:\n📍 Nest One, Ташкент — {блок}.\n🅰️ Блок A: вход со стороны улицы Ислама Каримова, рядом с табличкой NOVA HOME.\n🅱️ Блок B: западное здание комплекса, вход со стороны улицы Янги Тошкент.\n🚪 Код домофона: {код домофона}.\n🔑 Ключи и карта доступа: {ключи}.\n📶 Wi-Fi: {wifi}.\n⏰ Заезд с {время заезда}. Если что-то не получается — звоните {телефон компании}, поможем.",
+     "message_en": "{имя}, your check-in instructions for {объект}:\n📍 Nest One, Tashkent — {блок}.\n🅰️ Block A: entrance from Islam Karimov Street, next to the NOVA HOME sign.\n🅱️ Block B: western building of the complex, entrance from Yangi Toshkent Street.\n🚪 Door code: {код домофона}.\n🔑 Keys and access card: {ключи}.\n📶 Wi-Fi: {wifi}.\n⏰ Check-in from {время заезда}. If anything goes wrong, call {телефон компании} — we will help."},
     {"title": "Принять паспорт и заполнить данные гостя", "anchor": "checkin", "offset": 0, "time": "", "enabled": True, "message": "", "message_en": ""},
     {"title": "Принять оплату (остаток {долг} $)", "anchor": "checkin", "offset": 0, "time": "", "enabled": True, "message": "", "message_en": ""},
     {"title": "Спросить, как прошло заселение", "anchor": "checkin", "offset": 0, "time": "19:00", "enabled": True,
      "message": "{имя}, как прошло заселение? Всё ли в порядке в квартире? Напомню, что в Nest One для гостей: смотровая площадка на 48 этаже блока A (10:00–20:00), спортзал на 28 этаже блока A (6:00–20:00), парк на 2 этаже блока A — круглосуточно, вход по карте от лифта. Если что-то нужно — напишите, решим.",
      "message_en": "{имя}, how was your check-in? Is everything fine in the apartment? A reminder of the Nest One facilities: observation deck on the 48th floor of Block A (10 AM – 8 PM), gym on the 28th floor of Block A (6 AM – 8 PM), private park on the 2nd floor of Block A — open 24/7; use your elevator access card. If you need anything, just message us."},
     {"title": "Напомнить о выезде", "anchor": "checkout", "offset": -1, "time": "20:00", "enabled": True,
-     "message": "{имя}, напоминаем: завтра выезд до {время выезда}. Ключи и карту доступа оставьте, пожалуйста, [где оставить]. Если нужно задержаться — напишите заранее, посмотрим, что можно сделать. Нужен ли трансфер в аэропорт?",
-     "message_en": "{имя}, a reminder: check-out tomorrow by {время выезда}. Please leave the keys and the access card [where to leave them]. If you need a late check-out, let us know in advance and we will see what we can do. Do you need a transfer to the airport?"},
+     "message": "{имя}, напоминаем: завтра выезд до {время выезда}. Ключи и карту доступа оставьте, пожалуйста, {ключи при выезде}. Если нужно задержаться — напишите заранее, посмотрим, что можно сделать. Нужен ли трансфер в аэропорт?",
+     "message_en": "{имя}, a reminder: check-out tomorrow by {время выезда}. Please leave the keys and the access card: {ключи при выезде}. If you need a late check-out, let us know in advance and we will see what we can do. Do you need a transfer to the airport?"},
     {"title": "Проверить квартиру после выезда и вернуть депозит", "anchor": "checkout", "offset": 0, "time": "", "enabled": True, "message": "", "message_en": ""},
     {"title": "Поблагодарить и попросить отзыв", "anchor": "checkout", "offset": 0, "time": "13:00", "enabled": True,
-     "message": "{имя}, спасибо, что выбрали Nova Home! Хорошей дороги. Будем очень благодарны за отзыв на площадке, где вы бронировали, и в Google Картах: [ссылка]. Если что-то было не так — напишите нам, нам важно это знать. До новых встреч!",
-     "message_en": "{имя}, thank you for staying with Nova Home! Have a safe trip. We would be very grateful for a review on the platform you booked with and on Google Maps: [link]. If anything was not right, please tell us — it matters to us. See you again!"},
+     "message": "{имя}, спасибо, что выбрали Nova Home! Хорошей дороги. Будем очень благодарны за отзыв на площадке, где вы бронировали, и в Google Картах: {ссылка на отзыв}. Если что-то было не так — напишите нам, нам важно это знать. До новых встреч!",
+     "message_en": "{имя}, thank you for staying with Nova Home! Have a safe trip. We would be very grateful for a review on the platform you booked with and on Google Maps: {ссылка на отзыв}. If anything was not right, please tell us — it matters to us. See you again!"},
 ]
 
 

@@ -737,13 +737,16 @@ def fill(text: str, booking: dict | None, chat: dict | None, lang: str = "ru") -
             "оплачено": f"{b.get('paid') or 0:g}", "телефон": ("+" + b["phone"]) if b.get("phone") else ""}
     apt = (b.get("apartment") or "").strip().upper()
     vals["блок"] = (f"Block {apt[0]}" if en else f"блок {apt[0]}") if apt[:1] in ("A", "B") else ""
+    vals.update(crm.apartment_vars(b.get("apartment")))  # door code, keys, Wi-Fi — Интеграции → Сценарий заезда → Квартиры
+    vals["ссылка на отзыв"] = crm.get_setting("review_url", "")
     try:
         from . import docs
         co = docs.company()
         vals["адрес"], vals["телефон компании"] = co.get("address") or "", co.get("phone") or ""
     except Exception:  # noqa: BLE001
         vals["адрес"], vals["телефон компании"] = "", ""
-    return re.sub(r"\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон|блок|адрес|телефон компании)\}", lambda m: vals.get(m.group(1), m.group(0)), text)
+    return re.sub(r"\{(имя|объект|заезд|выезд|время заезда|время выезда|заезд время|выезд время|дата заезда|дата выезда|ночей|сумма|долг|оплачено|телефон|блок|адрес|телефон компании|код домофона|ключи при выезде|ключи|wifi|заметка квартиры|ссылка на отзыв)\}",
+                  lambda m: vals.get(m.group(1), m.group(0)) or m.group(0), text)
 
 
 def _log(conn, rule, booking_id, chat, text, status, error, dedupe) -> bool:
@@ -954,11 +957,13 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
     chat, why = (None, "у задачи нет брони")
     if b:
         chat, why = _chat_for_booking(b, {"channel": "auto", "only_if_chat": True})
-    # the guest's language: EN text for everyone who is not RU / UZ (card «язык», else chat)
+    # the guest's language: EN text for everyone who is not RU / UZ (card «язык», else chat);
+    # with «auto_bilingual» both texts go in one message (RU, then EN) to everyone
+    bilingual = crm.get_setting("auto_bilingual", "1") == "1" and bool(t["auto_text_en"])
     text_src, lang = t["auto_text"], "ru"
     if t["auto_text_en"] and chat and guest_lang(chat) not in ("RU", "UZ", ""):
         text_src, lang = t["auto_text_en"], "en"
-    text = fill(text_src, b, chat, lang)
+    text = fill(t["auto_text"], b, chat, "ru") + "\n\n" + fill(t["auto_text_en"], b, chat, "en") if bilingual else fill(text_src, b, chat, lang)
     status, error, reached = "sent", None, []
     if not chat:
         status, error = "skipped", why or "нет чата с гостем"
@@ -966,6 +971,8 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
         status, error = "skipped", "в тексте незаполненные поля: " + unresolved(text)[:120]
     else:
         def text_for(c):  # each chat in the guest's own language (card language is shared, but be safe)
+            if bilingual:
+                return fill(t["auto_text"], b, c, "ru") + "\n\n" + fill(t["auto_text_en"], b, c, "en")
             src, lg = (t["auto_text_en"], "en") if t["auto_text_en"] and guest_lang(c) not in ("RU", "UZ", "") else (t["auto_text"], "ru")
             return fill(src, b, c, lg)
         status, error, reached = _send_everywhere(b, chat, text_for, who or AUTHOR)

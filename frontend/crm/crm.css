@@ -242,6 +242,9 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .attn__row > a { min-width:0; color:var(--label); }
 .attn__row > a:hover { color:var(--blue-text); }
 
+.push-bar { position:fixed; left:0; right:0; bottom:calc(58px + env(safe-area-inset-bottom, 0px)); z-index:40; background:var(--card); border-top:1px solid var(--sep); box-shadow:0 -4px 16px rgba(0,0,0,.08); padding:10px 14px; font-size:13px; display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+.push-bar__btns { display:flex; gap:6px; flex-wrap:wrap; }
+.apt-table input.field.sm { min-width:110px; padding:6px 8px; font-size:13px; }
 @media (max-width: 900px) {
   .grid.c4, .grid.c3, .grid.c5 { grid-template-columns:1fr 1fr; }
   .grid.c5 > .stat:nth-child(5) { grid-column:1 / -1; }   /* the odd fifth tile spans the row */

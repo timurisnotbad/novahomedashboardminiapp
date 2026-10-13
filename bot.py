@@ -524,6 +524,26 @@ async def _notify_owners(bot, text: str) -> None:
             logger.warning("owner notify failed for %s: %s", oid, exc)
 
 
+async def link_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/link CODE — tie this Telegram account to a CRM user (code from CRM → «Telegram-уведомления»)."""
+    user = update.effective_user
+    parts = (update.effective_message.text or "").split()
+    if not user or len(parts) < 2:
+        await update.effective_message.reply_text("Использование: /link КОД — код показывает CRM (меню → Telegram-уведомления).")
+        return
+    try:
+        from backend import crm
+        u = crm.link_telegram(parts[1], user.id, user.full_name or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("link failed: %s", exc)
+        u = None
+    if not u:
+        await update.effective_message.reply_text("Код не подошёл или устарел (действует 30 минут). Получите новый в CRM и отправьте /link КОД ещё раз.")
+        return
+    await update.effective_message.reply_text(f"✅ Готово, {u['name']}: сообщения гостей, которые ждут ответа, будут приходить сюда. "
+                                              "Ответьте на такое уведомление — ответ уйдёт гостю.")
+
+
 async def staff_ok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Owner: /staff_ok <id> — confirm a person who wrote to the bot."""
     user = update.effective_user
@@ -1837,6 +1857,7 @@ def main() -> None:
     app.add_handler(CommandHandler("staff", staff_cmd))
     app.add_handler(CommandHandler("staff_del", staff_del_cmd))
     app.add_handler(CommandHandler("staff_ok", staff_ok_cmd))
+    app.add_handler(CommandHandler("link", link_cmd))
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("supplies", supplies_cmd))

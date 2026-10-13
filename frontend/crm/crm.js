@@ -119,6 +119,24 @@
     } finally { $("auth-btn").disabled = false; }
   });
   $("logout").addEventListener("click", async (e) => { e.preventDefault(); try { await post("/logout"); } catch (err) { /* the session is dropped locally anyway */ } S.me = null; showAuth(false); });
+  // personal Telegram for guest-message alerts: a code → «/link КОД» to the work bot
+  async function telegramLink() {
+    let st; try { st = await get("/me/telegram"); } catch (err) { toast(err.message); return; }
+    if (!st.configured) { modal(`<h2>Telegram-уведомления</h2><p class="muted">Рабочий Telegram-бот не настроен (BOT_TOKEN в .env). Без него уведомления в Telegram невозможны; включите push-уведомления на телефоне — ссылка «Уведомления на этом устройстве».</p><div class="row-actions"><button class="btn primary" data-close>Понятно</button></div>`); return; }
+    const render = (code) => modal(`<h2>Telegram-уведомления</h2>
+      ${st.linked ? `<p>✅ Telegram подключён: сообщения гостей, которые ждут ответа, приходят вам в личку от рабочего бота${st.bot ? ` <b>@${esc(st.bot)}</b>` : ""}. Ответ на такое уведомление уходит гостю.</p>
+        <div class="row-actions"><button class="btn" id="tg-unlink">Отключить</button><button class="btn primary" data-close>Закрыть</button></div>` :
+      `<p>Чтобы получать сообщения гостей в Telegram (даже когда CRM закрыта):</p>
+        <ol style="margin:6px 0 10px 18px"><li>Откройте рабочего бота${st.bot ? ` <b>@${esc(st.bot)}</b>` : ""} в Telegram и нажмите /start.</li><li>Отправьте ему команду:</li></ol>
+        <div class="mono" style="font-size:20px;text-align:center;padding:10px;background:var(--fill);border-radius:10px;user-select:all">/link ${esc(code)}</div>
+        <p class="muted small" style="margin-top:8px">Код действует 30 минут. После этого уведомления о чатах без ответа будут приходить вам лично; ответ на уведомление в Telegram уходит гостю.</p>
+        <div class="row-actions"><button class="btn" id="tg-copy">Скопировать команду</button><button class="btn primary" data-close>Готово</button></div>`}`);
+    if (st.linked) { render(""); const un = $("tg-unlink"); if (un) un.addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/me/telegram/unlink"); closeModal(); toast("Telegram отключён"); })); return; }
+    let code = ""; try { code = (await post("/me/telegram/code")).code; } catch (err) { toast(err.message); return; }
+    render(code);
+    $("tg-copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText("/link " + code); toast("Скопировано — вставьте боту"); } catch (e) { toast("Выделите команду и скопируйте"); } });
+  }
+  $("me-tg").addEventListener("click", (e) => { e.preventDefault(); telegramLink(); });
   $("me-pass").addEventListener("click", (e) => {
     e.preventDefault();
     modal(`<h2>Сменить пароль</h2><label class="lbl">Текущий пароль</label><input class="field" id="np-cur" type="password" autocomplete="current-password" />
@@ -822,10 +840,17 @@
       <div class="card"><h3>Автосообщения во все каналы гостя</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-allch" ${d.settings.auto_all_channels ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Шаблоны этапов и автосообщения уходят во все чаты гостя сразу: WhatsApp, Telegram, Instagram, Booking — все, что привязаны к брони, к его сделке или найдены по его номеру. Выключено — только в один, основной чат</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
       <div class="card" id="steps-card"><h3>Этапы заезда гостя</h3>
-        <div class="muted small">Сценарий по каждой брони: что сделать и что написать гостю на каждом этапе. Шаги с текстом CRM отправляет гостю сама в назначенное время (в чат WhatsApp / Telegram / Booking, привязанный к брони или найденный по номеру) и закрывает задачу; шаги без текста — задачи менеджеру. Гостю с языком не RU/UZ в карточке уходит английский вариант. Переменные: <span class="mono">{имя} {объект} {блок} {заезд время} {выезд время} {время заезда} {время выезда} {ночей} {сумма} {долг} {телефон компании} {адрес}</span>. Текст в [квадратных скобках] — заполните один раз: ключи, Wi-Fi, ссылка на отзыв.</div>
+        <div class="muted small">Сценарий по каждой брони: что сделать и что написать гостю на каждом этапе. Шаги с текстом CRM отправляет гостю сама в назначенное время (в чат WhatsApp / Telegram / Booking, привязанный к брони или найденный по номеру) и закрывает задачу; шаги без текста — задачи менеджеру. Переменные: <span class="mono">{имя} {объект} {блок} {заезд время} {выезд время} {время заезда} {выезд время} {ночей} {сумма} {долг} {телефон компании} {адрес}</span>, а также из таблицы «Квартиры» ниже: <span class="mono">{код домофона} {ключи} {ключи при выезде} {wifi} {заметка квартиры} {ссылка на отзыв}</span>. Сообщение с незаполненной переменной или текстом в [квадратных скобках] CRM не отправит — задача останется менеджеру с пометкой.</div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="i-bilingual" ${d.settings.auto_bilingual ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Отправлять на двух языках: русский текст, затем английский — одним сообщением каждому гостю. Выключено — язык по карточке гостя (RU/UZ → русский, остальные → английский)</label>
         <div id="steps-list" style="margin-top:10px"></div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap"><button class="btn" id="steps-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить этапы</button><button class="btn sm" id="steps-add" ${S.me.role !== "admin" ? "disabled" : ""}>＋ Добавить этап</button><button class="btn link" id="steps-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартные</button>
           <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать этапы автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
+      </div>
+      <div class="card" id="apt-card"><h3>Квартиры: код домофона, ключи, Wi-Fi</h3>
+        <div class="muted small">Подставляется в сообщения вместо <span class="mono">{код домофона} {ключи} {ключи при выезде} {wifi} {заметка квартиры}</span>. Строка «Все квартиры» — общее значение, «Блок A» / «Блок B» — для блока, строка квартиры — только для неё (что заполнено точнее, то и берётся).</div>
+        <div style="margin-top:8px"><label class="lbl">Ссылка на отзыв <span class="muted">— {ссылка на отзыв}</span></label><input class="field" id="apt-review" placeholder="https://g.page/r/…" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
+        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Код домофона</th><th>Ключи (где получить)</th><th>Ключи при выезде</th><th>Wi-Fi</th><th>Заметка</th></tr></thead><tbody><tr><td class="muted" colspan="6">Загрузка…</td></tr></tbody></table></div>
+        <div style="margin-top:8px"><button class="btn" id="apt-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить квартиры</button></div></div>
       </div>
       <div class="itab" data-tab="notif" hidden>
       <div class="card"><h3>Уведомления о сообщениях</h3>
@@ -861,6 +886,21 @@
     $("i-allch").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_all_channels: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    $("i-bilingual").addEventListener("change", async (e) => { try { await post("/checklist", { bilingual: e.target.checked }); toast(e.target.checked ? "Сообщения уходят на двух языках" : "Язык — по карточке гостя"); } catch (err) { toast(err.message); } });
+    // apartments table: door codes, keys, Wi-Fi
+    (async () => {
+      let ai; try { ai = await get("/apartments/info"); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="6" class="bad">${esc(err.message)}</td></tr>`; return; }
+      if (!$("apt-table")) return;
+      $("apt-review").value = ai.review_url || "";
+      const ro = S.me.role !== "admin";
+      const F = ["door_code", "keys_in", "keys_out", "wifi", "note"];
+      const label = (r) => r.kind === "all" ? "<b>Все квартиры</b>" : r.kind === "block" ? `<b>Блок ${esc(r.apartment)}</b>` : esc(r.apartment);
+      $("apt-table").querySelector("tbody").innerHTML = ai.items.map((r) => `<tr data-apt="${esc(r.apartment)}"><td>${label(r)}</td>${F.map((f) => `<td><input class="field sm" data-f="${f}" value="${esc(r[f] || "")}" placeholder="${r.kind === "apt" ? "как у блока" : r.kind === "block" ? "как у всех" : "—"}" ${ro ? "disabled" : ""} /></td>`).join("")}</tr>`).join("");
+      $("apt-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+        const items = Array.from($("apt-table").querySelectorAll("tr[data-apt]")).map((tr) => { const o = { apartment: tr.dataset.apt }; F.forEach((f) => { o[f] = tr.querySelector(`[data-f="${f}"]`).value.trim(); }); return o; });
+        await post("/apartments/info", { items, review_url: $("apt-review").value.trim() }); toast("Квартиры сохранены — подставятся в следующие сообщения");
+      }));
+    })();
     stepsEditor(d.settings.steps || []);
   };
 
@@ -1407,6 +1447,22 @@
     try { const reg = await pushRegistration(); const sub = reg ? await reg.pushManager.getSubscription() : null; if (sub && confirm("Выключить уведомления на этом устройстве?")) return disablePush(); await enablePush(); } catch (err) { toast(err.message); }
   });
   window.NHPush = { enable: enablePush, disable: disablePush, state: pushState };
+  // phones: a bar under the header until notifications are on (or dismissed for a week)
+  async function pushBar() {
+    const bar = $("push-bar"); if (!bar || window.innerWidth > 760) return;
+    let off = false; try { off = Number(localStorage.getItem("nh_pushbar_off") || 0) > Date.now(); } catch (e) { /* ignore */ }
+    if (off) return;
+    let on = false;
+    try { const reg = ("PushManager" in window && "serviceWorker" in navigator) ? await pushRegistration() : null; on = !!(reg && await reg.pushManager.getSubscription()); } catch (e) { /* ignore */ }
+    if (on) { bar.classList.add("hidden"); return; }
+    const ios = isIOS && !standalone;
+    bar.innerHTML = `<span>${ios ? "Чтобы получать уведомления о сообщениях гостей на этот телефон: Поделиться → «На экран “Домой”», затем откройте CRM с экрана «Домой»." : "Уведомления о сообщениях гостей на этот телефон выключены."}</span>
+      <span class="push-bar__btns">${ios ? "" : `<button class="btn sm primary" id="push-bar-on">Включить</button>`}<button class="btn sm" id="push-bar-tg">Telegram</button><button class="btn sm" id="push-bar-x" title="Скрыть на неделю">✕</button></span>`;
+    bar.classList.remove("hidden");
+    const on1 = $("push-bar-on"); if (on1) on1.addEventListener("click", (e) => busy(e.currentTarget, async () => { await enablePush(); pushBar(); }));
+    $("push-bar-tg").addEventListener("click", () => telegramLink());
+    $("push-bar-x").addEventListener("click", () => { try { localStorage.setItem("nh_pushbar_off", String(Date.now() + 7 * 86400000)); } catch (e) { /* ignore */ } bar.classList.add("hidden"); });
+  }
   try { $("notif-sound").checked = localStorage.getItem("nh_sound") !== "0"; } catch (e) { /* ignore */ }
   $("notif-sound").addEventListener("change", (e) => { try { localStorage.setItem("nh_sound", e.target.checked ? "1" : "0"); } catch (err) { /* ignore */ } });
   // ---- boot --------------------------------------------------------------------------
@@ -1476,6 +1532,7 @@
     S.users = await get("/users").catch(() => []);
     try { const ss = await get("/session"); if (ss && ss.times) S.times = ss.times; } catch (e) { /* defaults stay */ }
     pushState();
+    pushBar();
     navigate();
     badges();
   }

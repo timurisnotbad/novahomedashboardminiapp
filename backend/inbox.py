@@ -1134,8 +1134,10 @@ def _tg_send_all(targets, text: str) -> list[tuple[int, int]]:
     return sent
 
 
-def _alert(chat_id: int, m: dict) -> None:
-    targets = config.inbox_notify_targets()
+def _alert(chat_id: int, m: dict, extra_targets=None) -> None:
+    """Telegram alert about a guest message: to the work chats (INBOX_NOTIFY_CHAT_IDS)
+    and to the personal Telegram of the users who linked it (/link in the bot)."""
+    targets = list(dict.fromkeys(list(config.inbox_notify_targets()) + list(extra_targets or [])))
     if not targets or not config.BOT_TOKEN:
         return
 
@@ -1151,7 +1153,8 @@ def _alert(chat_id: int, m: dict) -> None:
             if b:
                 who += f" · {b['apartment']}"
             body = _preview(m.get("kind") or "text", m.get("text") or "")
-            text = f"💬 {c.get('channel_name') or 'WhatsApp'} · {who}\n\n{body}\n\n↩️ Ответьте на это сообщение — ответ уйдёт гостю."
+            link = f"\n🔗 {config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat_id}" if config.WEBAPP_URL else ""
+            text = f"💬 {c.get('channel_name') or 'WhatsApp'} · {who}\n\n{body}\n\n↩️ Ответьте на это сообщение — ответ уйдёт гостю.{link}"
             for tg_chat, tg_msg in _tg_send_all(targets, text):
                 with database.get_conn() as conn:
                     conn.execute("INSERT OR REPLACE INTO inbox_tg_map VALUES (?, ?, ?, ?)",
@@ -1219,7 +1222,14 @@ def _notify_chat(chat_id: int, stage: int, st: dict) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("push notify failed")
     if st["telegram"]:
-        _alert(chat_id, {"kind": last["kind"] if last else "text", "text": (("⚠️ без ответа · " if stage == 2 else "") + (last["text"] if last else ""))})
+        # personal Telegram: the responsible manager (everyone when unassigned); the escalation goes to admins
+        users = crm.list_users()
+        if stage == 2:
+            personal = crm.users_tg_ids(admins_only=True)
+        else:
+            mine = [u["id"] for u in users if u["active"] and u["name"] == c.get("assignee")]
+            personal = crm.users_tg_ids(mine) if mine else crm.users_tg_ids()
+        _alert(chat_id, {"kind": last["kind"] if last else "text", "text": (("⚠️ без ответа · " if stage == 2 else "") + (last["text"] if last else ""))}, personal)
 
 
 def chat_for_alert(tg_chat_id: int, tg_msg_id: int) -> int | None:
