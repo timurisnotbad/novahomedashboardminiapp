@@ -544,6 +544,14 @@ class SelectorsIn(BaseModel):
     text: str
 
 
+@router.post("/channels/booking_ext/catchup")
+def ext_catchup(payload: dict | None = None, user: dict = Depends(admin_user)):  # noqa: B008
+    """«Догрузить пропущенное»: re-read the extranet list for the last N days (default 7)."""
+    days = max(1, min(int((payload or {}).get("days") or 7), 60))
+    since = (crm.datetime.now() - crm.timedelta(days=days)).isoformat(timespec="seconds")
+    return booking_ext.start_catchup(since, f"вручную, {days} дн.")
+
+
 @router.post("/channels/booking_ext/import")
 def ext_import(payload: dict | None = None, user: dict = Depends(admin_user)):  # noqa: B008
     """Start / stop the history import (the extension walks every thread while the PC is idle)."""

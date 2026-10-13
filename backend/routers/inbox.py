@@ -349,7 +349,8 @@ def _ext_auth(x_ext_token: str = Header(default="")):  # noqa: B008
 @public.get("/ext/config")
 def ext_config(_=Depends(_ext_auth)):  # noqa: B008
     from .. import booking_ext, config as cfg
-    return {"selectors": booking_ext.selectors(), "version": cfg.APP_VERSION, "poll": 15, "import_history": booking_ext.import_on()}
+    return {"selectors": booking_ext.selectors(), "version": cfg.APP_VERSION, "poll": 15, "import_history": booking_ext.import_on(),
+            "catchup": booking_ext.catchup_active()}
 
 
 @public.post("/ext/ping")
@@ -377,11 +378,13 @@ def ext_messages(payload: dict, _=Depends(_ext_auth)):  # noqa: B008
     booking_ext.set_debug(payload.get("debug") or "")
     just_read = {str(c.get("guest") or "").strip().lower() for c in convs if isinstance(c, dict)}
     want = booking_ext.wanted(payload.get("list") or [], skip=just_read) if not payload.get("busy") and isinstance(payload.get("list"), list) else []
-    if payload.get("deep"):
+    if payload.get("deep") and booking_ext.import_on():
         booking_ext.import_progress(bool(want))
+    if isinstance(payload.get("list"), list) and not payload.get("busy"):
+        booking_ext.catchup_progress(bool(want), bool(payload.get("deep")))
     if errors and not out and not want:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    return {"ok": True, "results": out, "open": want, "errors": errors}
+    return {"ok": True, "results": out, "open": want, "errors": errors, "catchup": booking_ext.catchup_active()}
 
 
 @public.get("/ext/outbox")

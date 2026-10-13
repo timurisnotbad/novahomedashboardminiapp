@@ -26,10 +26,25 @@ async function ask(tabId, msg) {
 async function post(r, opened) {
   return api("/messages", { method: "POST", body: JSON.stringify({ conversations: r.conversations || [], list: r.list || [], opened: opened || null, debug: r.debug || "", busy: !!r.busy, deep: !!r.deep, imported: !!r.imported }) });
 }
-let importMode = false, importAt = 0;
+let importMode = false, importAt = 0, catchup = false;
 async function importOn() {
-  if (Date.now() - importAt > 60000) { try { const c = await api("/config"); importMode = !!c.import_history; } catch (e) { /* keep */ } importAt = Date.now(); }
+  if (Date.now() - importAt > 60000) { try { const c = await api("/config"); importMode = !!c.import_history; catchup = !!c.catchup; } catch (e) { /* keep */ } importAt = Date.now(); }
   return importMode;
+}
+// after a gap (session expired, login page, tab closed, CRM down) the CRM asks
+// for a catch-up: the whole list is scrolled and every thread it has not seen
+// is opened — not just the few rows visible at the top of the page
+async function catchupStep(tabId) {
+  const r = await ask(tabId, { type: "scanDeep" });
+  if (!r || r.busy || (r.session && r.session !== "ok")) return;
+  const ans = await post(r);
+  catchup = !!ans.catchup;
+  for (const item of (ans.open || []).slice(0, 6)) {
+    const o = await ask(tabId, { type: "open", item });
+    if (!o || o.busy) break;
+    const a2 = await post(o, Object.assign({}, item, { ok: !!o.ok }));
+    catchup = !!a2.catchup;
+  }
 }
 // «Импорт истории»: the whole list, every thread scrolled to its beginning — only while idle
 async function importStep(tabId) {
@@ -56,12 +71,15 @@ async function tick() {
         state = Object.assign(state, { page: r.page, unread: r.unread, error: r.error || "", session: r.session || "ok" });
         if (r.session && r.session !== "ok") continue;  // expired → the page is refreshing itself; login → a person is needed
         if (await importOn()) { await importStep(t.id); continue; }
+        if (catchup) { await catchupStep(t.id); continue; }
         const ans = await post(r);
+        catchup = !!ans.catchup;
         // read the conversations the CRM asks for — only while the page is idle
         for (const item of (ans.open || []).slice(0, 3)) {
           const o = await ask(t.id, { type: "open", item });
           if (!o || o.busy) { state.error = o && o.busy ? "страницей пользуются — обход отложен" : state.error; break; }
-          await post(o, Object.assign({}, item, { ok: !!o.ok }));
+          const a2 = await post(o, Object.assign({}, item, { ok: !!o.ok }));
+          catchup = !!a2.catchup;
         }
       } catch (e) { state.error = String(e.message || e); }
     }
@@ -87,6 +105,7 @@ async function pushed(tabId, r) {
   if (r.session && r.session !== "ok") return;
   try {
     const ans = await post(r);
+    if (ans.catchup) { catchup = true; await catchupStep(tabId); return; }
     for (const item of (ans.open || []).slice(0, 3)) {
       const o = await ask(tabId, { type: "open", item });
       if (!o || o.busy) break;

@@ -292,6 +292,29 @@
     msgs.sort((a, b) => a.at.localeCompare(b.at));
     return Object.assign({}, cc && cc.conv ? cc.conv : c.conv, { messages: msgs });
   }
+  // the recent part of a thread: a few screens up from the bottom (a gap of
+  // hours may hold more messages than the visible tail)
+  async function recentThread(S, screens) {
+    const c = current(S); if (!c || !c.conv) return c && c.conv;
+    const col = c.all.filter((n) => n.r.left >= c.L.mid.l && n.r.right <= c.L.mid.r);
+    const anchor = col.find((n) => SEP.test(n.t) || /\d{1,2}:\d{2}$/.test(n.t));
+    const box = anchor ? scrollerOf(anchor.el) : null;
+    if (!box) return c.conv;
+    const seen = new Map();
+    const take = () => { const cc = current(S); if (cc && cc.conv) for (const m of cc.conv.messages) seen.set(m.dir + m.at + m.text.slice(-60), m); return cc; };
+    let cc = take();
+    for (let i = 0; i < screens; i++) {
+      if (box.scrollTop <= 0) break;
+      box.scrollTop = Math.max(0, box.scrollTop - Math.max(200, box.clientHeight - 120)); await sleep(700);
+      cc = take();
+    }
+    box.scrollTop = box.scrollHeight; await sleep(300); take();
+    let msgs = Array.from(seen.values());
+    msgs = msgs.filter((m) => !msgs.some((o) => o !== m && o.dir === m.dir && o.text.length > m.text.length && o.text.includes(m.text.trim())));
+    msgs = msgs.filter((m) => !(m.dir === "out" && /T00:00:00$/.test(m.at) && msgs.some((o) => o !== m && o.dir === "out" && o.at.slice(0, 10) === m.at.slice(0, 10) && !/T00:00:00$/.test(o.at) && /автоматически Booking\.com/.test(o.text))));
+    msgs.sort((a, b) => a.at.localeCompare(b.at));
+    return Object.assign({}, cc && cc.conv ? cc.conv : c.conv, { messages: msgs });
+  }
   // the whole conversation list: scroll it down until no more items load
   async function deepList(S) {
     const c = current(S); if (!c) return [];
@@ -315,6 +338,7 @@
     const ok = await openConversation(item, S);
     const r = await scan();
     if (ok && item.full) { try { const full = await fullThread(S); if (full && full.messages.length) r.conversations = [full]; } catch (e) { r.error = String(e.message || e); } }
+    else if (ok && item.depth > 0) { try { const part = await recentThread(S, Math.min(6, item.depth)); if (part && part.messages.length) r.conversations = [part]; } catch (e) { r.error = String(e.message || e); } }
     if (item.full) r.imported = true;
     return Object.assign(r, { ok });
   }

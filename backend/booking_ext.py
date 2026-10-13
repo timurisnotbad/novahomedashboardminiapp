@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS inbox_ext_outbox (
     done_at TEXT
 );
 """
-_state: dict = {"last_ping": None, "page": "", "version": "", "unread": 0, "errors": []}
+_state: dict = {"last_ping": None, "page": "", "version": "", "unread": 0, "errors": [], "gap_since": None, "catchup": None}
+# (guest, preview) pairs the extension failed to open: retried a few times, not forever
+_tries: dict = {}
+MAX_TRIES = 3
+CATCHUP_MAX_MIN = 45
 
 DEFAULT_SELECTORS = {
     "search": "input[placeholder*='номер бронирования' i], input[placeholder*='booking number' i]",
@@ -92,15 +96,78 @@ SESSION_TEXT = {"ok": "", "expired": "сессия экстранета исте
 
 
 def ping(info: dict) -> None:
-    _state.update(last_ping=datetime.now().isoformat(timespec="seconds"), page=(info.get("page") or "")[:120],
-                  version=(info.get("version") or "")[:20], unread=int(info.get("unread") or 0),
-                  session=str(info.get("session") or "ok")[:10])
+    now = datetime.now()
+    prev = _state.get("last_ping")
+    session = str(info.get("session") or "ok")[:10]
+    # a gap = the extranet was unreachable for a while (session expired / login
+    # page / tab closed / no ping for 3 min / the server was down). Messages
+    # that arrived meanwhile were never pushed — remember when it started
+    if prev is None:
+        _state["gap_since"] = (now - timedelta(hours=1)).isoformat(timespec="seconds")  # server (re)start
+    elif (now - datetime.fromisoformat(prev)).total_seconds() > 180:
+        _state["gap_since"] = _state.get("gap_since") or prev
+    if session != "ok":
+        _state["gap_since"] = _state.get("gap_since") or now.isoformat(timespec="seconds")
+    _state.update(last_ping=now.isoformat(timespec="seconds"), page=(info.get("page") or "")[:120],
+                  version=(info.get("version") or "")[:20], unread=int(info.get("unread") or 0), session=session)
     if info.get("error"):
         _state["errors"] = ([str(info["error"])[:200]] + _state["errors"])[:5]
     if _state["session"] in ("login", "notab"):
         _alert_session(_state["session"])
     else:
         _state["alerted"] = ""
+    if session == "ok" and _state.get("gap_since"):
+        start_catchup(_state["gap_since"], "после сбоя связи")
+        _state["gap_since"] = None
+
+
+def start_catchup(since: str, why: str = "") -> dict:
+    """Re-read what may have been missed since `since`: the extension walks the
+    whole conversation list (deep scan) and the CRM compares every thread with
+    what it has, ignoring the «seen» marks made during the broken period (an
+    open attempt on a dead session was recorded as seen, which is how messages
+    got lost for good). Ends when two deep scans find nothing to open."""
+    since = (since or "")[:19] or (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds")
+    cur = _state.get("catchup")
+    if cur and cur.get("since") and cur["since"] <= since:
+        return cur  # already running for a wider window
+    with database.get_conn() as conn:
+        # forget «seen» marks made after the gap began — they may be wrong; keep «*full*» (history import)
+        n = conn.execute("DELETE FROM inbox_ext_seen WHERE at >= ? AND preview != '*full*'", ((datetime.fromisoformat(since) - timedelta(minutes=5)).isoformat(timespec="seconds"),)).rowcount
+    _tries.clear()
+    _state["catchup"] = {"since": since, "started": datetime.now().isoformat(timespec="seconds"), "idle": 0, "found": 0, "why": why, "forgot": n}
+    logger.info("booking_ext: catch-up started (%s), since %s, %d seen-marks dropped", why, since, n)
+    return _state["catchup"]
+
+
+def catchup_active() -> bool:
+    c = _state.get("catchup")
+    if not c:
+        return False
+    if (datetime.now() - datetime.fromisoformat(c["started"])).total_seconds() > CATCHUP_MAX_MIN * 60:
+        _finish_catchup("время вышло")
+        return False
+    return True
+
+
+def _finish_catchup(how: str) -> None:
+    c = _state.get("catchup") or {}
+    _state["catchup"] = None
+    _state["catchup_last"] = {**c, "finished": datetime.now().isoformat(timespec="seconds"), "how": how}
+    logger.info("booking_ext: catch-up finished (%s): %d threads re-read", how, c.get("found", 0))
+
+
+def catchup_progress(found_more: bool, deep: bool) -> None:
+    """After each scan while catching up: deep scans with nothing to open end it."""
+    c = _state.get("catchup")
+    if not c:
+        return
+    if found_more:
+        c["idle"] = 0
+    elif deep:
+        c["idle"] = int(c.get("idle") or 0) + 1
+        if c["idle"] >= 2:
+            _finish_catchup("всё прочитано")
 
 
 def _alert_session(kind: str) -> None:
@@ -127,6 +194,7 @@ def status() -> dict:
     sess = _state.get("session") or "ok"
     return {**_state, "alive": alive, "chats": chats, "pending": pending, "token": token(), "selectors": selectors(),
             "session": sess, "session_text": SESSION_TEXT.get(sess, sess), "import": import_status(),
+            "catchup": _state.get("catchup") if catchup_active() else None, "catchup_last": _state.get("catchup_last"),
             "debug": _state.get("debug", ""), "debug_at": _state.get("debug_at"),
             "hook_url": f"{(config.WEBAPP_URL or '').split('?')[0].rstrip('/')}{config.API_PREFIX}/inbox/ext"}
 
@@ -373,9 +441,13 @@ def wanted(items: list, limit: int = 3, skip: set | None = None) -> list[dict]:
     match (a photo, a translated line) does not loop forever."""
     out = []
     importing = import_on()
+    catching = catchup_active()
     cutoff = (date.today() - timedelta(days=45)).isoformat() if not importing else "0000"
     if importing:
         limit = max(limit, 4)
+    if catching:
+        limit = max(limit, 6)
+    stale = (datetime.now() - timedelta(hours=6)).isoformat(timespec="seconds")
     with database.get_conn() as conn:
         for it in items or []:
             guest = re.sub(r"\s+", " ", str(it.get("guest") or "")).strip()
@@ -385,6 +457,8 @@ def wanted(items: list, limit: int = 3, skip: set | None = None) -> list[dict]:
             if re.match(r"\d{4}-\d{2}-\d{2}$", d) and d < cutoff and not it.get("unread"):
                 continue  # old, answered: not worth a click
             preview = _norm_text(it.get("preview"))
+            if _tries.get((guest.lower(), preview), 0) >= MAX_TRIES:
+                continue  # could not be opened several times: a person will see it in the extranet
             if conn.execute("SELECT 1 FROM inbox_ext_seen WHERE guest = ? AND preview = ?", (guest.lower(), preview)).fetchone():
                 continue
             m = conn.execute("SELECT chat_id FROM inbox_ext_meta WHERE LOWER(guest) = ?", (guest.lower(),)).fetchone()
@@ -393,21 +467,37 @@ def wanted(items: list, limit: int = 3, skip: set | None = None) -> list[dict]:
             elif importing:
                 out.append({"guest": guest, "preview": it.get("preview") or "", "unread": bool(it.get("unread")), "full": True})
                 continue
+            depth = 3 if catching else 0  # how many screens of the thread to scroll up: a gap may hold several messages
             if m:
-                last = conn.execute("SELECT text FROM inbox_messages WHERE chat_id = ? ORDER BY at DESC, id DESC LIMIT 1", (m["chat_id"],)).fetchone()
+                last = conn.execute("SELECT text, at FROM inbox_messages WHERE chat_id = ? ORDER BY at DESC, id DESC LIMIT 1", (m["chat_id"],)).fetchone()
                 lt = _norm_text(last["text"] if last else "")
                 if preview and lt and (lt.startswith(preview[:40]) or preview.startswith(lt[:40])):
                     continue  # already have it
                 if not preview and not it.get("unread"):
                     continue
-            out.append({"guest": guest, "preview": it.get("preview") or "", "unread": bool(it.get("unread"))})
+                if last and (last["at"] or "") < stale:
+                    depth = max(depth, 2)  # our last message is hours old: more than the visible tail may be new
+            out.append({"guest": guest, "preview": it.get("preview") or "", "unread": bool(it.get("unread")), "depth": depth})
     return out
 
 
 def mark_seen(item: dict) -> None:
+    """The extension reports what it opened. Only a successful open counts as
+    «seen»: a failed one (session died, list changed, search found nothing)
+    is retried up to MAX_TRIES times — before, it was marked seen at once and
+    the thread's new messages were lost until the guest wrote again."""
     guest = re.sub(r"\s+", " ", str(item.get("guest") or "")).strip().lower()
     if not guest:
         return
+    if not item.get("ok"):
+        key = (guest, _norm_text(item.get("preview")))
+        _tries[key] = _tries.get(key, 0) + 1
+        if len(_tries) > 2000:
+            _tries.clear()
+        return
+    c = _state.get("catchup")
+    if c:
+        c["found"] = int(c.get("found") or 0) + 1
     with database.get_conn() as conn:
         conn.execute("INSERT OR REPLACE INTO inbox_ext_seen (guest, preview, at) VALUES (?, ?, ?)",
                      (guest, _norm_text(item.get("preview")), datetime.now().isoformat(timespec="seconds")))
