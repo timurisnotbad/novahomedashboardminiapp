@@ -29,7 +29,9 @@ h3 { font-size:16px; font-weight:700; }
 
 /* ---------- layout ---------- */
 .app { display:flex; min-height:100vh; }
-.side { width:240px; flex:none; background:var(--card); border-right:1px solid var(--sep); padding:18px 14px; display:flex; flex-direction:column; position:sticky; top:0; height:100vh; }
+/* the sidebar scrolls inside itself on short windows: its overflow used to push the page below the viewport (a white «island» under the chats) */
+.side { width:240px; flex:none; background:var(--card); border-right:1px solid var(--sep); padding:18px 14px; display:flex; flex-direction:column; position:sticky; top:0; height:100vh; overflow-y:auto; overscroll-behavior:contain; }
+.app { overflow-x:clip; }
 .side__brand { font-weight:700; font-size:17px; padding:4px 10px 18px; }
 .side__nav { display:flex; flex-direction:column; gap:2px; }
 .side__nav a { display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border-radius:9px; color:var(--label); font-weight:500; }
@@ -66,7 +68,7 @@ select.field { appearance:auto; }
 .seg button { padding:7px 14px; font-weight:500; border-right:1px solid var(--sep); }
 .seg button:last-child { border-right:none; }
 .seg button.is-on { background:var(--blue); color:#fff; }
-.card { background:var(--card); border:1px solid var(--sep); border-radius:var(--r); padding:18px 20px; }
+.card { background:var(--card); border:1px solid var(--sep); border-radius:var(--r); padding:18px 20px; min-width:0; overflow-wrap:anywhere; }
 .card + .card { margin-top:16px; }
 .card__title { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--label-2); margin-bottom:12px; }
 .grid { display:grid; gap:16px; }
@@ -237,9 +239,11 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .rep__text { white-space:pre-wrap; word-break:break-word; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.5; max-height:320px; overflow:auto; background:#F9FAFB; border:1px solid var(--sep); border-radius:9px; padding:10px 12px; margin-top:8px; color:var(--label); }
 .attn { display:grid; gap:14px; }
 .attn__h { font-size:13px; font-weight:700; color:var(--label); margin-bottom:4px; }
-.attn__row { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--sep); font-size:14px; }
+.attn__row { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--sep); font-size:14px; min-width:0; }
 .attn__row:last-child { border-bottom:none; }
-.attn__row > a { min-width:0; color:var(--label); }
+.attn__row > a { flex:1 1 auto; min-width:0; color:var(--label); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.attn__row > span { flex:none; white-space:nowrap; }
+.attn > div { min-width:0; }
 .attn__row > a:hover { color:var(--blue-text); }
 
 .push-bar { position:fixed; left:0; right:0; bottom:calc(58px + env(safe-area-inset-bottom, 0px)); z-index:40; background:var(--card); border-top:1px solid var(--sep); box-shadow:0 -4px 16px rgba(0,0,0,.08); padding:10px 14px; font-size:13px; display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
