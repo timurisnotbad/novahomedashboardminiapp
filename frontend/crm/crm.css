@@ -451,3 +451,8 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .rep__t.ok { background:#DCFCE7; border-color:transparent; color:#166534; } .rep__t.ask { background:#FEF3C7; border-color:transparent; color:#92400E; }
 .rep__apt a { font-weight:700; color:var(--label); text-decoration:none; } .rep__g { flex:1; min-width:0; font-size:14px; }
 .presets { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+
+/* apartments table: the name column never wraps, the description input is wide */
+.apt-table th:first-child, .apt-table td:first-child { white-space:nowrap; }
+.apt-table td { min-width:120px; }
+.apt-table td:nth-child(2) { min-width:220px; }

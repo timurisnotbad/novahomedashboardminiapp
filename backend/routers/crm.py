@@ -243,6 +243,21 @@ def ai_examples_import(user: dict = Depends(admin_user)):  # noqa: B008
     return {"imported": ai.import_examples()}
 
 
+@router.post("/ai/learn")
+def ai_learn(user: dict = Depends(admin_user)):  # noqa: B008
+    """«Изучить переписки»: example pairs from history + a style memo written by the model."""
+    from .. import ai
+    if not ai.enabled():
+        raise HTTPException(status_code=400, detail="Ключ API не задан")
+    imported = ai.import_examples()
+    try:
+        r = ai.learn_style()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+    r["imported"] = imported
+    return r
+
+
 @router.post("/ai/test")
 def ai_test(user: dict = Depends(admin_user)):  # noqa: B008
     from .. import ai

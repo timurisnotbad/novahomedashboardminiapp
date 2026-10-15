@@ -195,6 +195,7 @@ WA_BRIDGE_URL = (os.environ.get("WA_BRIDGE_URL", "").strip()
 INBOX_SECRET = os.environ.get("INBOX_SECRET", "").strip() or _SECRETS["inbox_secret"]
 # AI assistant for guest chats (Claude): the key is set on the CRM page «ИИ-ассистент» (stored in secrets.json) or in .env
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip() or str(_SECRETS.get("ai_api_key") or "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip() or str(_SECRETS.get("openai_api_key") or "")  # voice transcription
 INBOX_MEDIA_DIR = Path(os.environ.get("INBOX_MEDIA_DIR", "").strip() or BASE_DIR / "data" / "inbox_media")
 # Who may work in the inbox besides the owners: Telegram ids / @usernames.
 # Empty = every active employee registered in the bot (/staff).
@@ -367,7 +368,7 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "83"
+APP_VERSION = "84"
 
 
 def features() -> dict:
@@ -384,7 +385,7 @@ def redact(text: str) -> str:
     an error shown in the UI (bot tokens travel inside Bot API URLs)."""
     out = str(text or "")
     for sec in (BOT_TOKEN, TG_GUEST_BOT_TOKEN, WAZZUP_API_KEY, INBOX_SECRET, APP_SECRET, RC_TOKEN, OWNER_KEY, PAY_KEY,
-                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY):
+                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY, OPENAI_API_KEY):
         if sec and len(sec) >= 8:
             out = out.replace(sec, "***")
     return out

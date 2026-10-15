@@ -850,10 +850,10 @@
         <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap"><button class="btn" id="steps-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить этапы</button><button class="btn sm" id="steps-add" ${S.me.role !== "admin" ? "disabled" : ""}>＋ Добавить этап</button><button class="btn link" id="steps-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартные</button>
           <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать этапы автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
       </div>
-      <div class="card" id="apt-card"><h3>Квартиры: код домофона, ключи, Wi-Fi</h3>
+      <div class="card" id="apt-card"><h3>Квартиры: описание, код домофона, ключи, Wi-Fi</h3>
         <div class="muted small">Подставляется в сообщения вместо <span class="mono">{код домофона} {ключи} {ключи при выезде} {wifi} {заметка квартиры}</span>. Строка «Все квартиры» — общее значение, «Блок A» / «Блок B» — для блока, строка квартиры — только для неё (что заполнено точнее, то и берётся).</div>
         <div style="margin-top:8px"><label class="lbl">Ссылка на отзыв <span class="muted">— {ссылка на отзыв}</span></label><input class="field" id="apt-review" placeholder="https://g.page/r/…" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
-        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Код домофона</th><th>Ключи (где получить)</th><th>Ключи при выезде</th><th>Wi-Fi</th><th>Заметка</th></tr></thead><tbody><tr><td class="muted" colspan="6">Загрузка…</td></tr></tbody></table></div>
+        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Описание для гостей <span class="muted">(ИИ)</span></th><th>Код домофона</th><th>Ключи (где получить)</th><th>Ключи при выезде</th><th>Wi-Fi</th><th>Заметка</th></tr></thead><tbody><tr><td class="muted" colspan="7">Загрузка…</td></tr></tbody></table></div>
         <div style="margin-top:8px"><button class="btn" id="apt-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить квартиры</button></div></div>
       </div>
       <div class="itab" data-tab="notif" hidden>
@@ -902,13 +902,13 @@
     $("i-bilingual").addEventListener("change", async (e) => { try { await post("/checklist", { bilingual: e.target.checked }); toast(e.target.checked ? "Сообщения уходят на двух языках" : "Язык — по карточке гостя"); } catch (err) { toast(err.message); } });
     // apartments table: door codes, keys, Wi-Fi
     (async () => {
-      let ai; try { ai = await get("/apartments/info"); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="6" class="bad">${esc(err.message)}</td></tr>`; return; }
+      let ai; try { ai = await get("/apartments/info"); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="7" class="bad">${esc(err.message)}</td></tr>`; return; }
       if (!$("apt-table")) return;
       $("apt-review").value = ai.review_url || "";
       const ro = S.me.role !== "admin";
-      const F = ["door_code", "keys_in", "keys_out", "wifi", "note"];
+      const F = ["descr", "door_code", "keys_in", "keys_out", "wifi", "note"];
       const label = (r) => r.kind === "all" ? "<b>Все квартиры</b>" : r.kind === "block" ? `<b>Блок ${esc(r.apartment)}</b>` : esc(r.apartment);
-      $("apt-table").querySelector("tbody").innerHTML = ai.items.map((r) => `<tr data-apt="${esc(r.apartment)}"><td>${label(r)}</td>${F.map((f) => `<td><input class="field sm" data-f="${f}" value="${esc(r[f] || "")}" placeholder="${r.kind === "apt" ? "как у блока" : r.kind === "block" ? "как у всех" : "—"}" ${ro ? "disabled" : ""} /></td>`).join("")}</tr>`).join("");
+      $("apt-table").querySelector("tbody").innerHTML = ai.items.map((r) => `<tr data-apt="${esc(r.apartment)}"><td>${label(r)}</td>${F.map((f) => `<td><input class="field sm" data-f="${f}" value="${esc(r[f] || "")}" placeholder="${f === "descr" ? (r.kind === "apt" ? "студия, 2 гостя, 7 этаж, вид на парк" : "общее для блока") : r.kind === "apt" ? "как у блока" : r.kind === "block" ? "как у всех" : "—"}" ${ro ? "disabled" : ""} ${f === "descr" ? 'style="min-width:180px"' : ""} /></td>`).join("")}</tr>`).join("");
       $("apt-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
         const items = Array.from($("apt-table").querySelectorAll("tr[data-apt]")).map((tr) => { const o = { apartment: tr.dataset.apt }; F.forEach((f) => { o[f] = tr.querySelector(`[data-f="${f}"]`).value.trim(); }); return o; });
         await post("/apartments/info", { items, review_url: $("apt-review").value.trim() }); toast("Квартиры сохранены — подставятся в следующие сообщения");
@@ -924,11 +924,12 @@
     let st, cfg;
     try { st = await get("/ai/stats"); cfg = ro ? null : await get("/ai/settings"); } catch (err) { box.innerHTML = `<div class="card"><div class="bad">${esc(err.message)}</div></div>`; return; }
     const money = (v) => "$" + Number(v || 0).toFixed(2);
-    const MODE = { off: "Выключен", draft: "Черновики: ИИ предлагает ответ, отправляет менеджер", auto: "Авто: отвечает сам, передаёт человеку, когда нужно" };
+    const MODE = { off: "Выключен везде, кроме чатов, где включён вручную (тест)", draft: "Черновики во всех чатах: ИИ предлагает ответ, отправляет менеджер", auto: "Отвечает сам во всех чатах, передаёт человеку, когда нужно" };
     const stat = (t) => `<div class="stat" style="cursor:default"><b>${t.n || 0}</b><span>обращений к ИИ · ответил ${t.sent || 0} · черновиков ${t.drafts || 0} · передал человеку ${t.handover || 0} · ошибок ${t.errors || 0}</span></div>`;
     box.innerHTML = `
       <div class="card"><h3>ИИ-ассистент в чатах</h3>
-        <div class="muted small">Читает всю переписку с гостем, карточку, брони и базу знаний; дешёвая модель решает, нужен ли ответ и нужен ли человек, основная отвечает. Простые вопросы закрывает сам, заявки на бронь собирает в сделку и задачу менеджеру, спорные случаи передаёт человеку с уведомлением. Как только в чате пишет человек, ИИ замолкает на ${esc(cfg ? cfg.ai_pause_hours : "2")} ч. Режим можно задать для каждого чата в его шапке.</div>
+        <div class="muted small">Читает всю переписку с гостем, карточку, брони и базу знаний; дешёвая модель решает, нужен ли ответ и нужен ли человек, основная отвечает. Простые вопросы закрывает сам, заявки на бронь собирает в сделку и задачу менеджеру, спорные случаи передаёт человеку с уведомлением. Как только в чате пишет человек, ИИ замолкает на ${esc(cfg ? cfg.ai_pause_hours : "2")} ч.</div>
+        <div class="small" style="margin-top:8px"><b>Тест без риска:</b> оставьте режим по умолчанию «Выключен» и включите ИИ в шапке нужного чата («ИИ: черновик (тест)» или «ИИ: отвечает сам»). В остальных чатах он молчит. Кнопка ✨ в чате готовит черновик в любом режиме.</div>
         <div class="grid c3" style="margin:12px 0 4px"><div class="stat" style="cursor:default"><b>${st.enabled ? "✓" : "—"}</b><span>${st.enabled ? "ключ API задан · режим: " + esc(MODE[st.mode] || st.mode) : "ключ API не задан"}</span></div>
           <div class="stat" style="cursor:default"><b>${money(st.month.cost)}</b><span>потрачено в этом месяце из ${money(st.budget)} · сегодня ${money(st.today.cost)}</span></div>
           ${stat(st.month)}</div>
@@ -944,20 +945,25 @@
         <div class="form-row c3"><div><label class="lbl">Каналы <span class="muted">— wa, tg, wztg, wz, ig, bk</span></label><input class="field" id="ai-channels" value="${esc(cfg.ai_channels)}" /></div>
           <div><label class="lbl">Пауза после ответа человека, ч</label><input class="field" id="ai-pause" type="number" min="0" step="0.5" value="${esc(cfg.ai_pause_hours)}" /></div>
           <div><label class="lbl">Макс. ответов ИИ подряд без результата</label><input class="field" id="ai-turns" type="number" min="1" max="30" value="${esc(cfg.ai_max_turns)}" /></div></div>
-        <label class="lbl">Правила для ассистента <span class="muted">— что можно, что нельзя, когда звать человека</span></label><textarea class="field" id="ai-rules" rows="10">${esc(cfg.ai_rules)}</textarea>
+        <div class="form-row"><div><label class="lbl">Ключ OpenAI для голосовых <span class="muted">— platform.openai.com → API keys; расшифровка узбекской, русской и английской речи, ≈0,3 ¢ за минуту</span></label><input class="field" id="ai-openai" type="password" placeholder="${cfg.openai_key_set ? "ключ сохранён — вставьте новый, чтобы заменить" : "sk-…"}" autocomplete="off" /></div>
+          <div><label class="lbl">Голосовые</label><label style="display:flex;gap:8px;align-items:center;padding-top:8px"><input type="checkbox" id="ai-transcribe" ${cfg.ai_transcribe === "1" ? "checked" : ""} /> Расшифровывать входящие голосовые в текст: его видит команда под сообщением, а ассистент читает как обычный текст</label></div></div>
+        <label class="lbl">Памятка о стиле команды <span class="muted">— ИИ составляет её сам по вашим прошлым ответам («Изучить переписки»); можно править</span></label><textarea class="field" id="ai-style" rows="6" placeholder="Пока пусто: нажмите «Изучить переписки» — ассистент прочитает ответы команды и запишет, как вы общаетесь с гостями на русском, узбекском и английском">${esc(cfg.ai_style || "")}</textarea>
+        <label class="lbl" style="margin-top:8px">Правила для ассистента <span class="muted">— что можно, что нельзя, когда звать человека</span></label><textarea class="field" id="ai-rules" rows="10">${esc(cfg.ai_rules)}</textarea>
         <label class="lbl" style="margin-top:8px">База знаний <span class="muted">— цены, условия, адрес, как добраться, реквизиты, частые вопросы; только отсюда ИИ берёт факты</span></label><textarea class="field" id="ai-knowledge" rows="12" placeholder="Например:\nКвартиры: A-066 — студия, 2 гостя, 5 этаж; B-005 — 2 комнаты, до 4 гостей…\nСкидки при брони от 7 ночей обсуждает менеджер.\nПредоплата: 30% на карту, остальное при заселении.\nРанний заезд: по возможности, бесплатно с 12:00 при свободной квартире.\nТрансфер из аэропорта: 15 $.\nРеквизиты: карта Uzcard 8600 …, получатель …">${esc(cfg.ai_knowledge)}</textarea>
-        <div class="row-actions" style="position:static"><button class="btn primary" id="ai-save">Сохранить</button><button class="btn" id="ai-test">Проверить ключ</button><button class="btn" id="ai-import" title="Собрать из прошлых переписок пары «вопрос гостя → ответ менеджера»: ИИ опирается на них как на примеры">Примеры из истории (${st.examples})</button></div></div>` : ""}
+        <div class="row-actions" style="position:static"><button class="btn primary" id="ai-save">Сохранить</button><button class="btn" id="ai-test">Проверить ключ</button><button class="btn" id="ai-learn" title="Прочитать прошлые переписки: собрать пары «вопрос гостя → ответ менеджера» (сейчас ${st.examples}) и составить памятку о стиле команды">Изучить переписки</button></div></div>` : ""}
       <div class="card"><h3>Последние действия ИИ</h3>
         ${st.recent.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Когда</th><th>Чат</th><th>Что</th><th>Результат</th><th>$</th></tr></thead><tbody>${st.recent.map((r) => `<tr><td class="muted small">${esc(dtShort(r.at))}</td><td>${r.chat_id ? `<a href="#messages/${r.chat_id}">${esc(r.chat_name || r.push_name || "#" + r.chat_id)}</a>` : "—"}</td><td class="small">${esc(r.kind)} · ${esc(r.model || "")}</td><td class="small ${r.error ? "bad" : ""}">${esc(r.decision || "")}${r.error ? " · " + esc(r.error) : ""}${r.text ? `<div class="muted" style="max-width:420px;white-space:pre-wrap">${esc(r.text.slice(0, 220))}${r.text.length > 220 ? "…" : ""}</div>` : ""}</td><td class="small">${Number(r.cost || 0).toFixed(4)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="muted">Пока ничего: задайте ключ, выберите режим и напишите в тестовый чат.</div>`}</div>`;
     if (!cfg) return;
     $("ai-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
       const body = { ai_mode: val("ai-mode"), ai_model: val("ai-model"), ai_model_triage: val("ai-model-triage"), ai_budget: val("ai-budget"), ai_channels: val("ai-channels"),
-        ai_pause_hours: val("ai-pause"), ai_max_turns: val("ai-turns"), ai_rules: $("ai-rules").value, ai_knowledge: $("ai-knowledge").value, usd_rate: val("ai-usd") };
+        ai_pause_hours: val("ai-pause"), ai_max_turns: val("ai-turns"), ai_rules: $("ai-rules").value, ai_knowledge: $("ai-knowledge").value, usd_rate: val("ai-usd"),
+        ai_style: $("ai-style").value, ai_transcribe: $("ai-transcribe").checked ? "1" : "0" };
       if ($("ai-key").value.trim()) body.api_key = $("ai-key").value.trim();
+      if ($("ai-openai").value.trim()) body.openai_key = $("ai-openai").value.trim();
       await post("/ai/settings", body); toast("Сохранено"); renderAiTab();
     }));
     $("ai-test").addEventListener("click", (e) => busy(e.currentTarget, async () => { const r = await post("/ai/test"); toast(`Ключ работает: ${r.model} ответила «${r.text}» за $${Number(r.cost).toFixed(5)}`); }));
-    $("ai-import").addEventListener("click", (e) => busy(e.currentTarget, async () => { const r = await post("/ai/examples/import"); toast(`Добавлено примеров: ${r.imported}`); renderAiTab(); }));
+    $("ai-learn").addEventListener("click", (e) => busy(e.currentTarget, async () => { const r = await post("/ai/learn"); toast(r.ok ? `Прочитано ответов: ${r.messages}, новых примеров: ${r.imported}, памятка о стиле записана` : `Примеров: +${r.imported}. Памятка: ${r.error || "не составлена"}`); renderAiTab(); }));
   }
 
   // ---- quick commands ------------------------------------------------------------

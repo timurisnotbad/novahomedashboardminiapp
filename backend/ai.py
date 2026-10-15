@@ -31,10 +31,12 @@ MODELS = {  # $ per 1M tokens: input, output, cache read, cache write
 }
 MODEL_NAMES = {"claude-opus-5-5": "Claude Opus 5.5 — лучшее качество", "claude-sonnet-5-5": "Claude Sonnet 5.5 — дешевле вдвое",
                "claude-haiku-5-5": "Claude Haiku 5.5 — самый дешёвый"}
-DEFAULTS = {"ai_mode": "draft", "ai_model": "claude-opus-5-5", "ai_model_triage": "claude-haiku-5-5", "ai_budget": "30",
+DEFAULTS = {"ai_mode": "off", "ai_model": "claude-opus-5-5", "ai_model_triage": "claude-haiku-5-5", "ai_budget": "30",
             "ai_channels": "wa,tg,wztg,wz", "ai_pause_hours": "2", "ai_max_turns": "8", "ai_debounce": "20",
-            "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850"}
-DEFAULT_RULES = """Ты — ассистент апартаментов Nova Home (Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
+            "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850", "ai_style": "", "ai_transcribe": "1"}
+# Rules saved by an admin before v84 equal one of these old defaults: treat them as «use the default».
+_OLD_RULES = (  # noqa: E501
+    """Ты — ассистент апартаментов Nova Home (Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
 Цель: быстро и точно закрыть простые вопросы, довести запрос на бронь до готовой заявки и передать человеку, когда нужно решение.
 Правила:
 - Отвечай коротко, тепло, без канцелярита, на языке гостя (русский, английский, узбекский).
@@ -44,8 +46,31 @@ DEFAULT_RULES = """Ты — ассистент апартаментов Nova Hom
 - Передавай человеку (handover): жалоба, спор о деньгах, просьба позвонить, поломка в квартире, нестандартная просьба, гость раздражён, вопрос вне твоих данных.
 - Если гость хочет забронировать: уточни даты, число гостей, пожелания, собери контакт — и сохрани заявку (save_lead), после чего сообщи, что менеджер подтвердит бронь.
 - Если гость назвал время приезда — сохрани его (set_arrival_time).
-- Не выдумывай. Не повторяй одно и то же. Не пиши, что ты ИИ, если не спросят прямо; если спросят — скажи честно."""
+- Не выдумывай. Не повторяй одно и то же. Не пиши, что ты ИИ, если не спросят прямо; если спросят — скажи честно.""",)
+DEFAULT_RULES = """Ты — ассистент команды Nova Home (апартаменты в Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
+Цель: быстро закрыть простой вопрос, довести запрос на жильё до заявки и передать человеку, когда нужно решение.
 
+Как вести разговор о жилье:
+1. Пойми запрос: даты, сколько гостей, пожелания. Чего не хватает — спроси одним коротким вопросом (сначала даты и число гостей).
+2. Как только есть даты — вызови check_availability и предложи 2–3 подходящих варианта с ценой за ночь и итогом за период. Не спрашивай «на какие даты?», если даты уже назвали.
+3. Гость выбрал — узнай имя и телефон, сохрани заявку (save_lead) и скажи, что менеджер подтвердит бронь и пришлёт реквизиты.
+4. Цены и свободные квартиры — только из check_availability (шахматка RealtyCalendar, цены за ночь в долларах). В сумах — по курсу из данных, если гость просит. Нет цены на даты — скажи, что уточнишь, и вызови handover.
+
+Язык и стиль:
+- Отвечай на языке последнего сообщения гостя: русский, узбекский (латиница или кириллица — как пишет гость), английский. Гости часто пишут по-узбекски разговорно и с ошибками: «nechpul / necha pul» = сколько стоит, «bo'sh / bosh» = свободно, «kvartira / uy / xonadon» = квартира, «bormi» = есть ли, «kecha / tun» = ночь, «sutkalik / kunlik» = посуточно, «odam / kishi» = человек, «qachon» = когда, «narx / narxi» = цена, «joy» = место. Отвечай по-узбекски так же просто и естественно.
+- Пиши как живой менеджер в мессенджере: коротко, тепло, по делу, 1–3 предложения, без списков и шаблонных оборотов. Никаких «Минуту, проверяю», «Я здесь, чтобы помочь» — сразу ответ по сути. Не здоровайся повторно в одном разговоре.
+- Даты называй словами и без года: «18 июня», «18-19 iyun», «June 18». Никогда не пиши 2026-06-18 и не упоминай год.
+- Опирайся на памятку о стиле команды и примеры ответов: те же обороты, та же манера.
+
+Честность:
+- Ты ассистент команды, а не конкретный человек. Никогда не называйся именем сотрудника или владельца. Если гость спросит, бот ли ты, — скажи честно: ты ассистент Nova Home, при необходимости подключится менеджер.
+- Не выдумывай: адрес, Wi‑Fi, условия, предоплата — только из базы знаний и данных CRM. Нет данных — скажи, что уточнишь, и вызови handover.
+- Никаких скидок, обещаний и подтверждений брони от своего имени. Подтверждает бронь только человек.
+- Название чата или контакта — это имя в телефонной книге, а не запрос гостя: даты и квартиру бери только из сообщений.
+
+Передавай человеку (handover): жалоба, спор о деньгах, просьба позвонить, поломка в квартире, нестандартная просьба, гость раздражён, вопрос вне твоих данных. Если гость назвал время приезда — сохрани его (set_arrival_time)."""
+
+_WD = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 _state: dict = {"pending": {}}  # chat_id → timestamp of the last scheduled run (debounce)
 
 
@@ -56,9 +81,12 @@ def init_db() -> None:
     with database.get_conn() as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]
         for col, decl in (("ai_mode", "TEXT"), ("ai_paused_until", "TEXT"), ("ai_draft", "TEXT"), ("ai_draft_at", "TEXT"),
-                          ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT")):
+                          ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE inbox_chats ADD COLUMN {col} {decl}")  # noqa: S608
+        mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
+        if mcols and "transcript" not in mcols:
+            conn.execute("ALTER TABLE inbox_messages ADD COLUMN transcript TEXT")  # voice note → text (NULL = not tried yet)
         ccols = [r[1] for r in conn.execute("PRAGMA table_info(crm_clients)").fetchall()]
         if ccols and "ai_memory" not in ccols:
             conn.execute("ALTER TABLE crm_clients ADD COLUMN ai_memory TEXT")
@@ -106,6 +134,81 @@ def enabled() -> bool:
     return bool(api_key())
 
 
+def openai_key() -> str:
+    return (config.OPENAI_API_KEY or "").strip()
+
+
+def set_openai_key(key: str) -> None:
+    from . import secrets_store
+    key = (key or "").strip()
+    secrets_store.save_extra(config.BASE_DIR / "data", openai_api_key=key)
+    config.OPENAI_API_KEY = key
+
+
+TRANSCRIBE_MODELS = ("gpt-4o-mini-transcribe", "whisper-1")
+TRANSCRIBE_PER_MIN = 0.003  # $ per minute of audio (gpt-4o-mini-transcribe)
+
+
+def transcribe(media: str, mime: str = "") -> str:
+    """Speech → text through the OpenAI transcription API (Uzbek, Russian and
+    English voice notes). Returns "" when no key, no file or the API failed."""
+    import requests as rq
+    key = openai_key()
+    if not key or not media:
+        return ""
+    p = Path(config.INBOX_MEDIA_DIR) / media
+    if not p.is_file() or p.stat().st_size > 24_000_000:
+        return ""
+    ext = {"audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/aac": "m4a", "audio/webm": "webm", "audio/wav": "wav", "audio/x-wav": "wav"}.get((mime or "").split(";")[0], p.suffix.lstrip(".") or "ogg")
+    data = p.read_bytes()
+    last = ""
+    for model in TRANSCRIBE_MODELS:
+        try:
+            r = rq.post("https://api.openai.com/v1/audio/transcriptions", headers={"Authorization": f"Bearer {key}"}, timeout=90,
+                        files={"file": (f"voice.{ext}", data, mime or "application/octet-stream")},
+                        data={"model": model, "prompt": "Переписка гостя с апартаментами Nova Home, Ташкент. Речь может быть на узбекском (O'zbek), русском или английском."})
+            if r.status_code == 200:
+                text = (r.json().get("text") or "").strip()
+                if text:
+                    _log(0, "transcribe", model, "ok", text[:200], None, 0, None, cost=round(max(len(data), 1) / 32000 / 60 * TRANSCRIBE_PER_MIN, 5))
+                return text
+            last = f"{r.status_code}: {r.text[:160]}"
+            if r.status_code in (401, 402, 429):
+                break
+        except Exception as exc:  # noqa: BLE001
+            last = str(exc)[:160]
+    _log(0, "transcribe", TRANSCRIBE_MODELS[0], "error", "", None, 0, config.redact(last))
+    return ""
+
+
+def transcribe_message(message_id: int) -> str:
+    """Transcribe one stored voice message once; the text is kept on the row so
+    staff see it in the chat and the assistant reads it as text."""
+    from . import inbox
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT id, chat_id, media, mime, transcript FROM inbox_messages WHERE id = ? AND kind = 'audio'", (message_id,)).fetchone()
+    if not r or r["transcript"] is not None:
+        return (r["transcript"] if r else "") or ""
+    text = transcribe(r["media"] or "", r["mime"] or "")
+    with database.get_conn() as conn:
+        conn.execute("UPDATE inbox_messages SET transcript = ?, rev = ? WHERE id = ?", (text, inbox._bump(conn), r["id"]))  # noqa: SLF001
+    return text
+
+
+def transcribe_pending(chat_id: int) -> int:
+    """Voice notes of this chat that still have no text (the last 10)."""
+    if not openai_key() or setting("ai_transcribe") != "1":
+        return 0
+    with database.get_conn() as conn:
+        ids = [x["id"] for x in conn.execute("SELECT id FROM inbox_messages WHERE chat_id = ? AND kind = 'audio' AND transcript IS NULL AND media IS NOT NULL "
+                                             "ORDER BY id DESC LIMIT 10", (chat_id,)).fetchall()]
+    n = 0
+    for mid in ids:
+        if transcribe_message(mid):
+            n += 1
+    return n
+
+
 def _client():
     if "client" not in _state:
         import anthropic
@@ -118,9 +221,27 @@ def setting(key: str) -> str:
     return crm.get_setting(key, DEFAULTS.get(key, ""))
 
 
+_OLD_RULES = _OLD_RULES + (_OLD_RULES[0].replace(
+    "- Свободные квартиры и цены — только через check_availability: это шахматка RealtyCalendar, там актуальные цены за ночь в долларах. Называй итог за весь период и цену за ночь; в сумах — по курсу из данных, если гость просит. Если на даты цены нет — скажи, что уточнишь, и вызови handover.\n"
+    "- Адрес, Wi‑Fi, условия, предоплата — только из базы знаний и данных CRM. Если данных нет — честно скажи, что уточнишь, и вызови handover.",
+    "- Цены, свободные даты, адрес, Wi‑Fi, условия — только из базы знаний и из данных CRM. Если данных нет — честно скажи, что уточнишь, и вызови handover."),)
+
+
+def rules_text() -> str:
+    r = setting("ai_rules")
+    if not r or _norm(r) in {_norm(x) for x in _OLD_RULES} or _norm(r) == _norm(DEFAULT_RULES):
+        return DEFAULT_RULES
+    return r
+
+
+def _norm(t: str) -> str:
+    return re.sub(r"\s+", " ", (t or "").strip())
+
+
 def settings() -> dict:
     out = {k: setting(k) for k in DEFAULTS}
-    out["ai_rules"] = out["ai_rules"] or DEFAULT_RULES
+    out["ai_rules"] = rules_text()
+    out["openai_key_set"] = bool(openai_key())
     out["key_set"] = enabled()
     out["models"] = MODEL_NAMES
     return out
@@ -143,6 +264,8 @@ def save_settings(data: dict) -> dict:
             crm.set_setting(k, v[:20000])
     if data.get("api_key"):
         set_api_key(str(data["api_key"]))
+    if data.get("openai_key"):
+        set_openai_key(str(data["openai_key"]))
     return settings()
 
 
@@ -158,8 +281,9 @@ def _cost(model: str, usage) -> float:
     return round((i * p[0] + o * p[1] + cr * p[2] + cw * p[3]) / 1_000_000, 6)
 
 
-def _log(chat_id, kind, model, decision, text, usage=None, ms=0, error=None) -> float:
-    cost = _cost(model, usage) if usage is not None else 0.0
+def _log(chat_id, kind, model, decision, text, usage=None, ms=0, error=None, cost=None) -> float:
+    if cost is None:
+        cost = _cost(model, usage) if usage is not None else 0.0
     with database.get_conn() as conn:
         conn.execute("INSERT INTO ai_log (chat_id, kind, model, decision, text, input_tokens, cache_read, cache_write, output_tokens, cost, ms, error, at) "
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -288,7 +412,35 @@ def import_examples(max_pairs: int = 3000) -> int:
     return n
 
 
-def find_examples(text: str, limit: int = 5) -> list[dict]:
+def learn_style(max_msgs: int = 240) -> dict:
+    """Read the team's own past replies and write a short style memo (tone,
+    greetings, typical phrases per language, how prices and options are
+    offered). One model call; the memo goes into the cached system block."""
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT text FROM inbox_messages WHERE direction = 'out' AND kind = 'text' AND text != '' AND COALESCE(author, '') NOT IN (?, 'Автоответ', 'Телефон') "
+                            "AND LENGTH(text) BETWEEN 12 AND 600 ORDER BY id DESC LIMIT ?", (AUTHOR, max_msgs)).fetchall()
+    texts = [r["text"] for r in rows if not re.search(r"\{[а-яa-z ]+\}", r["text"])]
+    if len(texts) < 10:
+        return {"ok": False, "error": f"мало ответов команды в истории ({len(texts)}), нужно хотя бы 10", "messages": len(texts)}
+    model = setting("ai_model") or "claude-opus-5-5"
+    t0 = time.time()
+    resp = _client().messages.create(
+        model=model, max_tokens=1200, output_config={"effort": "medium"},
+        system="Ты анализируешь, как менеджеры апартаментов Nova Home (Ташкент) пишут гостям в мессенджере, чтобы ассистент писал так же. "
+               "Составь памятку до 1500 символов: тон и длина сообщений; как здороваются и обращаются (ты/вы, имя); эмодзи; "
+               "типичные фразы и обороты отдельно для русского, узбекского и английского (приведи 3–5 реальных коротких фраз на каждом языке, если есть); "
+               "как называют цены и предлагают варианты; как просят предоплату и контакты; чего менеджеры никогда не пишут. "
+               "Только памятка, без вступления. Не включай персональные данные (имена гостей, телефоны, коды).",
+        messages=[{"role": "user", "content": "Ответы команды (новые сверху):\n\n" + "\n---\n".join(texts)}])
+    memo = "\n".join(b.text for b in resp.content if b.type == "text").strip()[:3000]
+    cost = _log(0, "style", model, "ok" if memo else "empty", memo[:400], resp.usage, (time.time() - t0) * 1000)
+    if memo:
+        from . import crm
+        crm.set_setting("ai_style", memo)
+    return {"ok": bool(memo), "messages": len(texts), "style": memo, "cost": cost}
+
+
+def find_examples(text: str, limit: int = 6) -> list[dict]:
     words = [w for w in re.findall(r"[\w']{3,}", (text or "").lower()) if not w.isdigit()][:12]
     if not words:
         return []
@@ -318,7 +470,7 @@ def _client_for_chat(conn, chat: dict):
 
 
 def _history(conn, chat_id: int, limit: int = 30) -> list[dict]:
-    rows = conn.execute("SELECT id, direction, author, kind, text, media, mime, at FROM inbox_messages WHERE chat_id = ? "
+    rows = conn.execute("SELECT id, direction, author, kind, text, media, mime, at, transcript FROM inbox_messages WHERE chat_id = ? "
                         "ORDER BY at DESC, id DESC LIMIT ?", (chat_id, limit)).fetchall()
     return [dict(r) for r in reversed(rows)]
 
@@ -350,7 +502,8 @@ def _messages_for_model(history: list[dict]) -> list[dict]:
         elif kind == "image":
             body = (f"[фото{': ' + text if text else ''}]")
         elif kind == "audio":
-            body = "[голосовое сообщение — расшифровка пока недоступна, попроси написать текстом, если важно]"
+            tr = (m.get("transcript") or "").strip()
+            body = f"[голосовое]: {tr}" if tr else "[голосовое сообщение — расшифровки нет, попроси написать текстом, если важно]"
         elif kind == "document":
             body = f"[файл {text or ''}]"
         elif kind == "location":
@@ -390,7 +543,7 @@ def _context(chat_id: int) -> dict | None:
             stays = crm.client_bookings(client["phone"])[:8]
         except Exception:  # noqa: BLE001
             stays = []
-    last_in = next((m["text"] for m in reversed(history) if m["direction"] == "in" and m.get("text")), "")
+    last_in = next((m.get("text") or m.get("transcript") for m in reversed(history) if m["direction"] == "in" and (m.get("text") or m.get("transcript"))), "")
     return {"chat": chat, "client": client, "history": history, "stays": stays, "last_in": last_in,
             "examples": find_examples(last_in) if last_in else []}
 
@@ -398,21 +551,27 @@ def _context(chat_id: int) -> dict | None:
 def _system(ctx: dict) -> list[dict]:
     """Stable part first (cached across chats), then the per-chat facts."""
     from . import crm, docs
-    rules = setting("ai_rules") or DEFAULT_RULES
+    rules = rules_text()
     knowledge = setting("ai_knowledge") or "(база знаний пока не заполнена)"
+    style = setting("ai_style")
     co = docs.company()
     apt_rows = crm.apartment_info()
     apt_lines = [f"- {r['apartment'] if r['kind'] == 'apt' else ('блок ' + r['apartment'] if r['kind'] == 'block' else 'все квартиры')}: "
-                 + "; ".join(f"{k}: {r[f]}" for k, f in (("домофон", "door_code"), ("ключи", "keys_in"), ("ключи при выезде", "keys_out"), ("Wi‑Fi", "wifi"), ("заметка", "note")) if r.get(f))
+                 + "; ".join(f"{k}: {r[f]}" for k, f in (("описание", "descr"), ("домофон", "door_code"), ("ключи", "keys_in"), ("ключи при выезде", "keys_out"), ("Wi‑Fi", "wifi"), ("заметка", "note")) if r.get(f))
                  for r in apt_rows if any(r.get(f) for f in crm.APT_FIELDS)]
     ci, co_t = crm.default_times()
     stable = (f"{rules}\n\n## Компания\n{co.get('name') or 'Nova Home'} · адрес: {co.get('address') or '—'} · телефон: {co.get('phone') or '—'} · "
               f"заезд с {ci}, выезд до {co_t}.\n\n## База знаний (правда только то, что здесь и в данных CRM)\n{knowledge}\n\n"
-              f"## Квартиры\n" + ("\n".join(apt_lines) or "(нет данных)"))
+              f"## Квартиры\n" + ("\n".join(apt_lines) or "(нет данных)")
+              + (f"\n\n## Стиль команды (памятка из прошлых переписок)\n{style}" if style else ""))
     chat, client, stays = ctx["chat"], ctx["client"], ctx["stays"]
     b = chat.get("booking")
-    facts = [f"Сегодня {date.today().isoformat()}, время {datetime.now().strftime('%H:%M')}. Цены в календаре в долларах; курс 1 $ = {setting('usd_rate') or '—'} сум.",
-             f"Канал: {chat.get('channel_name')}. Гость: {chat.get('title')}" + (f", телефон +{chat['phone']}" if chat.get("phone") else "") + "."]
+    td = date.today()
+    facts = [f"Сегодня {_WD[td.weekday()]}, {td.day} {util.RU_MONTHS_GEN[td.month - 1]} {td.year} г., {datetime.now().strftime('%H:%M')} (в ответах гостю год не пиши). "
+             f"Цены в календаре в долларах; курс 1 $ = {setting('usd_rate') or '—'} сум.",
+             f"Канал: {chat.get('channel_name')}. Контакт в телефонной книге: «{chat.get('title')}» (это не запрос)" + (f", телефон +{chat['phone']}" if chat.get("phone") else "") + "."]
+    if ctx.get("lang"):
+        facts.append(f"Язык последнего сообщения гостя: {ctx['lang']} — отвечай на нём.")
     if client:
         facts.append(f"Карточка гостя: {client.get('name') or ''}; статус: {client.get('status') or '—'}; язык: {client.get('lang') or '—'}; "
                      f"особенности: {client.get('notes') or '—'}.")
@@ -479,11 +638,13 @@ def availability(checkin: str, checkout: str, apartment: str = "") -> dict:
     except ValueError:
         rate = 0.0
     free = []
+    from . import crm
+    about = {r["apartment"]: r.get("descr") or "" for r in crm.apartment_info()}
     for n in names:
         if n in busy:
             continue
         p = rc_rates.prices(n, d0.isoformat(), d1.isoformat())
-        row = {"apartment": n, "total_usd": p["total"], "per_night_usd": None if p["per_night_min"] is None else
+        row = {"apartment": n, "about": about.get(n) or about.get(n[:1]) or about.get("*") or "", "total_usd": p["total"], "per_night_usd": None if p["per_night_min"] is None else
                (p["per_night_min"] if p["per_night_min"] == p["per_night_max"] else f"{p['per_night_min']:g}–{p['per_night_max']:g}")}
         if p["total"] is not None and rate:
             row["total_uzs"] = round(p["total"] * rate)
@@ -495,7 +656,7 @@ def availability(checkin: str, checkout: str, apartment: str = "") -> dict:
         free.append(row)
     free.sort(key=lambda r: (r["total_usd"] is None, r["total_usd"] or 0))
     out = {"checkin": d0.isoformat(), "checkout": d1.isoformat(), "nights": nights, "free": free, "free_count": len(free),
-           "total": len(names), "currency": "USD", "usd_rate": rate or None}
+           "total": len(names), "currency": "USD", "usd_rate": rate or None, "hint": "даты гостю называй словами без года"}
     if free and all(r["total_usd"] is None for r in free):
         out["note"] = "тарифы из календаря не загружены — цены назвать нельзя, передай менеджеру"
     return out
@@ -586,13 +747,14 @@ TRIAGE_SCHEMA = {"type": "object", "properties": {
 def _triage(ctx: dict) -> dict:
     model = setting("ai_model_triage") or "claude-haiku-5-5"
     hist = ctx["history"][-8:]
-    lines = [f"{'Гость' if m['direction'] == 'in' else 'Менеджер'}: {(m.get('text') or '[' + (m.get('kind') or '') + ']')[:300]}" for m in hist]
+    lines = [f"{'Гость' if m['direction'] == 'in' else 'Менеджер'}: {(m.get('text') or m.get('transcript') or '[' + (m.get('kind') or '') + ']')[:300]}" for m in hist]
     t0 = time.time()
     resp = _client().messages.create(
         model=model, max_tokens=300, output_config={"effort": "low", "format": {"type": "json_schema", "schema": TRIAGE_SCHEMA}},
         system="Ты сортируешь входящие сообщения гостей апартаментов. Реши: нужен ли ответ ассистента, и нужен ли человек. "
                "Человек нужен при жалобе, споре о деньгах/возврате, поломке, просьбе позвонить, раздражении, нестандартной просьбе. "
-               "Простые вопросы (адрес, Wi‑Fi, время заезда, цены, свободные даты, как добраться) и заявки на бронь — ассистент. Отвечай только JSON.",
+               "Простые вопросы (адрес, Wi‑Fi, время заезда, цены, свободные даты, как добраться) и заявки на бронь — ассистент. "
+               "Гости пишут по-русски, по-узбекски (латиницей, часто разговорно: nechpul, bosh, kvartira bormi) и по-английски; language — код языка последнего сообщения (ru/uz/en/…). Отвечай только JSON.",
         messages=[{"role": "user", "content": "Последние сообщения:\n" + "\n".join(lines) + "\n\nПоследнее сообщение гостя: " + (ctx["last_in"] or "[не текст]")[:500]}])
     text = next((b.text for b in resp.content if b.type == "text"), "{}")
     try:
@@ -667,6 +829,13 @@ def _update_memory(ctx: dict) -> None:
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
+def _prepare(chat_id: int) -> None:
+    try:
+        transcribe_pending(chat_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("transcription failed")
+
+
 def on_incoming(chat_id: int) -> None:
     """Called for every incoming message: wait a little (guests send several
     lines in a row), then handle the chat once."""
@@ -695,6 +864,8 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False) -> dict:
     """One pass over the chat: triage → reply → send or draft. force=True is the
     «Ответить с ИИ» button (always a draft, ignores mode/pause/budget)."""
     from . import inbox
+    if force:
+        _prepare(chat_id)  # the «Ответить с ИИ» button: voice notes first
     ctx = _context(chat_id)
     if not ctx:
         return {"status": "no chat"}
@@ -717,6 +888,7 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False) -> dict:
             return {"status": "handover"}
         if not tri.get("needs_reply"):
             return {"status": "skip"}
+        ctx["lang"] = tri.get("language") or ""
         try:
             if int(chat.get("ai_turns") or 0) >= int(setting("ai_max_turns") or 8) and mode == "auto":
                 _do_handover(chat_id, {"reason": "лимит сообщений ИИ без результата", "summary": ctx["last_in"][:400]}, mode)

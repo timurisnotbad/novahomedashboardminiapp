@@ -171,6 +171,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE crm_users ADD COLUMN tg_id INTEGER")  # personal Telegram for alerts (/link in the bot)
         conn.execute("CREATE TABLE IF NOT EXISTS crm_apartment_info (apartment TEXT PRIMARY KEY, door_code TEXT, keys_in TEXT, keys_out TEXT, "
                      "wifi TEXT, note TEXT, updated_at TEXT)")
+        if "descr" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_apartment_info)").fetchall()]:
+            conn.execute("ALTER TABLE crm_apartment_info ADD COLUMN descr TEXT")  # description for guests (rooms, guests, floor, view)
         dcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]
         if "fields" not in dcols:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
@@ -330,7 +332,7 @@ def users_tg_ids(uids=None, admins_only: bool = False) -> list[int]:
 # ---------------------------------------------------------------------------
 # Apartments: door codes, keys, Wi-Fi — the «…» of the check-in instruction
 # ---------------------------------------------------------------------------
-APT_FIELDS = ("door_code", "keys_in", "keys_out", "wifi", "note")
+APT_FIELDS = ("door_code", "keys_in", "keys_out", "wifi", "note", "descr")
 APT_VARS = {"код домофона": "door_code", "ключи": "keys_in", "ключи при выезде": "keys_out", "wifi": "wifi", "заметка квартиры": "note"}
 
 
@@ -361,7 +363,7 @@ def save_apartment_info(rows: list) -> list[dict]:
             if not any(vals):
                 conn.execute("DELETE FROM crm_apartment_info WHERE apartment = ?", (name,))
             else:
-                conn.execute("INSERT OR REPLACE INTO crm_apartment_info (apartment, door_code, keys_in, keys_out, wifi, note, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                conn.execute("INSERT OR REPLACE INTO crm_apartment_info (apartment, door_code, keys_in, keys_out, wifi, note, descr, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                              (name, *vals, _now()))
     _apt_cache["at"] = 0.0
     return apartment_info()

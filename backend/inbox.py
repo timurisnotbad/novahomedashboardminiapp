@@ -20,7 +20,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -663,6 +663,10 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
         _flush_new_clients()
 
 
+def _tkey(t) -> str:
+    return re.sub(r"\s+", "", (t or "")).lower()[:400]
+
+
 def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
     jid = m.get("jid")
     if not jid or not m.get("id"):
@@ -684,12 +688,19 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
         if exists:
             return None
         if out:
-            # our own reply coming back from WhatsApp before send() stored its id
-            pend = conn.execute(
-                "SELECT id FROM inbox_messages WHERE chat_id = ? AND direction = 'out' "
-                "AND wa_id LIKE 'local-%' AND COALESCE(text, '') = ? ORDER BY id DESC LIMIT 1",
-                (chat_id, m.get("text") or ""),
-            ).fetchone()
+            # our own reply coming back from the channel before send() stored its id
+            # (the channel may trim or re-wrap the text: compare without whitespace)
+            key = _tkey(m.get("text"))
+            pend = None
+            for r in conn.execute("SELECT id, wa_id, text, at FROM inbox_messages WHERE chat_id = ? AND direction = 'out' "
+                                  "ORDER BY id DESC LIMIT 8", (chat_id,)).fetchall():
+                if _tkey(r["text"]) != key:
+                    continue
+                if (r["wa_id"] or "").startswith("local-"):
+                    pend = r
+                    break
+                if (r["at"] or "") >= (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S"):
+                    return None  # the same text was just sent from the CRM under another id: an echo, not a new message
             if pend:
                 conn.execute("UPDATE inbox_messages SET wa_id = ?, status = 'sent', rev = ? WHERE id = ?",
                              (m["id"], _bump(conn), pend["id"]))
@@ -707,6 +718,8 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
         _touch_chat(conn, chat_id, at, "out" if out else "in", m.get("kind") or "text",
                     m.get("text") or "", "sent" if out else None,
                     0 if (out or history) else 1)
+        if out:
+            conn.execute("UPDATE inbox_chats SET last_author = 'Телефон' WHERE id = ?", (chat_id,))
     if notify and not out and not history:
         st = _notify_settings()
         if st["delay"] == 0:  # «сразу»: push + Telegram right now, in the background
@@ -729,6 +742,7 @@ def _auto_incoming(chat_id: int, is_first: bool) -> None:
         logger.exception("auto incoming failed")
     try:
         from . import ai
+        ai.transcribe_pending(chat_id)  # voice notes → text for the team and the assistant (needs an OpenAI key)
         ai.on_incoming(chat_id)  # the assistant: triage, reply or draft after a short pause
     except Exception:  # noqa: BLE001
         logger.exception("ai incoming failed")
@@ -930,6 +944,7 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
         )
         mid = cur.lastrowid
         _touch_chat(conn, chat_id, at, "out", kind, text, "pending", 0)
+        conn.execute("UPDATE inbox_chats SET last_author = ? WHERE id = ?", (author, chat_id))
         if not chat["assignee"]:
             # the first one to answer takes the chat
             conn.execute("UPDATE inbox_chats SET assignee = ? WHERE id = ?", (author, chat_id))

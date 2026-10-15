@@ -70,7 +70,8 @@ def me(user: dict = Depends(inbox_user)):  # noqa: B008
     from .. import ai
     return {"user": user, "agents": inbox.agents(), "rev": inbox.current_rev(),
             "wa": {"status": st.get("status"), "me": st.get("me"), "error": st.get("error")},
-            "ai": {"enabled": ai.enabled(), "mode": ai.setting("ai_mode"), "author": ai.AUTHOR}}
+            "ai": {"enabled": ai.enabled(), "mode": ai.setting("ai_mode"), "author": ai.AUTHOR,
+                   "transcribe": bool(ai.openai_key()) and ai.setting("ai_transcribe") == "1"}}
 
 
 @router.get("/status")
@@ -299,6 +300,18 @@ def chat_ai_draft_clear(chat_id: int, user: dict = Depends(inbox_user)):  # noqa
     from .. import ai
     ai.clear_draft(chat_id)
     return {"ok": True}
+
+
+@router.post("/messages/{message_id}/transcribe")
+def message_transcribe(message_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    """🎙 on a voice note: speech → text once (OpenAI key in Интеграции → ИИ-ассистент)."""
+    from .. import ai
+    if not ai.openai_key():
+        raise HTTPException(status_code=400, detail="Расшифровка голосовых не настроена: нужен ключ OpenAI (Интеграции → ИИ-ассистент)")
+    text = ai.transcribe_message(message_id)
+    if not text:
+        raise HTTPException(status_code=424, detail="Не удалось расшифровать: см. журнал ИИ")
+    return {"text": text}
 
 
 @router.post("/chats/{chat_id}/ai/rate")

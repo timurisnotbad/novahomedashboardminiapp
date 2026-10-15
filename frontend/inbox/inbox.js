@@ -132,7 +132,7 @@
       el.innerHTML = `<div class="ib-list__empty">${S.q ? "Ничего не найдено" : S.only !== "all" ? "Пусто" : "Чатов пока нет — они появятся, как только WhatsApp будет подключён"}</div>`;
     } else {
       el.innerHTML = list.map((c) => {
-        const last = (c.last_dir === "out" ? tick(c.last_status) : "") + esc(c.last_text || "");
+        const last = (c.last_dir === "out" ? tick(c.last_status) + (S.ai && c.last_author === S.ai.author ? "✨ " : "") : "") + esc(c.last_text || "");
         const apt = c.booking ? `<span class="ib-apt ${c.booking.when === "now" ? "now" : ""}">${bookingText(c.booking)}</span>` : "";
         return `<div class="ib-chat ${S.open && S.open.id === c.id ? "is-on" : ""} ${c.unread ? "unread" : ""}" data-chat="${c.id}">
           ${avatar(c)}
@@ -273,6 +273,7 @@
       body += url ? `<video class="ib-m__vid" src="${url}" controls preload="metadata"></video>` : `<div class="ib-m__doc">🎬 <span>Видео</span></div>`;
     } else if (m.kind === "audio") {
       body += url ? `<audio src="${url}" controls preload="none"></audio>` : `<div class="ib-m__doc">🎤 <span>Голосовое</span></div>`;
+      body += m.transcript ? `<div class="ib-m__tr">🎙 ${esc(m.transcript)}</div>` : (S.ai && S.ai.transcribe && !out) ? `<button class="ib-m__trbtn" data-transcribe="${m.id}" title="Расшифровать голосовое в текст">🎙 Текст</button>` : "";
     } else if (m.kind === "document") {
       const nm = m.file_name || "Файл";
       body += url ? `<a class="ib-m__doc" href="${url}" download="${esc(nm)}" target="_blank">📄 <span>${esc(nm)}</span></a>` : `<div class="ib-m__doc">📄 <span>${esc(nm)}</span></div>`;
@@ -1009,8 +1010,10 @@
       } catch (err) { toast(err.message); }
     });
 
-    $("msgs").addEventListener("click", (e) => {
+    $("msgs").addEventListener("click", async (e) => {
       if (e.target.id === "older") { loadOlder(); return; }
+      const tb = e.target.closest("[data-transcribe]");
+      if (tb) { tb.disabled = true; tb.textContent = "…"; try { const r = await req(`/messages/${tb.dataset.transcribe}/transcribe`, { method: "POST" }); tb.outerHTML = `<div class="ib-m__tr">🎙 ${esc(r.text)}</div>`; } catch (err) { tb.disabled = false; tb.textContent = "🎙 Текст"; toast(err.message); } return; }
       const r = e.target.closest("[data-reply]");
       if (r) { setReply(S.msgs.find((m) => m.id === parseInt(r.dataset.reply, 10))); return; }
       const rt = e.target.closest("[data-retry]");
