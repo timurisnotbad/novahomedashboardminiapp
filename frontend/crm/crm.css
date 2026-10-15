@@ -456,3 +456,14 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .apt-table th:first-child, .apt-table td:first-child { white-space:nowrap; }
 .apt-table td { min-width:120px; }
 .apt-table td:nth-child(2) { min-width:220px; }
+
+/* AI tab: setup checklist and collapsible sections */
+.ai-checks { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:4px 16px; margin-top:10px; }
+.ai-check { display:flex; gap:8px; align-items:flex-start; font-size:13px; padding:3px 0; }
+.ai-check__i { width:18px; height:18px; border-radius:50%; border:1px solid var(--sep); display:inline-flex; align-items:center; justify-content:center; font-size:11px; flex:none; color:var(--muted); }
+.ai-check.ok .ai-check__i { background:#dcfce7; border-color:#86efac; color:#166534; }
+.ai-sec > summary { cursor:pointer; list-style:none; display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; }
+.ai-sec > summary::-webkit-details-marker { display:none; }
+.ai-sec > summary::before { content:"▸"; color:var(--muted); font-size:12px; }
+.ai-sec[open] > summary::before { content:"▾"; }
+.ai-sec__body { margin-top:10px; }

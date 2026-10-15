@@ -34,7 +34,7 @@ MODEL_NAMES = {"claude-opus-5-5": "Claude Opus 5.5 — лучшее качест
 DEFAULTS = {"ai_mode": "off", "ai_model": "claude-opus-5-5", "ai_model_triage": "claude-haiku-5-5", "ai_budget": "30",
             "ai_channels": "wa,tg,wztg,wz", "ai_pause_hours": "2", "ai_max_turns": "8", "ai_debounce": "20",
             "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850", "ai_style": "", "ai_transcribe": "1",
-            "ai_playbook": "", "ai_followup_hours": "3", "ai_facts": ""}
+            "ai_playbook": "", "ai_followup_hours": "3", "ai_facts": "", "ai_effort": "medium"}
 # Rules saved by an admin before v84 equal one of these old defaults: treat them as «use the default».
 _OLD_RULES = (  # noqa: E501
     """Ты — ассистент апартаментов Nova Home (Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
@@ -86,7 +86,7 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]
         for col, decl in (("ai_mode", "TEXT"), ("ai_paused_until", "TEXT"), ("ai_draft", "TEXT"), ("ai_draft_at", "TEXT"),
                           ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT"), ("ai_followup_at", "TEXT"),
-                          ("ai_last_in_id", "INTEGER"), ("ai_draft_photos", "TEXT")):
+                          ("ai_last_in_id", "INTEGER"), ("ai_draft_photos", "TEXT"), ("ai_last_status", "TEXT")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE inbox_chats ADD COLUMN {col} {decl}")  # noqa: S608
         mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
@@ -277,6 +277,8 @@ def save_settings(data: dict) -> dict:
                 continue
             if k == "ai_mode" and v not in ("off", "draft", "auto"):
                 continue
+            if k == "ai_effort" and v not in ("low", "medium", "high"):
+                continue
             if k == "usd_rate":
                 try:
                     v = f"{float(v.replace(' ', '').replace(',', '.')):g}"
@@ -350,7 +352,16 @@ def stats() -> dict:
         t_agg, m_agg = agg(today), agg(month)
     return {"today": t_agg, "month": m_agg, "budget": float(setting("ai_budget") or 0), "budget_left": round(budget_left(), 2),
             "recent": recent, "examples": examples, "chats_by_mode": chats, "enabled": enabled(), "mode": setting("ai_mode"),
-            "rates": _rates_status(), "lessons": lessons_list(100, all_rows=True)}
+            "rates": _rates_status(), "lessons": lessons_list(100, all_rows=True), "setup": _setup()}
+
+
+def _setup() -> dict:
+    from . import crm
+    with database.get_conn() as conn:
+        photos = conn.execute("SELECT COUNT(DISTINCT apartment) FROM crm_apartment_photos").fetchone()[0]
+        descr = conn.execute("SELECT COUNT(*) FROM crm_apartment_info WHERE COALESCE(descr, '') != ''").fetchone()[0]
+    return {"key": enabled(), "openai": bool(openai_key()), "knowledge": len(setting("ai_knowledge") or "") >= 150, "photos": photos, "descr": descr,
+            "apartments": len(config.APARTMENTS), "style": bool(setting("ai_style")), "mode": setting("ai_mode")}
 
 
 # ---------------------------------------------------------------------------
@@ -909,7 +920,7 @@ TRIAGE_SCHEMA = {"type": "object", "properties": {
 
 def _triage(ctx: dict) -> dict:
     model = setting("ai_model_triage") or "claude-haiku-5-5"
-    hist = ctx["history"][-8:]
+    hist = ctx["history"][-12:]
     lines = [f"{'Гость' if m['direction'] == 'in' else 'Менеджер'}: {(m.get('text') or m.get('transcript') or '[' + (m.get('kind') or '') + ']')[:300]}" for m in hist]
     t0 = time.time()
     resp = _client().messages.create(
@@ -917,6 +928,7 @@ def _triage(ctx: dict) -> dict:
         system="Ты сортируешь входящие сообщения гостей апартаментов. Реши: нужен ли ответ ассистента, и нужен ли человек. "
                "Человек нужен при жалобе, споре о деньгах/возврате, поломке, просьбе позвонить, раздражении, нестандартной просьбе. "
                "Простые вопросы (адрес, Wi‑Fi, время заезда, цены, свободные даты, как добраться) и заявки на бронь — ассистент. "
+               "needs_reply=false только когда гость явно закрыл разговор («спасибо», «ок», «понял», прощание) и вопроса нет; если есть хоть какой-то вопрос, уточнение или новые данные (даты, число гостей) — needs_reply=true. "
                "Гости пишут по-русски, по-узбекски (латиницей, часто разговорно: nechpul, bosh, kvartira bormi) и по-английски; language — код языка последнего сообщения (ru/uz/en/…). Отвечай только JSON.",
         messages=[{"role": "user", "content": "Последние сообщения:\n" + "\n".join(lines) + "\n\nПоследнее сообщение гостя: " + (ctx["last_in"] or "[не текст]")[:500]}])
     text = next((b.text for b in resp.content if b.type == "text"), "{}")
@@ -945,7 +957,7 @@ def _reply(ctx: dict, state: dict, extra: str = "") -> str:
         pass
     for _ in range(5):
         resp = _client().messages.create(model=model, max_tokens=1024, system=system, messages=messages, tools=TOOLS,
-                                         output_config={"effort": "low"})
+                                         output_config={"effort": setting("ai_effort") or "medium"})
         for k in usage_sum:
             usage_sum[k] += getattr(resp.usage, k, 0) or 0
         text_out = "\n".join(b.text for b in resp.content if b.type == "text").strip() or text_out
@@ -1025,6 +1037,13 @@ def on_incoming(chat_id: int) -> None:
     threading.Thread(target=later, daemon=True, name=f"ai-{chat_id}").start()
 
 
+def _status(chat_id: int, text: str) -> None:
+    """What the assistant last did (or why it stayed silent) — shown in the chat header."""
+    from . import inbox
+    with database.get_conn() as conn:
+        conn.execute("UPDATE inbox_chats SET ai_last_status = ?, rev = ? WHERE id = ?", (f"{datetime.now().strftime('%H:%M')} · {text}"[:200], inbox._bump(conn), chat_id))  # noqa: SLF001
+
+
 def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: bool = False, _retry: bool = False) -> dict:
     """One pass over the chat: triage → reply → send or draft. force=True is the
     «Ответить с ИИ» button (always a draft, ignores mode/pause/budget).
@@ -1058,12 +1077,17 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
             tri = _triage(ctx)
         except Exception as exc:  # noqa: BLE001
             _log(chat_id, "triage", setting("ai_model_triage"), "error", "", None, 0, str(exc))
+            _status(chat_id, "ошибка: " + config.redact(str(exc))[:120])
             return {"status": "error", "error": str(exc)[:200]}
         if tri.get("handover"):
             _do_handover(chat_id, {"reason": tri.get("reason") or tri.get("category") or "", "summary": ctx["last_in"][:400]}, mode)
             _log(chat_id, "reply", setting("ai_model"), "handover", tri.get("reason") or "")
+            _status(chat_id, "передал человеку: " + (tri.get("reason") or ""))
             return {"status": "handover"}
         if not tri.get("needs_reply"):
+            _status(chat_id, "промолчал: " + (tri.get("reason") or "ответ не нужен"))
+            with database.get_conn() as conn:
+                conn.execute("UPDATE inbox_chats SET ai_last_in_id = ? WHERE id = ?", (last_in_id, chat_id))
             return {"status": "skip"}
         ctx["lang"] = tri.get("language") or ""
         try:
@@ -1077,6 +1101,7 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
         text = _reply(ctx, state, extra)
     except Exception as exc:  # noqa: BLE001
         _log(chat_id, "reply", setting("ai_model"), "error", "", None, 0, str(exc))
+        _status(chat_id, "ошибка: " + config.redact(str(exc))[:120])
         return {"status": "error", "error": str(exc)[:200]}
     if nudge and (not text or NO_FOLLOWUP in text):
         _log(chat_id, "followup", state.get("model") or "", "skip", text, state.get("usage"), state.get("ms") or 0)
@@ -1106,6 +1131,7 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
     if text and not nudge:
         with database.get_conn() as conn:
             conn.execute("UPDATE inbox_chats SET ai_last_in_id = ? WHERE id = ?", (last_in_id, chat_id))
+    _status(chat_id, {"sent": "ответил", "draft": "черновик готов"}.get(decision, decision) + (" · передал человеку" if state.get("handover") else "") if text else "передал человеку" if state.get("handover") else "ответ пустой")
     cost = _log(chat_id, "reply", state.get("model") or "", "handover" if state.get("handover") and not text else decision, text, state.get("usage"), state.get("ms") or 0)
     if state.get("handover") or state.get("lead"):
         bg.run(_update_memory, ctx, key=f"ai-mem-{chat_id}")

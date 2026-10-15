@@ -200,7 +200,11 @@
   const nowLocalIso = () => { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
   function renderDraft(c) {
     const box = $("ai-draft"); if (!box) return;
-    if (!c || !c.ai_draft) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    if (!c || !c.ai_draft) {
+      const eff = c && (c.ai_mode || (S.ai && S.ai.mode)) || "off";
+      if (c && c.ai_last_status && eff !== "off" && c.last_dir === "in") { box.innerHTML = `<div class="ib-draft__status">✨ ИИ ${esc(c.ai_last_status)} · <button class="ib-draft__link" data-draft="redo">ответить с ИИ</button></div>`; box.classList.remove("hidden"); return; }
+      box.classList.add("hidden"); box.innerHTML = ""; return;
+    }
     box.innerHTML = `<div class="ib-draft__head"><span>✨ Черновик ИИ${c.ai_note ? " · " + esc(c.ai_note.slice(0, 80)) : ""}</span><span>${esc((c.ai_draft_at || "").slice(11, 16))}</span></div>
       <div class="ib-draft__text">${esc(c.ai_draft)}</div>${(() => { let a = []; try { a = JSON.parse(c.ai_draft_photos || "[]"); } catch (e) { a = []; } return a.length ? `<div class="ib-draft__photos">📷 вместе с ответом уйдут фото: ${esc(a.join(", "))}</div>` : ""; })()}
       <div class="ib-draft__btns"><button class="primary" data-draft="send">Отправить</button><button data-draft="edit">Вставить и править</button><button data-draft="redo">Другой вариант</button><button data-draft="drop">✕ Убрать</button></div>`;
