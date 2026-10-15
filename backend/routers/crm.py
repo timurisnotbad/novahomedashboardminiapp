@@ -197,6 +197,42 @@ def me_telegram_unlink(user: dict = Depends(current_user)):  # noqa: B008
     return {"ok": True}
 
 
+# ---- AI assistant settings ----------------------------------------------------------
+@router.get("/ai/settings")
+def ai_settings(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    return ai.settings()
+
+
+@router.post("/ai/settings")
+def ai_settings_save(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    return ai.save_settings(payload or {})
+
+
+@router.get("/ai/stats")
+def ai_stats(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import ai
+    return ai.stats()
+
+
+@router.post("/ai/examples/import")
+def ai_examples_import(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    return {"imported": ai.import_examples()}
+
+
+@router.post("/ai/test")
+def ai_test(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    if not ai.enabled():
+        raise HTTPException(status_code=400, detail="Ключ API не задан")
+    try:
+        return ai.test_call()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+
+
 @router.get("/apartments/info")
 def apartments_info(user: dict = Depends(current_user)):  # noqa: B008
     return {"items": crm.apartment_info(), "review_url": crm.get_setting("review_url", ""), "vars": list(crm.APT_VARS)}

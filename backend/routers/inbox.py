@@ -67,8 +67,10 @@ class TemplateIn(BaseModel):
 @router.get("/me")
 def me(user: dict = Depends(inbox_user)):  # noqa: B008
     st = inbox.bridge_status()
+    from .. import ai
     return {"user": user, "agents": inbox.agents(), "rev": inbox.current_rev(),
-            "wa": {"status": st.get("status"), "me": st.get("me"), "error": st.get("error")}}
+            "wa": {"status": st.get("status"), "me": st.get("me"), "error": st.get("error")},
+            "ai": {"enabled": ai.enabled(), "mode": ai.setting("ai_mode"), "author": ai.AUTHOR}}
 
 
 @router.get("/status")
@@ -254,9 +256,56 @@ def patch_client(chat_id: int, payload: ClientPatch, user: dict = Depends(inbox_
 @router.post("/chats/{chat_id}/send")
 def send(chat_id: int, payload: SendIn, user: dict = Depends(inbox_user)):  # noqa: B008
     try:
-        return inbox.send(chat_id, user["name"], payload.text[:4000], quoted_id=payload.quoted_id)
+        r = inbox.send(chat_id, user["name"], payload.text[:4000], quoted_id=payload.quoted_id)
     except inbox.BridgeError as exc:
         _fail(exc)
+    try:
+        from .. import ai
+        ai.pause_for_human(chat_id, payload.text)  # a person took over: the assistant steps back for a while
+    except Exception:  # noqa: BLE001
+        pass
+    return r
+
+
+# ---- AI assistant per chat ------------------------------------------------------
+@router.post("/chats/{chat_id}/ai")
+def chat_ai_mode(chat_id: int, payload: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    """mode: off | draft | auto | null (= as in settings)."""
+    from .. import ai
+    ai.set_chat_mode(chat_id, payload.get("mode"))
+    c = inbox.get_chat(chat_id)
+    eff = c and ai.chat_mode(c)
+    reason = ""
+    if c and eff == "off" and (c.get("ai_mode") or ai.setting("ai_mode")) != "off":
+        reason = "ключ API не задан" if not ai.enabled() else f"канал «{c.get('channel_name')}» не включён для ИИ (Интеграции → ИИ-ассистент → Каналы)"
+    return {"ok": True, "ai_mode": c and c.get("ai_mode"), "effective": eff, "reason": reason}
+
+
+@router.post("/chats/{chat_id}/ai/draft")
+def chat_ai_draft(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    """«Ответить с ИИ»: a draft right now, whatever the mode."""
+    from .. import ai
+    if not ai.enabled():
+        raise HTTPException(status_code=400, detail="ИИ-ассистент не настроен: Интеграции → ИИ-ассистент → ключ API")
+    from starlette.concurrency import run_in_threadpool  # noqa: F401
+    r = ai.handle(chat_id, force=True)
+    if r.get("status") == "error":
+        raise HTTPException(status_code=424, detail=config.redact(r.get("error") or "ошибка ИИ"))
+    return r
+
+
+@router.delete("/chats/{chat_id}/ai/draft")
+def chat_ai_draft_clear(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import ai
+    ai.clear_draft(chat_id)
+    return {"ok": True}
+
+
+@router.post("/chats/{chat_id}/ai/rate")
+def chat_ai_rate(chat_id: int, payload: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    from .. import ai
+    ai.rate(chat_id, bool(payload.get("good")))
+    return {"ok": True}
 
 
 @router.post("/chats/{chat_id}/file")

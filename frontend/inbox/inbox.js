@@ -197,6 +197,23 @@
   }
 
   // ---- conversation -----------------------------------------------------------
+  const nowLocalIso = () => { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
+  function renderDraft(c) {
+    const box = $("ai-draft"); if (!box) return;
+    if (!c || !c.ai_draft) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    box.innerHTML = `<div class="ib-draft__head"><span>✨ Черновик ИИ${c.ai_note ? " · " + esc(c.ai_note.slice(0, 80)) : ""}</span><span>${esc((c.ai_draft_at || "").slice(11, 16))}</span></div>
+      <div class="ib-draft__text">${esc(c.ai_draft)}</div>
+      <div class="ib-draft__btns"><button class="primary" data-draft="send">Отправить</button><button data-draft="edit">Вставить и править</button><button data-draft="redo">Другой вариант</button><button data-draft="drop">✕ Убрать</button></div>`;
+    box.classList.remove("hidden");
+  }
+  async function aiDraft() {
+    if (!S.open) return;
+    const btn = $("ai-btn"); if (btn) btn.disabled = true;
+    toast("ИИ читает переписку…");
+    try { const r = await req(`/chats/${S.open.id}/ai/draft`, { method: "POST" }); if (r.status === "handover") toast("ИИ считает, что нужен человек — чат помечен"); else if (!r.text) toast("ИИ не предложил ответ"); }
+    catch (e) { toast(e.message); }
+    finally { if (btn) btn.disabled = false; }
+  }
   function renderHead() {
     const c = S.open && S.chats.get(S.open.id) || S.open;
     if (!c) return;
@@ -204,6 +221,17 @@
     const phone = c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : "";
     const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
     $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
+    // AI assistant: the per-chat mode and the pending draft
+    const aiSel = $("ai-mode");
+    if (aiSel) {
+      aiSel.classList.toggle("hidden", !(S.ai && S.ai.enabled));
+      aiSel.value = c.ai_mode || "";
+      const eff = c.ai_mode || (S.ai && S.ai.mode) || "off";
+      aiSel.classList.toggle("on-auto", eff === "auto" && !(c.ai_paused_until && c.ai_paused_until > nowLocalIso()));
+      aiSel.title = c.ai_paused_until && c.ai_paused_until > nowLocalIso() ? "Пауза: в чате ответил человек, ИИ молчит до " + c.ai_paused_until.slice(11, 16) : "ИИ-ассистент в этом чате: выкл / черновики / отвечает сам";
+    }
+    const ab = $("ai-btn"); if (ab) ab.classList.toggle("hidden", !(S.ai && S.ai.enabled));
+    renderDraft(c);
     const b = $("conv-booking");
     const stay = !c.booking && c.bk_stay ? c.bk_stay : null;
     const stayDates = stay && stay.checkin && stay.checkout ? `${esc(dm(stay.checkin))}–${esc(dm(stay.checkout))}` : "";
@@ -256,7 +284,7 @@
     const caption = m.kind === "document" && m.text === m.file_name ? "" : m.text;
     if (caption) body += `<div class="ib-m__t">${linkify(caption)}</div>`;
     if (!body) body = `<div class="ib-m__t" style="color:var(--label-2)">${esc(kindLabel(m.kind))}</div>`;
-    const author = out ? `<div class="ib-m__author">${esc(m.author || "")}</div>` : "";
+    const author = out ? `<div class="ib-m__author ${m.author === (S.ai && S.ai.author) ? "ai" : ""}">${m.author === (S.ai && S.ai.author) ? "✨ " : ""}${esc(m.author || "")}</div>` : "";
     const err = m.status === "failed"
       ? `<div class="ib-m__err">Не отправлено${m.error ? ": " + esc(m.error) : ""} · <button data-retry="${m.id}">повторить</button></div>` : "";
     return `${author}<div class="ib-m ${out ? "out" : "in"} ${m.reaction ? "has-react" : ""}" data-mid="${m.id}">
@@ -927,6 +955,20 @@
     $("reply-cancel").addEventListener("click", () => setReply(null));
     $("wa-state").addEventListener("click", openConn);
     $("new-chat").addEventListener("click", openNewChat);
+    $("ai-mode").addEventListener("change", async (e) => {
+      if (!S.open) return;
+      try { const r = await req(`/chats/${S.open.id}/ai`, { method: "POST", json: { mode: e.target.value || null } }); toast(r.effective === "auto" ? "ИИ отвечает в этом чате сам" : r.effective === "draft" ? "ИИ готовит черновики" : r.reason ? "ИИ не работает здесь: " + r.reason : "ИИ выключен в этом чате"); }
+      catch (err) { toast(err.message); }
+    });
+    $("ai-btn").addEventListener("click", aiDraft);
+    $("ai-draft").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-draft]"); if (!b || !S.open) return;
+      const c = S.chats.get(S.open.id) || S.open; const text = c.ai_draft || "";
+      if (b.dataset.draft === "send") { $("text").value = text; autosize(); await sendText(); return; }
+      if (b.dataset.draft === "edit") { $("text").value = text; autosize(); $("text").focus(); c.ai_draft = null; renderDraft(c); try { await req(`/chats/${S.open.id}/ai/draft`, { method: "DELETE" }); } catch (err) { /* ignore */ } return; }
+      if (b.dataset.draft === "redo") { aiDraft(); return; }
+      if (b.dataset.draft === "drop") { c.ai_draft = null; renderDraft(c); try { await req(`/chats/${S.open.id}/ai/draft`, { method: "DELETE" }); } catch (err) { /* ignore */ } }
+    });
     $("assignee").addEventListener("change", async (e) => {
       if (!S.open) return;
       try {
@@ -1064,6 +1106,7 @@
     try {
       const me = await req("/me");
       S.me = me.user;
+      S.ai = me.ai || { enabled: false };
       S.agents = me.agents || [];
       $("me-name").textContent = "Вы: " + S.me.name;
     } catch (e) {

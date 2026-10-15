@@ -44,3 +44,27 @@ def load(data_dir: Path) -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("cannot write %s — secrets will change on every start", path)
     return data
+
+
+def save_extra(data_dir: Path, **values) -> None:
+    """Store extra secrets (e.g. the AI API key) next to the generated ones."""
+    path = data_dir / "secrets.json"
+    data: dict = {}
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except Exception:  # noqa: BLE001
+        data = {}
+    for k, v in values.items():
+        if v:
+            data[k] = str(v)
+        else:
+            data.pop(k, None)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)

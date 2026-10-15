@@ -727,6 +727,11 @@ def _auto_incoming(chat_id: int, is_first: bool) -> None:
         crm_ext.on_incoming(chat_id, is_first)
     except Exception:  # noqa: BLE001
         logger.exception("auto incoming failed")
+    try:
+        from . import ai
+        ai.on_incoming(chat_id)  # the assistant: triage, reply or draft after a short pause
+    except Exception:  # noqa: BLE001
+        logger.exception("ai incoming failed")
 
 
 def store_history(items: list[dict]) -> int:

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>Чаты · Nova Home</title>
-  <link rel="stylesheet" href="inbox.css?v=81" />
+  <link rel="stylesheet" href="inbox.css?v=82" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -50,6 +50,9 @@
           </div>
           <select id="cl-status" class="ib-assignee ib-status" title="Статус клиента"></select>
           <select id="assignee" class="ib-assignee" title="Ответственный"></select>
+          <select id="ai-mode" class="ib-assignee ib-ai hidden" title="ИИ-ассистент в этом чате: выкл / черновики / отвечает сам">
+            <option value="">ИИ: как в настройках</option><option value="off">ИИ: выкл</option><option value="draft">ИИ: черновик</option><option value="auto">ИИ: авто</option>
+          </select>
           <button class="ib-icon ib-receipt hidden" id="receipt" title="Обработано: снять метку «нужен ответ» и показать гостю две галочки. Пока вы не ответите или не нажмёте сюда, чат остаётся непрочитанным для всей команды и гость видит сообщения непрочитанными">
             <svg viewBox="0 0 24 24"><path d="M2.5 12.5l4 4L15 8"/><path d="M9 16.5l1.5 1.5L22 7"/></svg>
           </button>
@@ -63,7 +66,9 @@
           <div><b>Ответ на:</b> <span id="reply-text"></span></div>
           <button class="ib-icon" id="reply-cancel"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>
+        <div class="ib-draft hidden" id="ai-draft"></div>
         <footer class="ib-compose">
+          <button class="ib-icon ib-aibtn hidden" id="ai-btn" title="Ответить с ИИ: черновик ответа по истории переписки и базе знаний">✨</button>
           <button class="ib-icon" id="attach" title="Файл / фото">
             <svg viewBox="0 0 24 24"><path d="M20 11.5l-8.2 8.2a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>
           </button>
@@ -94,8 +99,8 @@
     </div>
   </div>
 
-  <script src="/js/common.js?v=81"></script>
-  <script src="/js/phone.js?v=81"></script>
-  <script src="inbox.js?v=81"></script>
+  <script src="/js/common.js?v=82"></script>
+  <script src="/js/phone.js?v=82"></script>
+  <script src="inbox.js?v=82"></script>
 </body>
 </html>

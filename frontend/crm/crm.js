@@ -806,7 +806,8 @@
     if (stale(seq)) return;
     const rc = d.realtycalendar;
     $("main").innerHTML = `<div class="page-head"><h1>Интеграции</h1></div>
-      <div class="seg itabs" id="itabs"><button data-itab="conn">Подключения</button><button data-itab="req">Реквизиты</button><button data-itab="flow">Сценарий заезда</button><button data-itab="notif">Уведомления</button></div>
+      <div class="seg itabs" id="itabs"><button data-itab="conn">Подключения</button><button data-itab="req">Реквизиты</button><button data-itab="flow">Сценарий заезда</button><button data-itab="notif">Уведомления</button><button data-itab="ai">ИИ-ассистент</button></div>
+      <div class="itab" data-tab="ai" hidden><div id="ai-tab"><div class="card"><div class="muted">Загрузка…</div></div></div></div>
       <div class="itab" data-tab="conn" hidden>
       <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
         <div><h3>RealtyCalendar</h3><div class="small ${rc.configured ? "ok" : "warn"}">${rc.configured ? "Подключён" : "RC_TOKEN не задан — демо-данные"}</div>
@@ -886,6 +887,7 @@
     $("i-allch").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_all_channels: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
+    renderAiTab();
     $("i-bilingual").addEventListener("change", async (e) => { try { await post("/checklist", { bilingual: e.target.checked }); toast(e.target.checked ? "Сообщения уходят на двух языках" : "Язык — по карточке гостя"); } catch (err) { toast(err.message); } });
     // apartments table: door codes, keys, Wi-Fi
     (async () => {
@@ -903,6 +905,47 @@
     })();
     stepsEditor(d.settings.steps || []);
   };
+
+  // ---- AI assistant: settings + stats (Integrations → ИИ-ассистент) ------------------------
+  async function renderAiTab() {
+    const box = $("ai-tab"); if (!box) return;
+    const ro = S.me.role !== "admin";
+    let st, cfg;
+    try { st = await get("/ai/stats"); cfg = ro ? null : await get("/ai/settings"); } catch (err) { box.innerHTML = `<div class="card"><div class="bad">${esc(err.message)}</div></div>`; return; }
+    const money = (v) => "$" + Number(v || 0).toFixed(2);
+    const MODE = { off: "Выключен", draft: "Черновики: ИИ предлагает ответ, отправляет менеджер", auto: "Авто: отвечает сам, передаёт человеку, когда нужно" };
+    const stat = (t) => `<div class="stat" style="cursor:default"><b>${t.n || 0}</b><span>обращений к ИИ · ответил ${t.sent || 0} · черновиков ${t.drafts || 0} · передал человеку ${t.handover || 0} · ошибок ${t.errors || 0}</span></div>`;
+    box.innerHTML = `
+      <div class="card"><h3>ИИ-ассистент в чатах</h3>
+        <div class="muted small">Читает всю переписку с гостем, карточку, брони и базу знаний; дешёвая модель решает, нужен ли ответ и нужен ли человек, основная отвечает. Простые вопросы закрывает сам, заявки на бронь собирает в сделку и задачу менеджеру, спорные случаи передаёт человеку с уведомлением. Как только в чате пишет человек, ИИ замолкает на ${esc(cfg ? cfg.ai_pause_hours : "2")} ч. Режим можно задать для каждого чата в его шапке.</div>
+        <div class="grid c3" style="margin:12px 0 4px"><div class="stat" style="cursor:default"><b>${st.enabled ? "✓" : "—"}</b><span>${st.enabled ? "ключ API задан · режим: " + esc(MODE[st.mode] || st.mode) : "ключ API не задан"}</span></div>
+          <div class="stat" style="cursor:default"><b>${money(st.month.cost)}</b><span>потрачено в этом месяце из ${money(st.budget)} · сегодня ${money(st.today.cost)}</span></div>
+          ${stat(st.month)}</div>
+        ${st.budget_left <= 0 && st.enabled ? `<div class="bad small">Лимит месяца исчерпан: авто-режим работает как черновики до следующего месяца или до повышения лимита.</div>` : ""}</div>
+      ${cfg ? `<div class="card"><h3>Настройки</h3>
+        <div class="form-row"><div><label class="lbl">Ключ API Anthropic <span class="muted">— console.anthropic.com → API keys</span></label><input class="field" id="ai-key" type="password" placeholder="${cfg.key_set ? "ключ сохранён — вставьте новый, чтобы заменить" : "sk-ant-…"}" autocomplete="off" /></div>
+          <div><label class="lbl">Режим по умолчанию</label><select class="field" id="ai-mode">${["off", "draft", "auto"].map((m) => `<option value="${m}" ${cfg.ai_mode === m ? "selected" : ""}>${MODE[m]}</option>`).join("")}</select></div></div>
+        <div class="form-row c3"><div><label class="lbl">Основная модель (ответы)</label><select class="field" id="ai-model">${Object.entries(cfg.models).map(([k, v]) => `<option value="${k}" ${cfg.ai_model === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+          <div><label class="lbl">Модель сортировки и памяти</label><select class="field" id="ai-model-triage">${Object.entries(cfg.models).map(([k, v]) => `<option value="${k}" ${cfg.ai_model_triage === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+          <div><label class="lbl">Лимит в месяц, $</label><input class="field" id="ai-budget" type="number" min="0" step="1" value="${esc(cfg.ai_budget)}" /></div></div>
+        <div class="form-row c3"><div><label class="lbl">Каналы <span class="muted">— wa, tg, wztg, wz, ig, bk</span></label><input class="field" id="ai-channels" value="${esc(cfg.ai_channels)}" /></div>
+          <div><label class="lbl">Пауза после ответа человека, ч</label><input class="field" id="ai-pause" type="number" min="0" step="0.5" value="${esc(cfg.ai_pause_hours)}" /></div>
+          <div><label class="lbl">Макс. ответов ИИ подряд без результата</label><input class="field" id="ai-turns" type="number" min="1" max="30" value="${esc(cfg.ai_max_turns)}" /></div></div>
+        <label class="lbl">Правила для ассистента <span class="muted">— что можно, что нельзя, когда звать человека</span></label><textarea class="field" id="ai-rules" rows="10">${esc(cfg.ai_rules)}</textarea>
+        <label class="lbl" style="margin-top:8px">База знаний <span class="muted">— цены, условия, адрес, как добраться, реквизиты, частые вопросы; только отсюда ИИ берёт факты</span></label><textarea class="field" id="ai-knowledge" rows="12" placeholder="Например:\nЦены: студия в блоке A — от 45 $/ночь, 2-комнатные — от 70 $/ночь; при брони от 7 ночей обсуждается индивидуально (менеджер).\nПредоплата: 30% на карту, остальное при заселении.\nРанний заезд: по возможности, бесплатно с 12:00 при свободной квартире.\nТрансфер из аэропорта: 15 $.\nРеквизиты: карта Uzcard 8600 …, получатель …">${esc(cfg.ai_knowledge)}</textarea>
+        <div class="row-actions" style="position:static"><button class="btn primary" id="ai-save">Сохранить</button><button class="btn" id="ai-test">Проверить ключ</button><button class="btn" id="ai-import" title="Собрать из прошлых переписок пары «вопрос гостя → ответ менеджера»: ИИ опирается на них как на примеры">Примеры из истории (${st.examples})</button></div></div>` : ""}
+      <div class="card"><h3>Последние действия ИИ</h3>
+        ${st.recent.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Когда</th><th>Чат</th><th>Что</th><th>Результат</th><th>$</th></tr></thead><tbody>${st.recent.map((r) => `<tr><td class="muted small">${esc(dtShort(r.at))}</td><td>${r.chat_id ? `<a href="#messages/${r.chat_id}">${esc(r.chat_name || r.push_name || "#" + r.chat_id)}</a>` : "—"}</td><td class="small">${esc(r.kind)} · ${esc(r.model || "")}</td><td class="small ${r.error ? "bad" : ""}">${esc(r.decision || "")}${r.error ? " · " + esc(r.error) : ""}${r.text ? `<div class="muted" style="max-width:420px;white-space:pre-wrap">${esc(r.text.slice(0, 220))}${r.text.length > 220 ? "…" : ""}</div>` : ""}</td><td class="small">${Number(r.cost || 0).toFixed(4)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="muted">Пока ничего: задайте ключ, выберите режим и напишите в тестовый чат.</div>`}</div>`;
+    if (!cfg) return;
+    $("ai-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+      const body = { ai_mode: val("ai-mode"), ai_model: val("ai-model"), ai_model_triage: val("ai-model-triage"), ai_budget: val("ai-budget"), ai_channels: val("ai-channels"),
+        ai_pause_hours: val("ai-pause"), ai_max_turns: val("ai-turns"), ai_rules: $("ai-rules").value, ai_knowledge: $("ai-knowledge").value };
+      if ($("ai-key").value.trim()) body.api_key = $("ai-key").value.trim();
+      await post("/ai/settings", body); toast("Сохранено"); renderAiTab();
+    }));
+    $("ai-test").addEventListener("click", (e) => busy(e.currentTarget, async () => { const r = await post("/ai/test"); toast(`Ключ работает: ${r.model} ответила «${r.text}» за $${Number(r.cost).toFixed(5)}`); }));
+    $("ai-import").addEventListener("click", (e) => busy(e.currentTarget, async () => { const r = await post("/ai/examples/import"); toast(`Добавлено примеров: ${r.imported}`); renderAiTab(); }));
+  }
 
   // ---- quick commands ------------------------------------------------------------
   ROUTES.commands = async () => {

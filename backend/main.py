@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
+from . import ai, auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
     docs.init_db()
     webpush.init_db()
     booking_ext.init_db()
+    ai.init_db()
     scheduler.start()
     if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
         logger.error("META_APP_SECRET is empty: the Meta webhook stays CLOSED (404) until it is set in .env")
