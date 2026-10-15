@@ -978,6 +978,61 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
     return _msg_out(row)
 
 
+def send_album(chat_id: int, author: str, caption: str, items: list) -> list[dict]:
+    """Several photos at once: one Telegram album per 10 (the guest sees a
+    gallery, not twenty separate messages); other channels get them one by one,
+    the caption on the first. items = [(media, mime), …]."""
+    items = [(m, mt or "image/jpeg") for m, mt in items if m]
+    if not items:
+        return []
+    chat = get_chat(chat_id)
+    if not chat:
+        raise BridgeError("Чат не найден")
+    if (chat.get("channel") or "wa") != "tg" or len(items) < 2:
+        return [send(chat_id, author, caption if i == 0 else "", m, mt) for i, (m, mt) in enumerate(items)]
+    from . import tg_channels
+    try:
+        send_receipt(chat_id, "reply")
+    except Exception:  # noqa: BLE001
+        pass
+    out: list[dict] = []
+    for k in range(0, len(items), 10):
+        chunk = items[k:k + 10]
+        at, mids = _now(), []
+        with database.get_conn() as conn:
+            for i, (m, mt) in enumerate(chunk):
+                kind = "image" if mt.startswith("image/") else "video" if mt.startswith("video/") else "document"
+                text = caption if (k == 0 and i == 0) else ""
+                cur = conn.execute(
+                    "INSERT INTO inbox_messages (chat_id, wa_id, direction, author, kind, text, media, mime, status, at, rev) "
+                    "VALUES (?, ?, 'out', ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (chat_id, "local-" + uuid.uuid4().hex, author, kind, text, m, mt, at, _bump(conn)))
+                mids.append(cur.lastrowid)
+            _touch_chat(conn, chat_id, at, "out", kind, text, "pending", 0)
+            conn.execute("UPDATE inbox_chats SET last_author = ? WHERE id = ?", (author, chat_id))
+            if not chat["assignee"]:
+                conn.execute("UPDATE inbox_chats SET assignee = ? WHERE id = ?", (author, chat_id))
+        try:
+            res = tg_channels.user_send_album({"jid": chat["jid"], "text": caption if k == 0 else "", "media": [m for m, _ in chunk]})
+        except BridgeError as exc:
+            with database.get_conn() as conn:
+                rev = _bump(conn)
+                for mid in mids:
+                    conn.execute("UPDATE inbox_messages SET status = 'failed', error = ?, rev = ? WHERE id = ?", (str(exc), rev, mid))
+                conn.execute("UPDATE inbox_chats SET last_status = 'failed', rev = ? WHERE id = ?", (rev, chat_id))
+            raise
+        with database.get_conn() as conn:
+            rev = _bump(conn)
+            for mid, wid in zip(mids, res.get("ids") or []):
+                dup = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ? AND id != ?", (wid, mid)).fetchone()
+                if dup:
+                    conn.execute("DELETE FROM inbox_messages WHERE id = ?", (dup["id"],))
+                conn.execute("UPDATE inbox_messages SET wa_id = ?, status = 'sent', rev = ? WHERE id = ?", (wid, rev, mid))
+            conn.execute("UPDATE inbox_chats SET last_status = 'sent', rev = ? WHERE id = ? AND last_status = 'pending'", (rev, chat_id))
+            out += [_msg_out(conn.execute("SELECT * FROM inbox_messages WHERE id = ?", (mid,)).fetchone()) for mid in mids]
+    return out
+
+
 def _dispatch_send(channel: str, payload: dict) -> dict:
     """Hand an outgoing message to its channel; returns {"id": external id}."""
     if channel == "wa":

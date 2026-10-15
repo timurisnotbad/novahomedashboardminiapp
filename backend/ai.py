@@ -739,7 +739,7 @@ TOOLS = [
      "strict": True, "input_schema": {"type": "object", "properties": {"checkin": {"type": "string", "description": "YYYY-MM-DD"}, "checkout": {"type": "string", "description": "YYYY-MM-DD"},
                                                                        "apartment": {"type": "string", "description": "код квартиры (A-066) или блока (A, B); пусто — все"}},
                                       "required": ["checkin", "checkout", "apartment"], "additionalProperties": False}},
-    {"name": "send_photos", "description": "Отправить гостю фото квартиры (до 3 снимков из CRM) с короткой подписью. Вызывай после того, как предложил квартиру, или когда просят фото. Одна квартира за вызов.",
+    {"name": "send_photos", "description": "Отправить гостю все фото квартиры из CRM (альбомом) с короткой подписью. Вызывай после того, как предложил квартиру, или когда просят фото. Одна квартира за вызов.",
      "strict": True, "input_schema": {"type": "object", "properties": {"apartment": {"type": "string", "description": "код квартиры, например B-005"},
                                                                        "caption": {"type": "string", "description": "подпись к первому фото на языке гостя, до 120 символов"}},
                                       "required": ["apartment", "caption"], "additionalProperties": False}},
@@ -818,17 +818,14 @@ def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
             return json.dumps(availability(inp.get("checkin", ""), inp.get("checkout", ""), inp.get("apartment", "")), ensure_ascii=False)
         if name == "send_photos":
             apt = (inp.get("apartment") or "").strip().upper()
-            photos = crm.apartment_photos(apt)[:3]
+            photos = crm.apartment_photos(apt)[:MAX_PHOTOS]
             if not photos:
                 return json.dumps({"ok": False, "error": f"у {apt} нет фото в CRM — скажи гостю, что менеджер пришлёт фото"}, ensure_ascii=False)
             if state.get("mode") == "auto":
-                sent = 0
-                for i, ph in enumerate(photos):
-                    try:
-                        inbox.send(chat["id"], AUTHOR, (inp.get("caption") or "")[:200] if i == 0 else "", ph["media"], ph["mime"])
-                        sent += 1
-                    except Exception as exc:  # noqa: BLE001
-                        return json.dumps({"ok": bool(sent), "sent": sent, "error": str(exc)[:120]}, ensure_ascii=False)
+                try:
+                    sent = len(inbox.send_album(chat["id"], AUTHOR, (inp.get("caption") or "")[:200], [(ph["media"], ph["mime"]) for ph in photos]))
+                except Exception as exc:  # noqa: BLE001
+                    return json.dumps({"ok": False, "error": str(exc)[:120]}, ensure_ascii=False)
                 return json.dumps({"ok": True, "sent": sent, "note": "фото уже ушли гостю, в тексте не повторяй их и не пиши «Фото»"}, ensure_ascii=False)
             state.setdefault("photos", [])
             if apt not in state["photos"]:
@@ -1116,6 +1113,7 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
 
 
 NO_FOLLOWUP = "NO_FOLLOWUP"
+MAX_PHOTOS = 30  # per apartment per send (Telegram albums of 10, WhatsApp one by one)
 
 
 def followups() -> int:
@@ -1172,9 +1170,8 @@ def send_draft(chat_id: int, author: str, text: str | None = None) -> dict:
     if body.strip():
         inbox.send(chat_id, author, body.strip())
     for apt in apts[:3]:
-        for i, ph in enumerate(crm.apartment_photos(apt)[:3]):
-            inbox.send(chat_id, author, apt if i == 0 else "", ph["media"], ph["mime"])
-            out["photos"] += 1
+        photos = crm.apartment_photos(apt)[:MAX_PHOTOS]
+        out["photos"] += len(inbox.send_album(chat_id, author, apt, [(ph["media"], ph["mime"]) for ph in photos]))
     with database.get_conn() as conn:
         conn.execute("UPDATE inbox_chats SET ai_draft = NULL, ai_draft_photos = NULL, rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
     return out

@@ -319,6 +319,31 @@ def user_send(payload: dict) -> dict:
         raise inbox.BridgeError(_err(exc)) from exc
 
 
+def user_send_album(payload: dict) -> dict:
+    """Several photos/videos as one Telegram album (max 10): payload.media is a
+    list of file names, payload.text the caption of the first one."""
+    if not _me:
+        raise inbox.BridgeError("Telegram-аккаунт не подключён — войдите в CRM → Каналы")
+    uid = int(payload["jid"].split(":")[1])
+    names = [m for m in (payload.get("media") or []) if m][:10]
+    if not names:
+        raise inbox.BridgeError("Пустой альбом")
+
+    async def go():
+        paths = [str(config.INBOX_MEDIA_DIR / m) for m in names]
+        caps = [payload.get("text") or ""] + [""] * (len(paths) - 1)
+        msgs = await _client.send_file(uid, paths, caption=caps)
+        if not isinstance(msgs, list):
+            msgs = [msgs]
+        return {"ids": [f"tg:{uid}:{m.id}" for m in msgs]}
+    try:
+        return _run(go(), 180)
+    except inbox.BridgeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise inbox.BridgeError(_err(exc)) from exc
+
+
 def user_lookup(phone: str) -> dict:
     """Is this number on Telegram? Imports the contact for a moment (the only
     way Telegram offers), returns {exists, id, name, phone}."""

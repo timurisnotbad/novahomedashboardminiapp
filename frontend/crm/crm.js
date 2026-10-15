@@ -919,7 +919,7 @@
           $("ph-list").innerHTML = mine.length ? mine.map((p) => `<div style="position:relative;display:inline-block;margin:0 8px 8px 0"><img src="${esc(p.url)}" style="height:110px;border-radius:8px;display:block" alt="" />${ro ? "" : `<button class="btn sm" data-phdel="${p.id}" style="position:absolute;top:4px;right:4px">✕</button>`}</div>`).join("") : `<div class="muted small">Фото пока нет</div>`;
         };
         modal(`<h2>Фото · ${esc(apt === "*" ? "все квартиры" : apt.length === 1 ? "блок " + apt : apt)}</h2>
-          <div class="muted small">Ассистент отправляет гостю до 3 первых фото, когда предлагает квартиру. Если у квартиры нет своих фото, берутся фото блока. JPG, PNG или WebP до 8 МБ.</div>
+          <div class="muted small">Ассистент отправляет гостю все фото квартиры (до 30) альбомом, когда предлагает её. Если у квартиры нет своих фото, берутся фото блока. JPG, PNG или WebP до 8 МБ. Порядок — как загружали.</div>
           <div id="ph-list" style="margin-top:10px"></div>
           ${ro ? "" : `<input type="file" id="ph-file" accept="image/jpeg,image/png,image/webp" multiple style="margin-top:6px" />`}
           <div class="row-actions"><button class="btn" data-close>Закрыть</button></div>`);
