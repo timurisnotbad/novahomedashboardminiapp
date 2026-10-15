@@ -33,7 +33,8 @@ MODEL_NAMES = {"claude-opus-5-5": "Claude Opus 5.5 — лучшее качест
                "claude-haiku-5-5": "Claude Haiku 5.5 — самый дешёвый"}
 DEFAULTS = {"ai_mode": "off", "ai_model": "claude-opus-5-5", "ai_model_triage": "claude-haiku-5-5", "ai_budget": "30",
             "ai_channels": "wa,tg,wztg,wz", "ai_pause_hours": "2", "ai_max_turns": "8", "ai_debounce": "20",
-            "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850", "ai_style": "", "ai_transcribe": "1"}
+            "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850", "ai_style": "", "ai_transcribe": "1",
+            "ai_playbook": "", "ai_followup_hours": "3"}
 # Rules saved by an admin before v84 equal one of these old defaults: treat them as «use the default».
 _OLD_RULES = (  # noqa: E501
     """Ты — ассистент апартаментов Nova Home (Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
@@ -81,7 +82,7 @@ def init_db() -> None:
     with database.get_conn() as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]
         for col, decl in (("ai_mode", "TEXT"), ("ai_paused_until", "TEXT"), ("ai_draft", "TEXT"), ("ai_draft_at", "TEXT"),
-                          ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT")):
+                          ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT"), ("ai_followup_at", "TEXT")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE inbox_chats ADD COLUMN {col} {decl}")  # noqa: S608
         mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
@@ -238,9 +239,15 @@ def _norm(t: str) -> str:
     return re.sub(r"\s+", " ", (t or "").strip())
 
 
+def playbook_text() -> str:
+    from . import ai_playbook
+    return setting("ai_playbook").strip() or ai_playbook.DEFAULT_PLAYBOOK
+
+
 def settings() -> dict:
     out = {k: setting(k) for k in DEFAULTS}
     out["ai_rules"] = rules_text()
+    out["ai_playbook"] = playbook_text()
     out["openai_key_set"] = bool(openai_key())
     out["key_set"] = enabled()
     out["models"] = MODEL_NAMES
@@ -560,7 +567,7 @@ def _system(ctx: dict) -> list[dict]:
                  + "; ".join(f"{k}: {r[f]}" for k, f in (("описание", "descr"), ("домофон", "door_code"), ("ключи", "keys_in"), ("ключи при выезде", "keys_out"), ("Wi‑Fi", "wifi"), ("заметка", "note")) if r.get(f))
                  for r in apt_rows if any(r.get(f) for f in crm.APT_FIELDS)]
     ci, co_t = crm.default_times()
-    stable = (f"{rules}\n\n## Компания\n{co.get('name') or 'Nova Home'} · адрес: {co.get('address') or '—'} · телефон: {co.get('phone') or '—'} · "
+    stable = (f"{rules}\n\n## Методика продаж\n{playbook_text()}\n\n## Компания\n{co.get('name') or 'Nova Home'} · адрес: {co.get('address') or '—'} · телефон: {co.get('phone') or '—'} · "
               f"заезд с {ci}, выезд до {co_t}.\n\n## База знаний (правда только то, что здесь и в данных CRM)\n{knowledge}\n\n"
               f"## Квартиры\n" + ("\n".join(apt_lines) or "(нет данных)")
               + (f"\n\n## Стиль команды (памятка из прошлых переписок)\n{style}" if style else ""))
@@ -769,9 +776,11 @@ def _triage(ctx: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Reply (main model + tools)
 # ---------------------------------------------------------------------------
-def _reply(ctx: dict, state: dict) -> str:
+def _reply(ctx: dict, state: dict, extra: str = "") -> str:
     model = setting("ai_model") or "claude-opus-5-5"
     messages = _messages_for_model(ctx["history"])
+    if extra:
+        messages[-1]["content"].append({"type": "text", "text": extra})
     system = _system(ctx)
     t0 = time.time()
     text_out, usage_sum = "", {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
@@ -860,9 +869,10 @@ def on_incoming(chat_id: int) -> None:
     threading.Thread(target=later, daemon=True, name=f"ai-{chat_id}").start()
 
 
-def handle(chat_id: int, force: bool = False, want_draft: bool = False) -> dict:
+def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: bool = False) -> dict:
     """One pass over the chat: triage → reply → send or draft. force=True is the
-    «Ответить с ИИ» button (always a draft, ignores mode/pause/budget)."""
+    «Ответить с ИИ» button (always a draft, ignores mode/pause/budget).
+    nudge=True: the guest went silent after our offer — one gentle follow-up."""
     from . import inbox
     if force:
         _prepare(chat_id)  # the «Ответить с ИИ» button: voice notes first
@@ -873,7 +883,15 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False) -> dict:
     mode = "draft" if force else chat_mode(chat)
     if mode == "off":
         return {"status": "off"}
-    if not force:
+    extra = ""
+    if nudge:
+        if mode != "auto":
+            return {"status": "off"}
+        hrs = setting("ai_followup_hours") or "3"
+        extra = (f"(Служебное: гость не ответил уже {hrs} ч. после твоего последнего сообщения. Напиши одно короткое тёплое напоминание без давления — "
+                 f"уточни, актуально ли, или предложи помощь с выбором; 1–2 фразы, вопрос в конце, на языке гостя, не повторяй прошлое сообщение. "
+                 f"Если напоминание неуместно — гость попрощался, отказался, вопрос закрыт, бронь уже оформлена — ответь ровно {NO_FOLLOWUP}.)")
+    if not force and not nudge:
         last = ctx["history"][-1] if ctx["history"] else None
         if not last or last["direction"] != "in":
             return {"status": "nothing new"}  # the last word is ours
@@ -897,10 +915,13 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False) -> dict:
             pass
     state: dict = {}
     try:
-        text = _reply(ctx, state)
+        text = _reply(ctx, state, extra)
     except Exception as exc:  # noqa: BLE001
         _log(chat_id, "reply", setting("ai_model"), "error", "", None, 0, str(exc))
         return {"status": "error", "error": str(exc)[:200]}
+    if nudge and (not text or NO_FOLLOWUP in text):
+        _log(chat_id, "followup", state.get("model") or "", "skip", text, state.get("usage"), state.get("ms") or 0)
+        return {"status": "skip"}
     if state.get("handover"):
         _do_handover(chat_id, state["handover"], mode)
     decision = "draft"
@@ -920,6 +941,45 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False) -> dict:
     if state.get("handover") or state.get("lead"):
         bg.run(_update_memory, ctx, key=f"ai-mem-{chat_id}")
     return {"status": decision, "text": text, "cost": cost, "handover": bool(state.get("handover")), "lead": state.get("lead")}
+
+
+NO_FOLLOWUP = "NO_FOLLOWUP"
+
+
+def followups() -> int:
+    """A guest went silent after the assistant's offer: one short, warm nudge
+    after ai_followup_hours (auto chats only, daytime only, once per silence)."""
+    from . import inbox
+    try:
+        hours = float(setting("ai_followup_hours") or 0)
+    except ValueError:
+        hours = 0
+    if hours <= 0 or not enabled() or not (9 <= datetime.now().hour < 21):
+        return 0
+    now = datetime.now()
+    lo, hi = (now - timedelta(hours=36)).isoformat(timespec="seconds"), (now - timedelta(hours=hours)).isoformat(timespec="seconds")
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT c.id FROM inbox_chats c WHERE c.last_dir = 'out' AND c.last_author = ? AND c.last_at BETWEEN ? AND ? "
+                            "AND COALESCE(c.ai_mode, '') != 'off' AND (c.ai_followup_at IS NULL OR c.ai_followup_at < "
+                            "(SELECT MAX(m.at) FROM inbox_messages m WHERE m.chat_id = c.id AND m.direction = 'in'))", (AUTHOR, lo, hi)).fetchall()
+    n = 0
+    for r in rows:
+        chat = inbox.get_chat(r["id"])
+        if not chat or chat_mode(chat) != "auto":
+            continue
+        with database.get_conn() as conn:  # the guest had to write at least once in the last 2 days
+            had = conn.execute("SELECT 1 FROM inbox_messages WHERE chat_id = ? AND direction = 'in' AND at >= ? LIMIT 1",
+                               (r["id"], (now - timedelta(days=2)).isoformat(timespec="seconds"))).fetchone()
+            conn.execute("UPDATE inbox_chats SET ai_followup_at = ? WHERE id = ?", (now.isoformat(timespec="seconds"), r["id"]))
+        if not had:
+            continue
+        try:
+            res = handle(r["id"], nudge=True)
+            if res.get("status") == "sent":
+                n += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("ai follow-up failed for chat %s", r["id"])
+    return n
 
 
 def clear_draft(chat_id: int) -> None:

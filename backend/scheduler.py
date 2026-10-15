@@ -85,6 +85,16 @@ def _prune_auto_log() -> None:
         logger.warning("auto log prune failed: %s", exc)
 
 
+def _ai_followups():
+    try:
+        from . import ai
+        n = ai.followups()
+        if n:
+            logger.info("AI follow-ups sent: %s", n)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI follow-ups failed: %s", exc)
+
+
 def _housekeeping():
     """Once a day: rows nobody will read again (reply map of Telegram alerts,
     «seen» previews of the Booking.com extension, finished extension outbox,
@@ -194,6 +204,7 @@ def start() -> None:
         coalesce=True,
     )
     _scheduler.add_job(_housekeeping, "cron", hour=4, minute=17, id="housekeeping", max_instances=1, coalesce=True)
+    _scheduler.add_job(_ai_followups, "interval", minutes=10, id="ai_followups", max_instances=1, coalesce=True)
     _scheduler.start()
     logger.info("Scheduler started (sync %s min, reminders 10 min, summary 22:00, watchdog 1 min)",
                 config.SYNC_INTERVAL_MINUTES)
