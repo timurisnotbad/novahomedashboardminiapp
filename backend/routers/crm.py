@@ -197,6 +197,30 @@ def me_telegram_unlink(user: dict = Depends(current_user)):  # noqa: B008
     return {"ok": True}
 
 
+# ---- apartment photos (sent by the assistant and from the booking card) ---------------
+@router.get("/apartments/photos")
+def apartment_photos(user: dict = Depends(current_user)):  # noqa: B008
+    return crm.apartment_photos()
+
+
+@router.post("/apartments/{apartment}/photos")
+async def apartment_photo_add(apartment: str, request: Request, user: dict = Depends(admin_user)):  # noqa: B008
+    """Raw image body (Content-Type image/*), like the chat file upload."""
+    body = await request.body()
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip()
+    if not body or len(body) > 8_000_000:
+        raise HTTPException(status_code=400, detail="Пустой файл или больше 8 МБ")
+    if mime not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail="Нужно фото JPG, PNG или WebP")
+    return crm.add_apartment_photo(apartment.strip().upper()[:40], body, mime)
+
+
+@router.delete("/apartments/photos/{photo_id}")
+def apartment_photo_del(photo_id: int, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.delete_apartment_photo(photo_id)
+    return {"ok": True}
+
+
 # ---- RealtyCalendar prices ------------------------------------------------------------
 @router.get("/rc/rates")
 def rc_rates_status(user: dict = Depends(current_user)):  # noqa: B008
@@ -1196,16 +1220,22 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
     with database.get_conn() as conn:
         counts = {r[0] or "wa": r[1] for r in conn.execute(
             "SELECT channel, COUNT(*) FROM inbox_chats GROUP BY channel").fetchall()}
+    def safe(name, fn):  # one broken channel must not take the whole page down (it used to be a bare 500)
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("channels: %s status failed", name)
+            return {"configured": True, "ok": False, "error": config.redact(f"{type(exc).__name__}: {exc}")[:300]}
     return _strip_secrets({
-        "wazzup": wazzup.status(),
-        "booking_ext": booking_ext.status(),
+        "wazzup": safe("wazzup", wazzup.status),
+        "booking_ext": safe("booking_ext", booking_ext.status),
         "whatsapp": {**st, "chats": counts.get("wa", 0)},
-        "whatsapp_cloud": {**meta_api.wa_status(), "chats": counts.get("wac", 0)},
-        "instagram": {**meta_api.ig_status(), "chats": counts.get("ig", 0)},
+        "whatsapp_cloud": {**safe("wa_cloud", meta_api.wa_status), "chats": counts.get("wac", 0)},
+        "instagram": {**safe("instagram", meta_api.ig_status), "chats": counts.get("ig", 0)},
         "meta_webhook": {"url": meta_api.webhook_url(), "verify_token_set": bool(config.META_VERIFY_TOKEN),
                          "app_secret_set": bool(config.META_APP_SECRET)},
-        "telegram": {**tg_channels.user_status(), "chats": counts.get("tg", 0)},
-        "telegram_guest_bot": {**tg_channels.bot_status(), "chats": counts.get("tgbot", 0)},
+        "telegram": {**safe("telegram", tg_channels.user_status), "chats": counts.get("tg", 0)},
+        "telegram_guest_bot": {**safe("telegram_bot", tg_channels.bot_status), "chats": counts.get("tgbot", 0)},
         "telegram_bot": {"configured": bool(config.BOT_TOKEN), "notify_targets": config.inbox_notify_targets()},
     }, user)
 

@@ -64,7 +64,7 @@ DEFAULT_RULES = """Ты — ассистент команды Nova Home (апа�
 - Опирайся на памятку о стиле команды и примеры ответов: те же обороты, та же манера.
 - Гость часто пишет одну мысль несколькими сообщениями подряд («хочу забронировать» → «2 человека» → «21-24 декабря»): читай их вместе как один запрос. «21-24 декабря» — это даты заезда и выезда, «2 человека» — число гостей; не переспрашивай то, что уже сказано.
 - Разговорные сокращения и обращения понимай молча: «брат», «братан», «бро», «ака», «aka», «дорогой», «уважаемый» — обращение к тебе, а не имя; «скок / скока» = сколько; «чел» = человек; «сут / сутки» = ночь посуточно; «кв» = квартира; «пред / предоплата»; «нал» = наличные; «перевод» = на карту; «сег» = сегодня; «завтр» = завтра; «ок / окей / xo'p / xop» = согласие; «мб» = может быть; «хз» = не знает; «4 вариант» = четвёртый из перечисленных тобой.
-- Не пиши слово «Фото» и не обещай ссылок, которых у тебя нет. Если просят фото или видео — скажи, что менеджер пришлёт, и продолжай разговор. Не перечисляй все свободные квартиры списком — 2–3 подходящих.
+- Фото квартиры отправляй инструментом send_photos: когда предложил 1–2 подходящих варианта (по одному вызову на квартиру) или когда гость просит фото. В тексте не пиши слово «Фото» как ссылку и не обещай того, чего нет; если у квартиры нет фото, инструмент скажет об этом — тогда напиши, что менеджер пришлёт. Не перечисляй все свободные квартиры списком — 2–3 подходящих.
 
 Честность:
 - Ты ассистент команды, а не конкретный человек. Никогда не называйся именем сотрудника или владельца. Если гость спросит, бот ли ты, — скажи честно: ты ассистент Nova Home, при необходимости подключится менеджер.
@@ -86,7 +86,7 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]
         for col, decl in (("ai_mode", "TEXT"), ("ai_paused_until", "TEXT"), ("ai_draft", "TEXT"), ("ai_draft_at", "TEXT"),
                           ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT"), ("ai_followup_at", "TEXT"),
-                          ("ai_last_in_id", "INTEGER")):
+                          ("ai_last_in_id", "INTEGER"), ("ai_draft_photos", "TEXT")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE inbox_chats ADD COLUMN {col} {decl}")  # noqa: S608
         mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
@@ -237,6 +237,9 @@ _OLD_RULES = _OLD_RULES + (_OLD_RULES[0].replace(
 
 
 _OLD_RULES = _OLD_RULES + ("Ты — ассистент команды Nova Home (апартаменты в Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.\nЦель: быстро закрыть простой вопрос, довести запрос на жильё до заявки и передать человеку, когда нужно решение.\n\nКак вести разговор о жилье:\n1. Пойми запрос: даты, сколько гостей, пожелания. Чего не хватает — спроси одним коротким вопросом (сначала даты и число гостей).\n2. Как только есть даты — вызови check_availability и предложи 2–3 подходящих варианта с ценой за ночь и итогом за период. Не спрашивай «на какие даты?», если даты уже назвали.\n3. Гость выбрал — узнай имя и телефон, сохрани заявку (save_lead) и скажи, что менеджер подтвердит бронь и пришлёт реквизиты.\n4. Цены и свободные квартиры — только из check_availability (шахматка RealtyCalendar, цены за ночь в долларах). В сумах — по курсу из данных, если гость просит. Нет цены на даты — скажи, что уточнишь, и вызови handover.\n\nЯзык и стиль:\n- Отвечай на языке последнего сообщения гостя: русский, узбекский (латиница или кириллица — как пишет гость), английский. Гости часто пишут по-узбекски разговорно и с ошибками: «nechpul / necha pul» = сколько стоит, «bo'sh / bosh» = свободно, «kvartira / uy / xonadon» = квартира, «bormi» = есть ли, «kecha / tun» = ночь, «sutkalik / kunlik» = посуточно, «odam / kishi» = человек, «qachon» = когда, «narx / narxi» = цена, «joy» = место. Отвечай по-узбекски так же просто и естественно.\n- Пиши как живой менеджер в мессенджере: коротко, тепло, по делу, 1–3 предложения, без списков и шаблонных оборотов. Никаких «Минуту, проверяю», «Я здесь, чтобы помочь» — сразу ответ по сути. Не здоровайся повторно в одном разговоре.\n- Даты называй словами и без года: «18 июня», «18-19 iyun», «June 18». Никогда не пиши 2026-06-18 и не упоминай год.\n- Опирайся на памятку о стиле команды и примеры ответов: те же обороты, та же манера.\n\nЧестность:\n- Ты ассистент команды, а не конкретный человек. Никогда не называйся именем сотрудника или владельца. Если гость спросит, бот ли ты, — скажи честно: ты ассистент Nova Home, при необходимости подключится менеджер.\n- Не выдумывай: адрес, Wi‑Fi, условия, предоплата — только из базы знаний и данных CRM. Нет данных — скажи, что уточнишь, и вызови handover.\n- Никаких скидок, обещаний и подтверждений брони от своего имени. Подтверждает бронь только человек.\n- Название чата или контакта — это имя в телефонной книге, а не запрос гостя: даты и квартиру бери только из сообщений.\n\nПередавай человеку (handover): жалоба, спор о деньгах, просьба позвонить, поломка в квартире, нестандартная просьба, гость раздражён, вопрос вне твоих данных. Если гость назвал время приезда — сохрани его (set_arrival_time).",)
+
+
+_OLD_RULES = _OLD_RULES + ("Ты — ассистент команды Nova Home (апартаменты в Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.\nЦель: быстро закрыть простой вопрос, довести запрос на жильё до заявки и передать человеку, когда нужно решение.\n\nКак вести разговор о жилье:\n1. Пойми запрос: даты, сколько гостей, пожелания. Чего не хватает — спроси одним коротким вопросом (сначала даты и число гостей).\n2. Как только есть даты — вызови check_availability и предложи 2–3 подходящих варианта с ценой за ночь и итогом за период. Не спрашивай «на какие даты?», если даты уже назвали.\n3. Гость выбрал — узнай имя и телефон, сохрани заявку (save_lead) и скажи, что менеджер подтвердит бронь и пришлёт реквизиты.\n4. Цены и свободные квартиры — только из check_availability (шахматка RealtyCalendar, цены за ночь в долларах). В сумах — по курсу из данных, если гость просит. Нет цены на даты — скажи, что уточнишь, и вызови handover.\n\nЯзык и стиль:\n- Отвечай на языке последнего сообщения гостя: русский, узбекский (латиница или кириллица — как пишет гость), английский. Гости часто пишут по-узбекски разговорно и с ошибками: «nechpul / necha pul» = сколько стоит, «bo'sh / bosh» = свободно, «kvartira / uy / xonadon» = квартира, «bormi» = есть ли, «kecha / tun» = ночь, «sutkalik / kunlik» = посуточно, «odam / kishi» = человек, «qachon» = когда, «narx / narxi» = цена, «joy» = место. Отвечай по-узбекски так же просто и естественно.\n- Пиши как живой менеджер в мессенджере: коротко, тепло, по делу, 1–3 предложения, без списков и шаблонных оборотов. Никаких «Минуту, проверяю», «Я здесь, чтобы помочь» — сразу ответ по сути. Не здоровайся повторно в одном разговоре.\n- Даты называй словами и без года: «18 июня», «18-19 iyun», «June 18». Никогда не пиши 2026-06-18 и не упоминай год.\n- Опирайся на памятку о стиле команды и примеры ответов: те же обороты, та же манера.\n- Гость часто пишет одну мысль несколькими сообщениями подряд («хочу забронировать» → «2 человека» → «21-24 декабря»): читай их вместе как один запрос. «21-24 декабря» — это даты заезда и выезда, «2 человека» — число гостей; не переспрашивай то, что уже сказано.\n- Разговорные сокращения и обращения понимай молча: «брат», «братан», «бро», «ака», «aka», «дорогой», «уважаемый» — обращение к тебе, а не имя; «скок / скока» = сколько; «чел» = человек; «сут / сутки» = ночь посуточно; «кв» = квартира; «пред / предоплата»; «нал» = наличные; «перевод» = на карту; «сег» = сегодня; «завтр» = завтра; «ок / окей / xo'p / xop» = согласие; «мб» = может быть; «хз» = не знает; «4 вариант» = четвёртый из перечисленных тобой.\n- Не пиши слово «Фото» и не обещай ссылок, которых у тебя нет. Если просят фото или видео — скажи, что менеджер пришлёт, и продолжай разговор. Не перечисляй все свободные квартиры списком — 2–3 подходящих.\n\nЧестность:\n- Ты ассистент команды, а не конкретный человек. Никогда не называйся именем сотрудника или владельца. Если гость спросит, бот ли ты, — скажи честно: ты ассистент Nova Home, при необходимости подключится менеджер.\n- Не выдумывай: адрес, Wi‑Fi, условия, предоплата — только из базы знаний и данных CRM. Нет данных — скажи, что уточнишь, и вызови handover.\n- Никаких скидок, обещаний и подтверждений брони от своего имени. Подтверждает бронь только человек.\n- Название чата или контакта — это имя в телефонной книге, а не запрос гостя: даты и квартиру бери только из сообщений.\n\nПередавай человеку (handover): жалоба, спор о деньгах, просьба позвонить, поломка в квартире, нестандартная просьба, гость раздражён, вопрос вне твоих данных. Если гость назвал время приезда — сохрани его (set_arrival_time).",)
 
 
 def rules_text() -> str:
@@ -736,6 +739,10 @@ TOOLS = [
      "strict": True, "input_schema": {"type": "object", "properties": {"checkin": {"type": "string", "description": "YYYY-MM-DD"}, "checkout": {"type": "string", "description": "YYYY-MM-DD"},
                                                                        "apartment": {"type": "string", "description": "код квартиры (A-066) или блока (A, B); пусто — все"}},
                                       "required": ["checkin", "checkout", "apartment"], "additionalProperties": False}},
+    {"name": "send_photos", "description": "Отправить гостю фото квартиры (до 3 снимков из CRM) с короткой подписью. Вызывай после того, как предложил квартиру, или когда просят фото. Одна квартира за вызов.",
+     "strict": True, "input_schema": {"type": "object", "properties": {"apartment": {"type": "string", "description": "код квартиры, например B-005"},
+                                                                       "caption": {"type": "string", "description": "подпись к первому фото на языке гостя, до 120 символов"}},
+                                      "required": ["apartment", "caption"], "additionalProperties": False}},
     {"name": "set_arrival_time", "description": "Гость назвал время приезда — сохранить для горничных.", "strict": True,
      "input_schema": {"type": "object", "properties": {"time": {"type": "string", "description": "HH:MM"}, "note": {"type": "string", "description": "откуда / рейс / комментарий"}},
                       "required": ["time", "note"], "additionalProperties": False}},
@@ -778,11 +785,14 @@ def availability(checkin: str, checkout: str, apartment: str = "") -> dict:
     free = []
     from . import crm
     about = {r["apartment"]: r.get("descr") or "" for r in crm.apartment_info()}
+    with database.get_conn() as conn:
+        nphotos = {r["apartment"]: r["n"] for r in conn.execute("SELECT apartment, COUNT(*) AS n FROM crm_apartment_photos GROUP BY apartment").fetchall()}
     for n in names:
         if n in busy:
             continue
         p = rc_rates.prices(n, d0.isoformat(), d1.isoformat())
-        row = {"apartment": n, "about": about.get(n) or about.get(n[:1]) or about.get("*") or "", "total_usd": p["total"], "per_night_usd": None if p["per_night_min"] is None else
+        row = {"apartment": n, "about": about.get(n) or about.get(n[:1]) or about.get("*") or "", "photos": nphotos.get(n) or nphotos.get(n[:1]) or 0,
+               "total_usd": p["total"], "per_night_usd": None if p["per_night_min"] is None else
                (p["per_night_min"] if p["per_night_min"] == p["per_night_max"] else f"{p['per_night_min']:g}–{p['per_night_max']:g}")}
         if p["total"] is not None and rate:
             row["total_uzs"] = round(p["total"] * rate)
@@ -801,11 +811,29 @@ def availability(checkin: str, checkout: str, apartment: str = "") -> dict:
 
 
 def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
-    from . import crm, crm_amo, notify
+    from . import crm, crm_amo, inbox, notify
     chat = ctx["chat"]
     try:
         if name == "check_availability":
             return json.dumps(availability(inp.get("checkin", ""), inp.get("checkout", ""), inp.get("apartment", "")), ensure_ascii=False)
+        if name == "send_photos":
+            apt = (inp.get("apartment") or "").strip().upper()
+            photos = crm.apartment_photos(apt)[:3]
+            if not photos:
+                return json.dumps({"ok": False, "error": f"у {apt} нет фото в CRM — скажи гостю, что менеджер пришлёт фото"}, ensure_ascii=False)
+            if state.get("mode") == "auto":
+                sent = 0
+                for i, ph in enumerate(photos):
+                    try:
+                        inbox.send(chat["id"], AUTHOR, (inp.get("caption") or "")[:200] if i == 0 else "", ph["media"], ph["mime"])
+                        sent += 1
+                    except Exception as exc:  # noqa: BLE001
+                        return json.dumps({"ok": bool(sent), "sent": sent, "error": str(exc)[:120]}, ensure_ascii=False)
+                return json.dumps({"ok": True, "sent": sent, "note": "фото уже ушли гостю, в тексте не повторяй их и не пиши «Фото»"}, ensure_ascii=False)
+            state.setdefault("photos", [])
+            if apt not in state["photos"]:
+                state["photos"].append(apt)
+            return json.dumps({"ok": True, "queued": len(photos), "note": "фото уйдут вместе с твоим ответом, когда менеджер его отправит; в тексте их не описывай"}, ensure_ascii=False)
         if name == "set_arrival_time":
             b = chat.get("booking")
             if not b:
@@ -1047,7 +1075,7 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
                 return {"status": "handover"}
         except ValueError:
             pass
-    state: dict = {}
+    state: dict = {"mode": mode}
     try:
         text = _reply(ctx, state, extra)
     except Exception as exc:  # noqa: BLE001
@@ -1076,7 +1104,8 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
             _log(chat_id, "send", state.get("model") or "", "error", text, None, 0, str(exc))
     if decision == "draft" and text:
         with database.get_conn() as conn:
-            conn.execute("UPDATE inbox_chats SET ai_draft = ?, ai_draft_at = ?, rev = ? WHERE id = ?", (text, util.now(), inbox._bump(conn), chat_id))  # noqa: SLF001
+            conn.execute("UPDATE inbox_chats SET ai_draft = ?, ai_draft_at = ?, ai_draft_photos = ?, rev = ? WHERE id = ?",
+                         (text, util.now(), json.dumps(state.get("photos") or []), inbox._bump(conn), chat_id))  # noqa: SLF001
     if text and not nudge:
         with database.get_conn() as conn:
             conn.execute("UPDATE inbox_chats SET ai_last_in_id = ? WHERE id = ?", (last_in_id, chat_id))
@@ -1125,10 +1154,36 @@ def followups() -> int:
     return n
 
 
+def send_draft(chat_id: int, author: str, text: str | None = None) -> dict:
+    """«Отправить» on the draft panel: the (possibly edited) text, then the photos
+    the assistant queued for it, as the assistant's messages."""
+    from . import crm, inbox
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT ai_draft, ai_draft_photos FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
+    if not r:
+        return {"ok": False}
+    body = (text if text is not None else r["ai_draft"]) or ""
+    try:
+        apts = json.loads(r["ai_draft_photos"] or "[]")
+    except ValueError:
+        apts = []
+    out = {"ok": True, "photos": 0}
+    pause_for_human(chat_id, body.strip())  # a person sends: pause, and an edited draft becomes an example/lesson
+    if body.strip():
+        inbox.send(chat_id, author, body.strip())
+    for apt in apts[:3]:
+        for i, ph in enumerate(crm.apartment_photos(apt)[:3]):
+            inbox.send(chat_id, author, apt if i == 0 else "", ph["media"], ph["mime"])
+            out["photos"] += 1
+    with database.get_conn() as conn:
+        conn.execute("UPDATE inbox_chats SET ai_draft = NULL, ai_draft_photos = NULL, rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
+    return out
+
+
 def clear_draft(chat_id: int) -> None:
     from . import inbox
     with database.get_conn() as conn:
-        conn.execute("UPDATE inbox_chats SET ai_draft = NULL, rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
+        conn.execute("UPDATE inbox_chats SET ai_draft = NULL, ai_draft_photos = NULL, rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
 
 
 def rate(chat_id: int, good: bool) -> None:

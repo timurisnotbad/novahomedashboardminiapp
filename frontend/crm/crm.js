@@ -853,7 +853,7 @@
       <div class="card" id="apt-card"><h3>Квартиры: описание, код домофона, ключи, Wi-Fi</h3>
         <div class="muted small">Подставляется в сообщения вместо <span class="mono">{код домофона} {ключи} {ключи при выезде} {wifi} {заметка квартиры}</span>. Строка «Все квартиры» — общее значение, «Блок A» / «Блок B» — для блока, строка квартиры — только для неё (что заполнено точнее, то и берётся).</div>
         <div style="margin-top:8px"><label class="lbl">Ссылка на отзыв <span class="muted">— {ссылка на отзыв}</span></label><input class="field" id="apt-review" placeholder="https://g.page/r/…" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
-        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Описание для гостей <span class="muted">(ИИ)</span></th><th>Код домофона</th><th>Ключи (где получить)</th><th>Ключи при выезде</th><th>Wi-Fi</th><th>Заметка</th></tr></thead><tbody><tr><td class="muted" colspan="7">Загрузка…</td></tr></tbody></table></div>
+        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Фото</th><th>Описание для гостей <span class="muted">(ИИ)</span></th><th>Код домофона</th><th>Ключи (где получить)</th><th>Ключи при выезде</th><th>Wi-Fi</th><th>Заметка</th></tr></thead><tbody><tr><td class="muted" colspan="7">Загрузка…</td></tr></tbody></table></div>
         <div style="margin-top:8px"><button class="btn" id="apt-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить квартиры</button></div></div>
       </div>
       <div class="itab" data-tab="notif" hidden>
@@ -902,13 +902,38 @@
     $("i-bilingual").addEventListener("change", async (e) => { try { await post("/checklist", { bilingual: e.target.checked }); toast(e.target.checked ? "Сообщения уходят на двух языках" : "Язык — по карточке гостя"); } catch (err) { toast(err.message); } });
     // apartments table: door codes, keys, Wi-Fi
     (async () => {
-      let ai; try { ai = await get("/apartments/info"); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="7" class="bad">${esc(err.message)}</td></tr>`; return; }
+      let ai, photos = []; try { ai = await get("/apartments/info"); photos = await get("/apartments/photos").catch(() => []); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="8" class="bad">${esc(err.message)}</td></tr>`; return; }
       if (!$("apt-table")) return;
+      const nPhotos = (a) => photos.filter((p) => p.apartment === a).length;
       $("apt-review").value = ai.review_url || "";
       const ro = S.me.role !== "admin";
       const F = ["descr", "door_code", "keys_in", "keys_out", "wifi", "note"];
       const label = (r) => r.kind === "all" ? "<b>Все квартиры</b>" : r.kind === "block" ? `<b>Блок ${esc(r.apartment)}</b>` : esc(r.apartment);
-      $("apt-table").querySelector("tbody").innerHTML = ai.items.map((r) => `<tr data-apt="${esc(r.apartment)}"><td>${label(r)}</td>${F.map((f) => `<td><input class="field sm" data-f="${f}" value="${esc(r[f] || "")}" placeholder="${f === "descr" ? (r.kind === "apt" ? "студия, 2 гостя, 7 этаж, вид на парк" : "общее для блока") : r.kind === "apt" ? "как у блока" : r.kind === "block" ? "как у всех" : "—"}" ${ro ? "disabled" : ""} ${f === "descr" ? 'style="min-width:180px"' : ""} /></td>`).join("")}</tr>`).join("");
+      $("apt-table").querySelector("tbody").innerHTML = ai.items.map((r) => `<tr data-apt="${esc(r.apartment)}"><td>${label(r)}</td><td><button class="btn sm" data-photos="${esc(r.apartment)}" title="Фото квартиры: ассистент отправляет их гостю вместе с предложением">📷 ${nPhotos(r.apartment) || "добавить"}</button></td>${F.map((f) => `<td><input class="field sm" data-f="${f}" value="${esc(r[f] || "")}" placeholder="${f === "descr" ? (r.kind === "apt" ? "студия, 2 гостя, 7 этаж, вид на парк" : "общее для блока") : r.kind === "apt" ? "как у блока" : r.kind === "block" ? "как у всех" : "—"}" ${ro ? "disabled" : ""} ${f === "descr" ? 'style="min-width:180px"' : ""} /></td>`).join("")}</tr>`).join("");
+      $("apt-table").addEventListener("click", (e) => { const b = e.target.closest("[data-photos]"); if (b) photosModal(b.dataset.photos, b); });
+      async function photosModal(apt, btn) {
+        const ro = S.me.role !== "admin";
+        const render = async () => {
+          const all = await get("/apartments/photos"); const mine = all.filter((p) => p.apartment === apt);
+          if (btn) btn.textContent = `📷 ${mine.length || "добавить"}`;
+          $("ph-list").innerHTML = mine.length ? mine.map((p) => `<div style="position:relative;display:inline-block;margin:0 8px 8px 0"><img src="${esc(p.url)}" style="height:110px;border-radius:8px;display:block" alt="" />${ro ? "" : `<button class="btn sm" data-phdel="${p.id}" style="position:absolute;top:4px;right:4px">✕</button>`}</div>`).join("") : `<div class="muted small">Фото пока нет</div>`;
+        };
+        modal(`<h2>Фото · ${esc(apt === "*" ? "все квартиры" : apt.length === 1 ? "блок " + apt : apt)}</h2>
+          <div class="muted small">Ассистент отправляет гостю до 3 первых фото, когда предлагает квартиру. Если у квартиры нет своих фото, берутся фото блока. JPG, PNG или WebP до 8 МБ.</div>
+          <div id="ph-list" style="margin-top:10px"></div>
+          ${ro ? "" : `<input type="file" id="ph-file" accept="image/jpeg,image/png,image/webp" multiple style="margin-top:6px" />`}
+          <div class="row-actions"><button class="btn" data-close>Закрыть</button></div>`);
+        await render();
+        if (ro) return;
+        $("ph-file").addEventListener("change", async (e) => {
+          for (const f of Array.from(e.target.files || [])) {
+            try { const res = await fetch(`${API}/apartments/${encodeURIComponent(apt)}/photos`, { method: "POST", body: f, headers: { "Content-Type": f.type }, credentials: "same-origin" }); if (!res.ok) { const d = await res.json().catch(() => ({})); toast(d.detail || "Ошибка " + res.status); } }
+            catch (err) { toast(err.message); }
+          }
+          e.target.value = ""; await render();
+        });
+        $("ph-list").addEventListener("click", async (e) => { const d = e.target.closest("[data-phdel]"); if (!d || !confirm("Удалить фото?")) return; await del(`/apartments/photos/${d.dataset.phdel}`); await render(); });
+      }
       $("apt-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
         const items = Array.from($("apt-table").querySelectorAll("tr[data-apt]")).map((tr) => { const o = { apartment: tr.dataset.apt }; F.forEach((f) => { o[f] = tr.querySelector(`[data-f="${f}"]`).value.trim(); }); return o; });
         await post("/apartments/info", { items, review_url: $("apt-review").value.trim() }); toast("Квартиры сохранены — подставятся в следующие сообщения");

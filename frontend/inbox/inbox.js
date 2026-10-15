@@ -202,7 +202,7 @@
     const box = $("ai-draft"); if (!box) return;
     if (!c || !c.ai_draft) { box.classList.add("hidden"); box.innerHTML = ""; return; }
     box.innerHTML = `<div class="ib-draft__head"><span>✨ Черновик ИИ${c.ai_note ? " · " + esc(c.ai_note.slice(0, 80)) : ""}</span><span>${esc((c.ai_draft_at || "").slice(11, 16))}</span></div>
-      <div class="ib-draft__text">${esc(c.ai_draft)}</div>
+      <div class="ib-draft__text">${esc(c.ai_draft)}</div>${(() => { let a = []; try { a = JSON.parse(c.ai_draft_photos || "[]"); } catch (e) { a = []; } return a.length ? `<div class="ib-draft__photos">📷 вместе с ответом уйдут фото: ${esc(a.join(", "))}</div>` : ""; })()}
       <div class="ib-draft__btns"><button class="primary" data-draft="send">Отправить</button><button data-draft="edit">Вставить и править</button><button data-draft="redo">Другой вариант</button><button data-draft="drop">✕ Убрать</button></div>`;
     box.classList.remove("hidden");
   }
@@ -965,7 +965,7 @@
     $("ai-draft").addEventListener("click", async (e) => {
       const b = e.target.closest("[data-draft]"); if (!b || !S.open) return;
       const c = S.chats.get(S.open.id) || S.open; const text = c.ai_draft || "";
-      if (b.dataset.draft === "send") { $("text").value = text; autosize(); await sendText(); return; }
+      if (b.dataset.draft === "send") { b.disabled = true; try { await req(`/chats/${S.open.id}/ai/draft/send`, { method: "POST", json: { text } }); c.ai_draft = null; c.ai_draft_photos = null; renderDraft(c); } catch (err) { b.disabled = false; toast(err.message); } return; }
       if (b.dataset.draft === "edit") { $("text").value = text; autosize(); $("text").focus(); c.ai_draft = null; renderDraft(c); try { await req(`/chats/${S.open.id}/ai/draft`, { method: "DELETE" }); } catch (err) { /* ignore */ } return; }
       if (b.dataset.draft === "redo") { aiDraft(); return; }
       if (b.dataset.draft === "drop") { c.ai_draft = null; renderDraft(c); try { await req(`/chats/${S.open.id}/ai/draft`, { method: "DELETE" }); } catch (err) { /* ignore */ } }

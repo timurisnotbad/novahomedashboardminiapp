@@ -302,6 +302,16 @@ def chat_ai_draft_clear(chat_id: int, user: dict = Depends(inbox_user)):  # noqa
     return {"ok": True}
 
 
+@router.post("/chats/{chat_id}/ai/draft/send")
+def chat_ai_draft_send(chat_id: int, payload: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    """Send the assistant's draft (edited text allowed) plus the photos it queued."""
+    from .. import ai
+    try:
+        return ai.send_draft(chat_id, user["name"], payload.get("text"))
+    except inbox.BridgeError as exc:
+        _fail(exc)
+
+
 @router.post("/messages/{message_id}/transcribe")
 def message_transcribe(message_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
     """🎙 on a voice note: speech → text once (OpenAI key in Интеграции → ИИ-ассистент)."""

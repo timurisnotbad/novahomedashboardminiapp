@@ -171,6 +171,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE crm_users ADD COLUMN tg_id INTEGER")  # personal Telegram for alerts (/link in the bot)
         conn.execute("CREATE TABLE IF NOT EXISTS crm_apartment_info (apartment TEXT PRIMARY KEY, door_code TEXT, keys_in TEXT, keys_out TEXT, "
                      "wifi TEXT, note TEXT, updated_at TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS crm_apartment_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, apartment TEXT NOT NULL, "
+                     "media TEXT NOT NULL, mime TEXT, sort INTEGER DEFAULT 0, at TEXT)")
         if "descr" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_apartment_info)").fetchall()]:
             conn.execute("ALTER TABLE crm_apartment_info ADD COLUMN descr TEXT")  # description for guests (rooms, guests, floor, view)
         dcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]
@@ -367,6 +369,48 @@ def save_apartment_info(rows: list) -> list[dict]:
                              (name, *vals, _now()))
     _apt_cache["at"] = 0.0
     return apartment_info()
+
+
+def apartment_photos(apartment: str | None = None) -> list[dict]:
+    """Photos per apartment (A-066) or per block (A, B) as a fallback; with signed URLs for the CRM."""
+    from . import inbox
+    with database.get_conn() as conn:
+        if apartment:
+            rows = conn.execute("SELECT * FROM crm_apartment_photos WHERE apartment = ? ORDER BY sort, id", (apartment,)).fetchall()
+            if not rows and apartment[:1] in ("A", "B"):
+                rows = conn.execute("SELECT * FROM crm_apartment_photos WHERE apartment = ? ORDER BY sort, id", (apartment[:1],)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM crm_apartment_photos ORDER BY apartment, sort, id").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["url"] = f"{config.API_PREFIX}/inbox/media/{d['media']}?s={inbox.media_sig(d['media'])}"
+        out.append(d)
+    return out
+
+
+def add_apartment_photo(apartment: str, body: bytes, mime: str) -> dict:
+    import uuid
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
+    name = f"apt{uuid.uuid4().hex}.{ext}"
+    config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    (config.INBOX_MEDIA_DIR / name).write_bytes(body)
+    with database.get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM crm_apartment_photos WHERE apartment = ?", (apartment,)).fetchone()[0]
+        pid = conn.execute("INSERT INTO crm_apartment_photos (apartment, media, mime, sort, at) VALUES (?, ?, ?, ?, ?)",
+                           (apartment, name, mime, n, _now())).lastrowid
+    return next((p for p in apartment_photos(apartment) if p["id"] == pid), {"id": pid})
+
+
+def delete_apartment_photo(photo_id: int) -> None:
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT media FROM crm_apartment_photos WHERE id = ?", (photo_id,)).fetchone()
+        conn.execute("DELETE FROM crm_apartment_photos WHERE id = ?", (photo_id,))
+    if r:
+        try:
+            (config.INBOX_MEDIA_DIR / r["media"]).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 _apt_cache: dict = {"at": 0.0, "map": {}}
