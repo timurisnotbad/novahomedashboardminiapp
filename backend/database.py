@@ -68,6 +68,17 @@ CREATE TABLE IF NOT EXISTS sync_log (
 -- bookings the calendar stopped returning inside the sync window: a booking
 -- is removed only after it has been missing from two consecutive fetches, so
 -- a half-empty answer from the calendar never cancels deals in the CRM
+-- nightly prices mirrored from the RealtyCalendar chessmate (rc_rates.py)
+CREATE TABLE IF NOT EXISTS rc_rates (
+    apartment_id INTEGER NOT NULL,
+    apartment_name TEXT,
+    day TEXT NOT NULL,
+    price REAL,
+    min_nights INTEGER,
+    updated_at TEXT,
+    PRIMARY KEY (apartment_id, day)
+);
+
 CREATE TABLE IF NOT EXISTS bookings_missing (
     id INTEGER PRIMARY KEY,
     since TIMESTAMP,

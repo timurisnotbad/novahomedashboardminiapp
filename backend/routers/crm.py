@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import booking_ext, config, crm, crm_amo, crm_ext, database, docs, inbox, meta_api, rc_push, rc_sync, tg_channels, wazzup
+from .. import booking_ext, config, crm, crm_amo, crm_ext, database, docs, inbox, meta_api, rc_push, rc_rates, rc_sync, tg_channels, wazzup
 
 logger = logging.getLogger("nova.crm.api")
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -195,6 +195,27 @@ def me_telegram_code(user: dict = Depends(current_user)):  # noqa: B008
 def me_telegram_unlink(user: dict = Depends(current_user)):  # noqa: B008
     crm.unlink_telegram(user["id"])
     return {"ok": True}
+
+
+# ---- RealtyCalendar prices ------------------------------------------------------------
+@router.get("/rc/rates")
+def rc_rates_status(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import rc_rates
+    return rc_rates.status()
+
+
+@router.post("/rc/rates/sync")
+def rc_rates_sync(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import rc_rates
+    r = rc_rates.sync(force=True)
+    r["status"] = rc_rates.status()
+    return r
+
+
+@router.get("/rc/rates/quote")
+def rc_rates_quote(checkin: str, checkout: str, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import ai
+    return ai.availability(_date(checkin), _date(checkout))
 
 
 # ---- AI assistant settings ----------------------------------------------------------
@@ -1205,7 +1226,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
     return {
         "realtycalendar": {"configured": bool(config.RC_TOKEN), "demo": config.DEMO_MODE, "last_sync": database.last_sync(),
                            "bookings": n, "interval_min": config.SYNC_INTERVAL_MINUTES, "apartments": len(config.APARTMENTS),
-                           "push_log": rc_push.recent_log(10)},
+                           "push_log": rc_push.recent_log(10), "rates": rc_rates.status()},
         "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
         "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",

@@ -33,12 +33,13 @@ MODEL_NAMES = {"claude-opus-5-5": "Claude Opus 5.5 — лучшее качест
                "claude-haiku-5-5": "Claude Haiku 5.5 — самый дешёвый"}
 DEFAULTS = {"ai_mode": "draft", "ai_model": "claude-opus-5-5", "ai_model_triage": "claude-haiku-5-5", "ai_budget": "30",
             "ai_channels": "wa,tg,wztg,wz", "ai_pause_hours": "2", "ai_max_turns": "8", "ai_debounce": "20",
-            "ai_rules": "", "ai_knowledge": ""}
+            "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850"}
 DEFAULT_RULES = """Ты — ассистент апартаментов Nova Home (Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
 Цель: быстро и точно закрыть простые вопросы, довести запрос на бронь до готовой заявки и передать человеку, когда нужно решение.
 Правила:
 - Отвечай коротко, тепло, без канцелярита, на языке гостя (русский, английский, узбекский).
-- Цены, свободные даты, адрес, Wi‑Fi, условия — только из базы знаний и из данных CRM. Если данных нет — честно скажи, что уточнишь, и вызови handover.
+- Свободные квартиры и цены — только через check_availability: это шахматка RealtyCalendar, там актуальные цены за ночь в долларах. Называй итог за весь период и цену за ночь; в сумах — по курсу из данных, если гость просит. Если на даты цены нет — скажи, что уточнишь, и вызови handover.
+- Адрес, Wi‑Fi, условия, предоплата — только из базы знаний и данных CRM. Если данных нет — честно скажи, что уточнишь, и вызови handover.
 - Никаких скидок, обещаний и подтверждений брони от своего имени. Подтверждает бронь только человек.
 - Передавай человеку (handover): жалоба, спор о деньгах, просьба позвонить, поломка в квартире, нестандартная просьба, гость раздражён, вопрос вне твоих данных.
 - Если гость хочет забронировать: уточни даты, число гостей, пожелания, собери контакт — и сохрани заявку (save_lead), после чего сообщи, что менеджер подтвердит бронь.
@@ -134,6 +135,11 @@ def save_settings(data: dict) -> dict:
                 continue
             if k == "ai_mode" and v not in ("off", "draft", "auto"):
                 continue
+            if k == "usd_rate":
+                try:
+                    v = f"{float(v.replace(' ', '').replace(',', '.')):g}"
+                except ValueError:
+                    continue
             crm.set_setting(k, v[:20000])
     if data.get("api_key"):
         set_api_key(str(data["api_key"]))
@@ -177,6 +183,11 @@ def budget_left() -> float:
         return 0.0
 
 
+def _rates_status() -> dict:
+    from . import rc_rates
+    return rc_rates.status()
+
+
 def stats() -> dict:
     today = date.today().isoformat()
     month = date.today().replace(day=1).isoformat()
@@ -193,7 +204,8 @@ def stats() -> dict:
         chats = {r["ai_mode"] or "default": r["n"] for r in conn.execute("SELECT ai_mode, COUNT(*) AS n FROM inbox_chats GROUP BY ai_mode").fetchall()}
         t_agg, m_agg = agg(today), agg(month)
     return {"today": t_agg, "month": m_agg, "budget": float(setting("ai_budget") or 0), "budget_left": round(budget_left(), 2),
-            "recent": recent, "examples": examples, "chats_by_mode": chats, "enabled": enabled(), "mode": setting("ai_mode")}
+            "recent": recent, "examples": examples, "chats_by_mode": chats, "enabled": enabled(), "mode": setting("ai_mode"),
+            "rates": _rates_status()}
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +411,7 @@ def _system(ctx: dict) -> list[dict]:
               f"## Квартиры\n" + ("\n".join(apt_lines) or "(нет данных)"))
     chat, client, stays = ctx["chat"], ctx["client"], ctx["stays"]
     b = chat.get("booking")
-    facts = [f"Сегодня {date.today().isoformat()}, время {datetime.now().strftime('%H:%M')}.",
+    facts = [f"Сегодня {date.today().isoformat()}, время {datetime.now().strftime('%H:%M')}. Цены в календаре в долларах; курс 1 $ = {setting('usd_rate') or '—'} сум.",
              f"Канал: {chat.get('channel_name')}. Гость: {chat.get('title')}" + (f", телефон +{chat['phone']}" if chat.get("phone") else "") + "."]
     if client:
         facts.append(f"Карточка гостя: {client.get('name') or ''}; статус: {client.get('status') or '—'}; язык: {client.get('lang') or '—'}; "
@@ -423,9 +435,10 @@ def _system(ctx: dict) -> list[dict]:
 # Tools
 # ---------------------------------------------------------------------------
 TOOLS = [
-    {"name": "check_availability", "description": "Свободные квартиры на даты (из календаря броней). Вызывай перед тем, как говорить о свободных датах.",
-     "strict": True, "input_schema": {"type": "object", "properties": {"checkin": {"type": "string", "description": "YYYY-MM-DD"}, "checkout": {"type": "string", "description": "YYYY-MM-DD"}},
-                                      "required": ["checkin", "checkout"], "additionalProperties": False}},
+    {"name": "check_availability", "description": "Свободные квартиры на даты и их стоимость из шахматки RealtyCalendar (цены за ночь в долларах, итог за период, минимальный срок). Вызывай перед любым ответом о свободных датах или ценах.",
+     "strict": True, "input_schema": {"type": "object", "properties": {"checkin": {"type": "string", "description": "YYYY-MM-DD"}, "checkout": {"type": "string", "description": "YYYY-MM-DD"},
+                                                                       "apartment": {"type": "string", "description": "код квартиры (A-066) или блока (A, B); пусто — все"}},
+                                      "required": ["checkin", "checkout", "apartment"], "additionalProperties": False}},
     {"name": "set_arrival_time", "description": "Гость назвал время приезда — сохранить для горничных.", "strict": True,
      "input_schema": {"type": "object", "properties": {"time": {"type": "string", "description": "HH:MM"}, "note": {"type": "string", "description": "откуда / рейс / комментарий"}},
                       "required": ["time", "note"], "additionalProperties": False}},
@@ -440,7 +453,10 @@ TOOLS = [
 ]
 
 
-def _free_apartments(checkin: str, checkout: str) -> dict:
+def availability(checkin: str, checkout: str, apartment: str = "") -> dict:
+    """Free apartments for [checkin, checkout) with the calendar's prices:
+    per-night range, total for the stay, min nights; in USD and in sums."""
+    from . import rc_rates
     try:
         d0, d1 = date.fromisoformat(checkin[:10]), date.fromisoformat(checkout[:10])
     except ValueError:
@@ -453,9 +469,36 @@ def _free_apartments(checkin: str, checkout: str) -> dict:
             continue
         if b["begin_date"] < d1.isoformat() and b["end_date"] > d0.isoformat():
             busy.add(b["apartment_name"])
+    want = (apartment or "").strip().upper()
     names = sorted(set(config.APARTMENTS.values()))
-    free = [n for n in names if n not in busy]
-    return {"checkin": d0.isoformat(), "checkout": d1.isoformat(), "nights": (d1 - d0).days, "free": free, "free_count": len(free), "total": len(names)}
+    if want:
+        names = [n for n in names if n == want or (len(want) == 1 and n.startswith(want))]
+    nights = (d1 - d0).days
+    try:
+        rate = float(setting("usd_rate") or 0)
+    except ValueError:
+        rate = 0.0
+    free = []
+    for n in names:
+        if n in busy:
+            continue
+        p = rc_rates.prices(n, d0.isoformat(), d1.isoformat())
+        row = {"apartment": n, "total_usd": p["total"], "per_night_usd": None if p["per_night_min"] is None else
+               (p["per_night_min"] if p["per_night_min"] == p["per_night_max"] else f"{p['per_night_min']:g}–{p['per_night_max']:g}")}
+        if p["total"] is not None and rate:
+            row["total_uzs"] = round(p["total"] * rate)
+        if p["min_nights"] and nights < p["min_nights"]:
+            row["min_nights"] = p["min_nights"]
+            row["note"] = f"минимум {p['min_nights']} ноч."
+        if p["missing"]:
+            row["note"] = "цена на часть дат не задана — уточнить у менеджера" if p["priced"] else "цены на эти даты нет — уточнить у менеджера"
+        free.append(row)
+    free.sort(key=lambda r: (r["total_usd"] is None, r["total_usd"] or 0))
+    out = {"checkin": d0.isoformat(), "checkout": d1.isoformat(), "nights": nights, "free": free, "free_count": len(free),
+           "total": len(names), "currency": "USD", "usd_rate": rate or None}
+    if free and all(r["total_usd"] is None for r in free):
+        out["note"] = "тарифы из календаря не загружены — цены назвать нельзя, передай менеджеру"
+    return out
 
 
 def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
@@ -463,7 +506,7 @@ def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
     chat = ctx["chat"]
     try:
         if name == "check_availability":
-            return json.dumps(_free_apartments(inp.get("checkin", ""), inp.get("checkout", "")), ensure_ascii=False)
+            return json.dumps(availability(inp.get("checkin", ""), inp.get("checkout", ""), inp.get("apartment", "")), ensure_ascii=False)
         if name == "set_arrival_time":
             b = chat.get("booking")
             if not b:

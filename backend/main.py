@@ -35,6 +35,11 @@ async def _initial_sync() -> None:
         await loop.run_in_executor(None, crm.auto_tasks)  # today's check-in/out tasks in the CRM
     except Exception as exc:  # noqa: BLE001
         logger.warning("Initial sync failed: %s", exc)
+    try:
+        from . import rc_rates
+        await loop.run_in_executor(None, rc_rates.sync)  # nightly prices for the assistant
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Initial rates sync failed: %s", exc)
 
 
 @asynccontextmanager

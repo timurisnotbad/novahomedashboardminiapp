@@ -797,6 +797,8 @@
   };
 
   // ---- integrations -------------------------------------------------------------
+  const ratesLine = (r) => !r ? "" : r.rows ? `Тарифы из шахматки: ${r.apartments} кв. по ${esc(dShort(r.to))} · обновлено ${r.synced ? esc(dtShort(r.synced)) : "—"} · ИИ считает стоимость по ним`
+    : r.endpoint === null && r.probe && r.probe.length ? "Тарифы не загружены: календарь не отдал цены — нажмите «Загрузить тарифы», чтобы увидеть подробности" : "Тарифы ещё не загружены — ИИ не сможет называть цены";
   ROUTES.integrations = async () => {
     const seq = S.navSeq;
     const d = await get("/integrations");
@@ -811,8 +813,9 @@
       <div class="itab" data-tab="conn" hidden>
       <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
         <div><h3>RealtyCalendar</h3><div class="small ${rc.configured ? "ok" : "warn"}">${rc.configured ? "Подключён" : "RC_TOKEN не задан — демо-данные"}</div>
-          <div class="muted small">Броней: ${rc.bookings} · объектов: ${rc.apartments} · каждые ${rc.interval_min} мин · последняя синхронизация: ${rc.last_sync ? esc(dtShort(rc.last_sync)) : "—"}</div></div>
-        <button class="btn" id="i-sync">Синхронизировать сейчас</button></div>
+          <div class="muted small">Броней: ${rc.bookings} · объектов: ${rc.apartments} · каждые ${rc.interval_min} мин · последняя синхронизация: ${rc.last_sync ? esc(dtShort(rc.last_sync)) : "—"}</div>
+          <div class="small ${rc.rates && rc.rates.rows ? "ok" : "warn"}" id="i-rates-line">${ratesLine(rc.rates)}</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="i-sync">Синхронизировать сейчас</button>${S.me.role === "admin" ? `<button class="btn" id="i-rates" title="Выгрузить цены за ночь из шахматки на 180 дней вперёд: по ним ИИ-ассистент называет стоимость">Загрузить тарифы</button>` : ""}</div></div>
         <div class="muted small" style="margin-top:10px">Запись в календарь: из карточки брони («Изменить бронь») уходят гость, телефон, сумма, даты, время, заметка. ${rc.push_log && rc.push_log.length ? `Последние записи:` : "Записей пока не было."}</div>
         ${rc.push_log && rc.push_log.length ? `<table class="table" style="margin-top:6px"><thead><tr><th>Когда</th><th>Бронь</th><th>Что</th><th>Результат</th></tr></thead><tbody>${rc.push_log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>#${l.booking_id}</td><td class="small">${esc(l.changes)}</td><td class="${l.status === "ok" ? "ok" : "bad"} small" style="cursor:pointer" title="Нажмите, чтобы показать ответ календаря целиком" onclick="this.textContent=this.dataset.full" data-full="${esc(l.response || "")}">${l.status === "ok" ? "принято" : esc((l.response || "").slice(0, 160)) + ((l.response || "").length > 160 ? "…" : "")}</td></tr>`).join("")}</tbody></table>` : ""}</div>
       <div class="card"><h3>Email из CRM</h3><div class="small ${d.email.configured ? "ok" : "warn"}">${d.email.configured ? `Настроен: ${esc(d.email.from || "")} через ${esc(d.email.host || "")}` : "Не настроен — заполните SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD в .env (для Gmail — «пароль приложения») и перезапустите сервер"}</div>
@@ -876,6 +879,14 @@
     showTab(tab);
     $("itabs").addEventListener("click", (e) => { const b = e.target.closest("[data-itab]"); if (b) showTab(b.dataset.itab); });
     $("i-sync").addEventListener("click", (e) => { const btn = e.currentTarget; busy(btn, async () => { btn.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); } finally { btn.textContent = "Синхронизировать сейчас"; } navigate(); }); });
+    const rb = $("i-rates"); if (rb) rb.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+      const r = await post("/rc/rates/sync");
+      $("i-rates-line").textContent = ratesLine(r.status); $("i-rates-line").className = "small " + (r.status && r.status.rows ? "ok" : "warn");
+      if (r.ok) { toast(`Тарифы загружены: ${r.rows} цен (${r.endpoint})`); return; }
+      modal(`<h2>Тарифы не загрузились</h2><p class="muted small">Ни один из известных запросов к календарю не вернул цены. Пришлите этот список разработчику: по нему он добавит нужный запрос.</p>
+        <table class="table"><thead><tr><th>Запрос</th><th>Ответ</th><th>Цен</th><th>Примечание</th></tr></thead><tbody>${(r.probe || []).map((d) => `<tr><td class="mono small">${esc(d.name)}</td><td>${esc(d.status == null ? "—" : d.status)}</td><td>${d.rows}</td><td class="muted small">${esc((d.note || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table>
+        <div class="row-actions"><button class="btn" data-close>Закрыть</button></div>`);
+    }));
     $("i-auto").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_tasks: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("co-save").addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/company", { brand: val("co-brand"), tagline: val("co-tagline"), accent: val("co-accent"), legal: val("co-legal"), property: val("co-property"), signer: val("co-signer"), signer_title: val("co-signer_title"), name: val("co-name"), phone: val("co-phone"), email: val("co-email"), website: val("co-website"), address: val("co-address"), inn: val("co-inn"), bank: $("co-bank").value, note: $("co-note").value, currency: val("co-currency") }); toast("Реквизиты сохранены"); }));
     const et = $("em-test-go"); if (et) et.addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/email", { to: val("em-test"), subject: "Nova Home CRM — тест", text: "Письмо из CRM работает." }); toast("Тестовое письмо отправлено"); navigate(); }));
@@ -928,18 +939,20 @@
         <div class="form-row c3"><div><label class="lbl">Основная модель (ответы)</label><select class="field" id="ai-model">${Object.entries(cfg.models).map(([k, v]) => `<option value="${k}" ${cfg.ai_model === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
           <div><label class="lbl">Модель сортировки и памяти</label><select class="field" id="ai-model-triage">${Object.entries(cfg.models).map(([k, v]) => `<option value="${k}" ${cfg.ai_model_triage === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
           <div><label class="lbl">Лимит в месяц, $</label><input class="field" id="ai-budget" type="number" min="0" step="1" value="${esc(cfg.ai_budget)}" /></div></div>
+        <div class="form-row c3"><div><label class="lbl">Курс доллара, сум <span class="muted">— цены в шахматке в $, по курсу ИИ переводит в сумы</span></label><input class="field" id="ai-usd" type="number" min="1" step="1" value="${esc(cfg.usd_rate)}" /></div>
+          <div style="grid-column:span 2"><label class="lbl">Цены и свободные даты</label><div class="small ${st.rates && st.rates.rows ? "ok" : "warn"}" style="padding-top:8px">${st.rates && st.rates.rows ? `Из шахматки RealtyCalendar: тарифы ${st.rates.apartments} квартир до ${esc(dShort(st.rates.to))}. Ассистент сам считает стоимость за период и свободные квартиры.` : "Тарифы из календаря не загружены: Интеграции → Подключения → «Загрузить тарифы». Без них ассистент не называет цены и передаёт вопрос менеджеру."}</div></div></div>
         <div class="form-row c3"><div><label class="lbl">Каналы <span class="muted">— wa, tg, wztg, wz, ig, bk</span></label><input class="field" id="ai-channels" value="${esc(cfg.ai_channels)}" /></div>
           <div><label class="lbl">Пауза после ответа человека, ч</label><input class="field" id="ai-pause" type="number" min="0" step="0.5" value="${esc(cfg.ai_pause_hours)}" /></div>
           <div><label class="lbl">Макс. ответов ИИ подряд без результата</label><input class="field" id="ai-turns" type="number" min="1" max="30" value="${esc(cfg.ai_max_turns)}" /></div></div>
         <label class="lbl">Правила для ассистента <span class="muted">— что можно, что нельзя, когда звать человека</span></label><textarea class="field" id="ai-rules" rows="10">${esc(cfg.ai_rules)}</textarea>
-        <label class="lbl" style="margin-top:8px">База знаний <span class="muted">— цены, условия, адрес, как добраться, реквизиты, частые вопросы; только отсюда ИИ берёт факты</span></label><textarea class="field" id="ai-knowledge" rows="12" placeholder="Например:\nЦены: студия в блоке A — от 45 $/ночь, 2-комнатные — от 70 $/ночь; при брони от 7 ночей обсуждается индивидуально (менеджер).\nПредоплата: 30% на карту, остальное при заселении.\nРанний заезд: по возможности, бесплатно с 12:00 при свободной квартире.\nТрансфер из аэропорта: 15 $.\nРеквизиты: карта Uzcard 8600 …, получатель …">${esc(cfg.ai_knowledge)}</textarea>
+        <label class="lbl" style="margin-top:8px">База знаний <span class="muted">— цены, условия, адрес, как добраться, реквизиты, частые вопросы; только отсюда ИИ берёт факты</span></label><textarea class="field" id="ai-knowledge" rows="12" placeholder="Например:\nКвартиры: A-066 — студия, 2 гостя, 5 этаж; B-005 — 2 комнаты, до 4 гостей…\nСкидки при брони от 7 ночей обсуждает менеджер.\nПредоплата: 30% на карту, остальное при заселении.\nРанний заезд: по возможности, бесплатно с 12:00 при свободной квартире.\nТрансфер из аэропорта: 15 $.\nРеквизиты: карта Uzcard 8600 …, получатель …">${esc(cfg.ai_knowledge)}</textarea>
         <div class="row-actions" style="position:static"><button class="btn primary" id="ai-save">Сохранить</button><button class="btn" id="ai-test">Проверить ключ</button><button class="btn" id="ai-import" title="Собрать из прошлых переписок пары «вопрос гостя → ответ менеджера»: ИИ опирается на них как на примеры">Примеры из истории (${st.examples})</button></div></div>` : ""}
       <div class="card"><h3>Последние действия ИИ</h3>
         ${st.recent.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Когда</th><th>Чат</th><th>Что</th><th>Результат</th><th>$</th></tr></thead><tbody>${st.recent.map((r) => `<tr><td class="muted small">${esc(dtShort(r.at))}</td><td>${r.chat_id ? `<a href="#messages/${r.chat_id}">${esc(r.chat_name || r.push_name || "#" + r.chat_id)}</a>` : "—"}</td><td class="small">${esc(r.kind)} · ${esc(r.model || "")}</td><td class="small ${r.error ? "bad" : ""}">${esc(r.decision || "")}${r.error ? " · " + esc(r.error) : ""}${r.text ? `<div class="muted" style="max-width:420px;white-space:pre-wrap">${esc(r.text.slice(0, 220))}${r.text.length > 220 ? "…" : ""}</div>` : ""}</td><td class="small">${Number(r.cost || 0).toFixed(4)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="muted">Пока ничего: задайте ключ, выберите режим и напишите в тестовый чат.</div>`}</div>`;
     if (!cfg) return;
     $("ai-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
       const body = { ai_mode: val("ai-mode"), ai_model: val("ai-model"), ai_model_triage: val("ai-model-triage"), ai_budget: val("ai-budget"), ai_channels: val("ai-channels"),
-        ai_pause_hours: val("ai-pause"), ai_max_turns: val("ai-turns"), ai_rules: $("ai-rules").value, ai_knowledge: $("ai-knowledge").value };
+        ai_pause_hours: val("ai-pause"), ai_max_turns: val("ai-turns"), ai_rules: $("ai-rules").value, ai_knowledge: $("ai-knowledge").value, usd_rate: val("ai-usd") };
       if ($("ai-key").value.trim()) body.api_key = $("ai-key").value.trim();
       await post("/ai/settings", body); toast("Сохранено"); renderAiTab();
     }));

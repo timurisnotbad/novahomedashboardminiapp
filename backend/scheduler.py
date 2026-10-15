@@ -51,6 +51,11 @@ def _job():
         logger.warning("Sync failed: %s", exc)
         return
     try:
+        from . import rc_rates
+        rc_rates.sync()  # nightly prices for the assistant and the CRM (hourly; cheap otherwise)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Rates sync failed: %s", exc)
+    try:
         reminders.check_booking_changes()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Booking-change check failed: %s", exc)
