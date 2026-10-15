@@ -100,12 +100,20 @@ app.include_router(crm_router.router, prefix=config.API_PREFIX)
 
 
 @app.middleware("http")
-async def no_cache_frontend(request, call_next):
-    """Always revalidate the app shell so updates load without a hard refresh."""
+async def cache_frontend(request, call_next):
+    """The app shell (HTML) is always revalidated so updates load without a hard
+    refresh; scripts and styles carry ?v=<version> in the shell, so a versioned
+    file never changes and is cached for a year (over the tunnel every 304
+    round-trip used to cost as much as a page); icons and fonts for a day."""
     response = await call_next(request)
     path = request.url.path
-    if path.endswith(("/", ".html", ".js", ".css")):  # directory indexes (/crm/, /inbox/) too
+    if path.endswith(("/", ".html")):  # directory indexes (/crm/, /inbox/) too
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path.endswith((".js", ".css")):
+        versioned = request.query_params.get("v") == config.APP_VERSION
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "no-cache, must-revalidate"
+    elif path.endswith((".svg", ".png", ".ico", ".woff", ".woff2", ".webmanifest")):
+        response.headers["Cache-Control"] = "public, max-age=86400"
     return response
 
 

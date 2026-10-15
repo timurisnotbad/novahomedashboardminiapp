@@ -274,12 +274,15 @@
   const KIND_NAMES = { open: "в работе", won: "успешно", lost: "потеряно" };
   ROUTES.deals = async () => {
     const seq = S.navSeq;
-    S.pipelines = await get("/pipelines");
-    const pid = parseInt(sessionStorage.getItem("crm_pipeline") || S.pipelines[0].id, 10);
+    const q = S.cache.dealQ || "";
+    const want = sessionStorage.getItem("crm_pipeline");
+    // pipelines and the board load together; the board is refetched only if the remembered pipeline is gone
+    const [pipes, firstDeals] = await Promise.all([get("/pipelines"), want ? get(`/deals?pipeline=${want}&q=${encodeURIComponent(q)}`).catch(() => null) : null]);
+    S.pipelines = pipes;
+    const pid = parseInt(want || S.pipelines[0].id, 10);
     const p = S.pipelines.find((x) => x.id === pid) || S.pipelines[0];
     sessionStorage.setItem("crm_pipeline", p.id);
-    const q = S.cache.dealQ || "";
-    const deals = await get(`/deals?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
+    const deals = firstDeals && p.id === pid ? firstDeals : await get(`/deals?pipeline=${p.id}&q=${encodeURIComponent(q)}`);
     if (stale(seq)) return;
     $("main").innerHTML = `
       <div class="page-head"><h1>Сделки</h1><div style="display:flex;gap:8px"><button class="btn" id="deal-backfill" title="Каждый чат — лид: создать сделки для чатов без сделки и передвинуть сделки по броням">Из чатов и броней</button><button class="btn primary" id="deal-add">Новая сделка</button></div></div>
@@ -398,8 +401,7 @@
     const seq = S.navSeq;
     const q = S.cache.clientQ || "";
     const stf = S.cache.clientSt === undefined ? null : S.cache.clientSt;
-    await loadStatuses();
-    const list = await get(`/clients?history=1&q=${encodeURIComponent(q)}${stf !== null ? "&status=" + encodeURIComponent(stf) : ""}`);
+    const [, list] = await Promise.all([loadStatuses(), get(`/clients?history=1&q=${encodeURIComponent(q)}${stf !== null ? "&status=" + encodeURIComponent(stf) : ""}`)]);
     if (stale(seq)) return;
     S.cache.clients = list;
     $("main").innerHTML = `
@@ -802,10 +804,11 @@
     : r.endpoint === null && r.probe && r.probe.length ? "Тарифы не загружены: календарь не отдал цены — нажмите «Загрузить тарифы», чтобы увидеть подробности" : "Тарифы ещё не загружены — ИИ не сможет называть цены";
   ROUTES.integrations = async () => {
     const seq = S.navSeq;
-    const d = await get("/integrations");
-    d.company = await get("/company").catch(() => ({ name: "", phone: "", email: "", website: "", address: "", inn: "", bank: "", note: "", currency: "USD" }));
-    d.email = await get("/email").catch(() => ({ configured: false, log: [] }));
-    d.push = await get("/push").catch(() => ({ delay: 2, escalate: 10, push: true, telegram: true, mine: 0, total: 0 }));
+    const [d, company, email, push] = await Promise.all([get("/integrations"),
+      get("/company").catch(() => ({ name: "", phone: "", email: "", website: "", address: "", inn: "", bank: "", note: "", currency: "USD" })),
+      get("/email").catch(() => ({ configured: false, log: [] })),
+      get("/push").catch(() => ({ delay: 2, escalate: 10, push: true, telegram: true, mine: 0, total: 0 }))]);  // one round trip instead of four
+    d.company = company; d.email = email; d.push = push;
     if (stale(seq)) return;
     const rc = d.realtycalendar;
     $("main").innerHTML = `<div class="page-head"><h1>Интеграции</h1></div>
@@ -903,7 +906,7 @@
     $("i-bilingual").addEventListener("change", async (e) => { try { await post("/checklist", { bilingual: e.target.checked }); toast(e.target.checked ? "Сообщения уходят на двух языках" : "Язык — по карточке гостя"); } catch (err) { toast(err.message); } });
     // apartments table: door codes, keys, Wi-Fi
     (async () => {
-      let ai, photos = []; try { ai = await get("/apartments/info"); photos = await get("/apartments/photos").catch(() => []); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="8" class="bad">${esc(err.message)}</td></tr>`; return; }
+      let ai, photos = []; try { [ai, photos] = await Promise.all([get("/apartments/info"), get("/apartments/photos").catch(() => [])]); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="8" class="bad">${esc(err.message)}</td></tr>`; return; }
       if (!$("apt-table")) return;
       const nPhotos = (a) => photos.filter((p) => p.apartment === a).length;
       $("apt-review").value = ai.review_url || "";
@@ -948,7 +951,7 @@
     const box = $("ai-tab"); if (!box) return;
     const ro = S.me.role !== "admin";
     let st, cfg;
-    try { st = await get("/ai/stats"); cfg = ro ? null : await get("/ai/settings"); } catch (err) { box.innerHTML = `<div class="card"><div class="bad">${esc(err.message)}</div></div>`; return; }
+    try { [st, cfg] = await Promise.all([get("/ai/stats"), ro ? null : get("/ai/settings")]); } catch (err) { box.innerHTML = `<div class="card"><div class="bad">${esc(err.message)}</div></div>`; return; }
     const money = (v) => "$" + Number(v || 0).toFixed(2);
     const MODE = { off: "Выключен — включается в шапке отдельного чата", draft: "Черновики во всех чатах — ИИ предлагает, отправляет менеджер", auto: "Отвечает сам во всех чатах, сложное передаёт человеку" };
     const su = st.setup || {};

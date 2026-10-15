@@ -516,7 +516,7 @@
   let tpls = [];
   let cmdSel = 0;
   function loadTpls() {
-    req("/templates").then((l) => { tpls = l || []; }).catch(() => {});
+    return req("/templates").then((l) => { tpls = l || []; }).catch(() => {});
   }
   function cmdMatches() {
     const v = $("text").value;
@@ -1111,6 +1111,9 @@
       if (tg) { tg.ready(); tg.expand(); if (tg.setHeaderColor) tg.setHeaderColor("#FFFFFF"); }
     } catch (e) { /* not in Telegram */ }
     bind();
+    // everything the first screen needs goes out at once: over the tunnel each round trip is slow
+    const chatsP = req("/chats?limit=300").catch((e) => e);
+    const tplP = loadTpls().catch(() => null);
     try {
       const me = await req("/me");
       S.me = me.user;
@@ -1122,15 +1125,16 @@
       else toast("Сервер недоступен: " + e.message);
       return;
     }
-    try {
-      const d = await req("/chats?limit=300");
+    const d = await chatsP;
+    if (d instanceof Error) toast(d.message);
+    else {
       d.chats.forEach((c) => S.chats.set(c.id, c));
       S.rev = d.rev;
       S.more = d.more != null ? !!d.more : d.chats.length >= 300;  // a full page: there may be older chats
-    } catch (e) { toast(e.message); }
+    }
     renderList();
     refreshWa();
-    loadTpls();
+    await tplP;
     setInterval(() => { if (document.visibilityState === "visible") refreshWa(); }, 60000);  // the QR modal has its own 3 s timer
     const m = /chat=(\d+)/.exec(location.hash);
     if (m) openChat(parseInt(m[1], 10));
