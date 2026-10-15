@@ -69,7 +69,7 @@ def me(user: dict = Depends(inbox_user)):  # noqa: B008
     st = inbox.bridge_status()
     from .. import ai
     return {"user": user, "agents": inbox.agents(), "rev": inbox.current_rev(),
-            "wa": {"status": st.get("status"), "me": st.get("me"), "error": st.get("error")},
+            "wa": {"status": st.get("status"), "me": st.get("me"), "error": st.get("error"), "wazzup": wazzup.configured()},
             "ai": {"enabled": ai.enabled(), "mode": ai.setting("ai_mode"), "author": ai.AUTHOR,
                    "transcribe": bool(ai.openai_key()) and ai.setting("ai_transcribe") == "1"}}
 
@@ -79,6 +79,7 @@ def status(user: dict = Depends(inbox_user)):  # noqa: B008
     st = inbox.bridge_status(fresh=True)  # the QR modal polls this
     if not user["owner"]:
         st.pop("qr", None)  # only owners link the phone
+    st["wazzup"] = wazzup.configured()  # WhatsApp works through Wazzup: the QR bridge is only a backup
     return st
 
 

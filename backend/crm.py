@@ -175,6 +175,10 @@ def init_db() -> None:
                      "media TEXT NOT NULL, mime TEXT, sort INTEGER DEFAULT 0, at TEXT)")
         if "descr" not in [r[1] for r in conn.execute("PRAGMA table_info(crm_apartment_info)").fetchall()]:
             conn.execute("ALTER TABLE crm_apartment_info ADD COLUMN descr TEXT")  # description for guests (rooms, guests, floor, view)
+        # v89: automatic «Заезд»/«Выезд» tasks are off by default and the open ones go (they only cluttered the list)
+        if not conn.execute("SELECT 1 FROM crm_settings WHERE key = 'auto_tasks_purged'").fetchone():
+            conn.execute("DELETE FROM crm_tasks WHERE status = 'open' AND (src_key LIKE 'checkin:%' OR src_key LIKE 'checkout:%')")
+            conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES ('auto_tasks_purged', '1')")
         dcols = [r[1] for r in conn.execute("PRAGMA table_info(crm_deals)").fetchall()]
         if "fields" not in dcols:
             conn.execute("ALTER TABLE crm_deals ADD COLUMN fields TEXT")
@@ -1172,6 +1176,9 @@ def _view_until(view: str | None) -> str | None:
     return None
 
 
+MANUAL_ONLY = "src_key IS NULL"  # tasks people created (or the assistant): not the automatic check-in/out and scenario steps
+
+
 def tasks(assignee_uid: int | None = None, status: str | None = None, client_id: int | None = None,
           deal_id: int | None = None, booking_id: int | None = None, view: str | None = None,
           limit: int = 500, offset: int = 0) -> list[dict]:
@@ -1186,6 +1193,8 @@ def tasks(assignee_uid: int | None = None, status: str | None = None, client_id:
         where.append("deal_id = ?"); args.append(deal_id)
     if booking_id:
         where.append("booking_id = ?"); args.append(booking_id)
+    if not booking_id and not deal_id:
+        where.append(MANUAL_ONLY)  # automatic steps (check-in/out, scenario messages) are not people's to-dos
     until = _view_until(view)
     if until:  # tasks without a date are always «current»
         where.append("(due IS NULL OR due <= ?)"); args.append(until)
@@ -1282,7 +1291,7 @@ def delete_task(tid: int) -> None:
 def auto_tasks(day: date | None = None) -> int:
     """Check-in / check-out tasks for the day, once per booking, assigned to
     the first admin. Off with the «auto_tasks» setting."""
-    if get_setting("auto_tasks", "1") != "1":
+    if get_setting("auto_tasks", "0") != "1":
         return 0
     day = day or date.today()
     admins = [u for u in list_users() if u["role"] == "admin" and u["active"]]
@@ -1811,9 +1820,9 @@ def home(uid: int) -> dict:
     with database.get_conn() as conn:
         unread = conn.execute("SELECT COUNT(*) FROM inbox_chats WHERE unread > 0").fetchone()[0]
         unread_msgs = conn.execute("SELECT COALESCE(SUM(unread), 0) FROM inbox_chats").fetchone()[0]
-        my_open = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
+        my_open = conn.execute(f"SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND {MANUAL_ONLY} AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
                                (uid, _view_until("today"))).fetchone()[0]
-        overdue = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND due < ?", (_now(),)).fetchone()[0]
+        overdue = conn.execute(f"SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND {MANUAL_ONLY} AND due < ?", (_now(),)).fetchone()[0]
         by_stage = [dict(r) for r in conn.execute(
             "SELECT s.id, s.name, s.color, s.kind, p.name AS pipeline, COUNT(d.id) AS n, COALESCE(SUM(d.amount), 0) AS amount "
             "FROM crm_stages s JOIN crm_pipelines p ON p.id = s.pipeline_id "

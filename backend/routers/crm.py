@@ -396,7 +396,7 @@ def _badges(user: dict) -> dict:
     with database.get_conn() as conn:
         # one metric everywhere: chats waiting for an answer (not a sum of messages)
         unread = conn.execute("SELECT COUNT(*) FROM inbox_chats WHERE unread > 0").fetchone()[0]
-        mine = conn.execute("SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
+        mine = conn.execute(f"SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND {crm.MANUAL_ONLY} AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
                             (user["id"], crm._view_until("today"))).fetchone()[0]  # noqa: SLF001
         last = conn.execute(
             "SELECT m.id, m.chat_id, m.kind, m.text, m.at, c.name, c.push_name, c.phone, c.channel FROM inbox_messages m "
@@ -1298,7 +1298,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
                            "push_log": rc_push.recent_log(10), "rates": rc_rates.status()},
         "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
         "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
-        "settings": {"auto_tasks": crm.get_setting("auto_tasks", "1") == "1",
+        "settings": {"auto_tasks": crm.get_setting("auto_tasks", "0") == "1",
                      "auto_deal": crm.get_setting("auto_deal", "1") == "1",
                      "auto_all_channels": crm.get_setting("auto_all_channels", "1") == "1",
                      "report_auto": crm.get_setting("report_auto", "1") == "1", "report_time": crm.get_setting("report_time", "09:00"),

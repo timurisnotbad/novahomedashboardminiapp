@@ -653,9 +653,10 @@
       S.wa = st.status;
       const el = $("wa-state");
       const ok = st.status === "connected";
-      el.className = "wa-state " + (ok ? "ok" : "bad");
-      el.querySelector("span").textContent = ok ? "WhatsApp" : st.status === "qr" || st.status === "logged_out" ? "Нужен QR" : st.status === "offline" ? "Мост выключен" : "Подключение…";
-      el.title = ok && st.me ? "Подключён: +" + (st.me.id || "").split("@")[0].split(":")[0] : (st.error || "");
+      const viaWz = !ok && st.wazzup;  // WhatsApp goes through Wazzup; the QR bridge is a spare, its state is not a warning
+      el.className = "wa-state " + (ok || viaWz ? "ok" : "bad");
+      el.querySelector("span").textContent = ok ? "WhatsApp" : viaWz ? "WhatsApp · Wazzup" : st.status === "qr" || st.status === "logged_out" ? "Нужен QR" : st.status === "offline" ? "Мост выключен" : "Подключение…";
+      el.title = ok && st.me ? "Подключён: +" + (st.me.id || "").split("@")[0].split(":")[0] : viaWz ? "WhatsApp работает через Wazzup. Привязка по QR не нужна" : (st.error || "");
       if (connModalOpen) renderConn(st);
     } catch (e) { /* poll errors are shown by pollNow */ }
   }
