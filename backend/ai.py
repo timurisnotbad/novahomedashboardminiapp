@@ -34,7 +34,7 @@ MODEL_NAMES = {"claude-opus-5-5": "Claude Opus 5.5 — лучшее качест
 DEFAULTS = {"ai_mode": "off", "ai_model": "claude-opus-5-5", "ai_model_triage": "claude-haiku-5-5", "ai_budget": "30",
             "ai_channels": "wa,tg,wztg,wz", "ai_pause_hours": "2", "ai_max_turns": "8", "ai_debounce": "20",
             "ai_rules": "", "ai_knowledge": "", "usd_rate": "11850", "ai_style": "", "ai_transcribe": "1",
-            "ai_playbook": "", "ai_followup_hours": "3"}
+            "ai_playbook": "", "ai_followup_hours": "3", "ai_facts": ""}
 # Rules saved by an admin before v84 equal one of these old defaults: treat them as «use the default».
 _OLD_RULES = (  # noqa: E501
     """Ты — ассистент апартаментов Nova Home (Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.
@@ -62,6 +62,9 @@ DEFAULT_RULES = """Ты — ассистент команды Nova Home (апа�
 - Пиши как живой менеджер в мессенджере: коротко, тепло, по делу, 1–3 предложения, без списков и шаблонных оборотов. Никаких «Минуту, проверяю», «Я здесь, чтобы помочь» — сразу ответ по сути. Не здоровайся повторно в одном разговоре.
 - Даты называй словами и без года: «18 июня», «18-19 iyun», «June 18». Никогда не пиши 2026-06-18 и не упоминай год.
 - Опирайся на памятку о стиле команды и примеры ответов: те же обороты, та же манера.
+- Гость часто пишет одну мысль несколькими сообщениями подряд («хочу забронировать» → «2 человека» → «21-24 декабря»): читай их вместе как один запрос. «21-24 декабря» — это даты заезда и выезда, «2 человека» — число гостей; не переспрашивай то, что уже сказано.
+- Разговорные сокращения и обращения понимай молча: «брат», «братан», «бро», «ака», «aka», «дорогой», «уважаемый» — обращение к тебе, а не имя; «скок / скока» = сколько; «чел» = человек; «сут / сутки» = ночь посуточно; «кв» = квартира; «пред / предоплата»; «нал» = наличные; «перевод» = на карту; «сег» = сегодня; «завтр» = завтра; «ок / окей / xo'p / xop» = согласие; «мб» = может быть; «хз» = не знает; «4 вариант» = четвёртый из перечисленных тобой.
+- Не пиши слово «Фото» и не обещай ссылок, которых у тебя нет. Если просят фото или видео — скажи, что менеджер пришлёт, и продолжай разговор. Не перечисляй все свободные квартиры списком — 2–3 подходящих.
 
 Честность:
 - Ты ассистент команды, а не конкретный человек. Никогда не называйся именем сотрудника или владельца. Если гость спросит, бот ли ты, — скажи честно: ты ассистент Nova Home, при необходимости подключится менеджер.
@@ -82,7 +85,8 @@ def init_db() -> None:
     with database.get_conn() as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_chats)").fetchall()]
         for col, decl in (("ai_mode", "TEXT"), ("ai_paused_until", "TEXT"), ("ai_draft", "TEXT"), ("ai_draft_at", "TEXT"),
-                          ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT"), ("ai_followup_at", "TEXT")):
+                          ("ai_turns", "INTEGER DEFAULT 0"), ("ai_note", "TEXT"), ("last_author", "TEXT"), ("ai_followup_at", "TEXT"),
+                          ("ai_last_in_id", "INTEGER")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE inbox_chats ADD COLUMN {col} {decl}")  # noqa: S608
         mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
@@ -92,6 +96,10 @@ def init_db() -> None:
         if ccols and "ai_memory" not in ccols:
             conn.execute("ALTER TABLE crm_clients ADD COLUMN ai_memory TEXT")
         conn.executescript("""
+        CREATE TABLE IF NOT EXISTS ai_lessons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL, source TEXT, chat_id INTEGER, at TEXT, active INTEGER DEFAULT 1
+        );
         CREATE TABLE IF NOT EXISTS ai_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER, kind TEXT, model TEXT, decision TEXT, text TEXT,
@@ -228,6 +236,9 @@ _OLD_RULES = _OLD_RULES + (_OLD_RULES[0].replace(
     "- Цены, свободные даты, адрес, Wi‑Fi, условия — только из базы знаний и из данных CRM. Если данных нет — честно скажи, что уточнишь, и вызови handover."),)
 
 
+_OLD_RULES = _OLD_RULES + ("Ты — ассистент команды Nova Home (апартаменты в Nest One, Ташкент). Отвечаешь гостям в мессенджере от имени команды.\nЦель: быстро закрыть простой вопрос, довести запрос на жильё до заявки и передать человеку, когда нужно решение.\n\nКак вести разговор о жилье:\n1. Пойми запрос: даты, сколько гостей, пожелания. Чего не хватает — спроси одним коротким вопросом (сначала даты и число гостей).\n2. Как только есть даты — вызови check_availability и предложи 2–3 подходящих варианта с ценой за ночь и итогом за период. Не спрашивай «на какие даты?», если даты уже назвали.\n3. Гость выбрал — узнай имя и телефон, сохрани заявку (save_lead) и скажи, что менеджер подтвердит бронь и пришлёт реквизиты.\n4. Цены и свободные квартиры — только из check_availability (шахматка RealtyCalendar, цены за ночь в долларах). В сумах — по курсу из данных, если гость просит. Нет цены на даты — скажи, что уточнишь, и вызови handover.\n\nЯзык и стиль:\n- Отвечай на языке последнего сообщения гостя: русский, узбекский (латиница или кириллица — как пишет гость), английский. Гости часто пишут по-узбекски разговорно и с ошибками: «nechpul / necha pul» = сколько стоит, «bo'sh / bosh» = свободно, «kvartira / uy / xonadon» = квартира, «bormi» = есть ли, «kecha / tun» = ночь, «sutkalik / kunlik» = посуточно, «odam / kishi» = человек, «qachon» = когда, «narx / narxi» = цена, «joy» = место. Отвечай по-узбекски так же просто и естественно.\n- Пиши как живой менеджер в мессенджере: коротко, тепло, по делу, 1–3 предложения, без списков и шаблонных оборотов. Никаких «Минуту, проверяю», «Я здесь, чтобы помочь» — сразу ответ по сути. Не здоровайся повторно в одном разговоре.\n- Даты называй словами и без года: «18 июня», «18-19 iyun», «June 18». Никогда не пиши 2026-06-18 и не упоминай год.\n- Опирайся на памятку о стиле команды и примеры ответов: те же обороты, та же манера.\n\nЧестность:\n- Ты ассистент команды, а не конкретный человек. Никогда не называйся именем сотрудника или владельца. Если гость спросит, бот ли ты, — скажи честно: ты ассистент Nova Home, при необходимости подключится менеджер.\n- Не выдумывай: адрес, Wi‑Fi, условия, предоплата — только из базы знаний и данных CRM. Нет данных — скажи, что уточнишь, и вызови handover.\n- Никаких скидок, обещаний и подтверждений брони от своего имени. Подтверждает бронь только человек.\n- Название чата или контакта — это имя в телефонной книге, а не запрос гостя: даты и квартиру бери только из сообщений.\n\nПередавай человеку (handover): жалоба, спор о деньгах, просьба позвонить, поломка в квартире, нестандартная просьба, гость раздражён, вопрос вне твоих данных. Если гость назвал время приезда — сохрани его (set_arrival_time).",)
+
+
 def rules_text() -> str:
     r = setting("ai_rules")
     if not r or _norm(r) in {_norm(x) for x in _OLD_RULES} or _norm(r) == _norm(DEFAULT_RULES):
@@ -336,7 +347,7 @@ def stats() -> dict:
         t_agg, m_agg = agg(today), agg(month)
     return {"today": t_agg, "month": m_agg, "budget": float(setting("ai_budget") or 0), "budget_left": round(budget_left(), 2),
             "recent": recent, "examples": examples, "chats_by_mode": chats, "enabled": enabled(), "mode": setting("ai_mode"),
-            "rates": _rates_status()}
+            "rates": _rates_status(), "lessons": lessons_list(100, all_rows=True)}
 
 
 # ---------------------------------------------------------------------------
@@ -381,13 +392,23 @@ def pause_for_human(chat_id: int, sent_text: str = "") -> None:
         draft = (r["ai_draft"] if r else "") or ""
         conn.execute("UPDATE inbox_chats SET ai_paused_until = ?, ai_draft = NULL, ai_turns = 0, rev = ? WHERE id = ?",
                      (until, inbox._bump(conn), chat_id))  # noqa: SLF001
-        if draft and sent_text and sent_text.strip() != draft.strip():
-            last_in = conn.execute("SELECT text FROM inbox_messages WHERE chat_id = ? AND direction = 'in' AND kind = 'text' ORDER BY id DESC LIMIT 1",
-                                   (chat_id,)).fetchone()
-            if last_in and last_in["text"]:
-                conn.execute("INSERT INTO ai_examples (q, a, source, chat_id, at) VALUES (?, ?, 'edited', ?, ?)",
-                             (last_in["text"][:1000], sent_text.strip()[:2000], chat_id, util.now()))
+        last_in = conn.execute("SELECT id, text, transcript FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 1",
+                               (chat_id,)).fetchone()
+        guest = ((last_in["text"] or last_in["transcript"]) if last_in else "") or ""
+        if draft and sent_text and sent_text.strip() != draft.strip() and guest:
+            conn.execute("INSERT INTO ai_examples (q, a, source, chat_id, at) VALUES (?, ?, 'edited', ?, ?)",
+                         (guest[:1000], sent_text.strip()[:2000], chat_id, util.now()))
+        # the assistant already answered the guest and a person still wrote: a correction worth a lesson
+        last_ai = conn.execute("SELECT id, text, at FROM inbox_messages WHERE chat_id = ? AND direction = 'out' AND author = ? ORDER BY id DESC LIMIT 1",
+                               (chat_id, AUTHOR)).fetchone()
     _state["pending"].pop(chat_id, None)
+    if not sent_text or not enabled():
+        return
+    ai_text = draft or ""
+    if not ai_text and last_ai and last_in and last_ai["id"] > last_in["id"] and (last_ai["at"] or "") >= (datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds"):
+        ai_text = last_ai["text"] or ""
+    if ai_text and ai_text.strip() != sent_text.strip():
+        bg.run(learn_lesson, chat_id, guest, ai_text, sent_text, "correction", key=f"ai-lesson-{chat_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -424,27 +445,132 @@ def learn_style(max_msgs: int = 240) -> dict:
     greetings, typical phrases per language, how prices and options are
     offered). One model call; the memo goes into the cached system block."""
     with database.get_conn() as conn:
-        rows = conn.execute("SELECT text FROM inbox_messages WHERE direction = 'out' AND kind = 'text' AND text != '' AND COALESCE(author, '') NOT IN (?, 'Автоответ', 'Телефон') "
-                            "AND LENGTH(text) BETWEEN 12 AND 600 ORDER BY id DESC LIMIT ?", (AUTHOR, max_msgs)).fetchall()
-    texts = [r["text"] for r in rows if not re.search(r"\{[а-яa-z ]+\}", r["text"])]
+        rows = conn.execute("SELECT author, text FROM inbox_messages WHERE direction = 'out' AND kind = 'text' AND text != '' AND COALESCE(author, '') NOT IN (?, 'Автоответ') "
+                            "AND LENGTH(text) BETWEEN 12 AND 600 ORDER BY id DESC LIMIT ?", (AUTHOR, max_msgs * 2)).fetchall()
+    by: dict[str, list] = {}
+    for r in rows:
+        if re.search(r"\{[а-яa-z ]+\}", r["text"]):
+            continue
+        by.setdefault(r["author"] or "Телефон", []).append(r["text"])
+    texts = []
+    per = max(40, max_msgs // max(1, min(6, len(by))))
+    for au, lst in sorted(by.items(), key=lambda kv: -len(kv[1]))[:6]:
+        texts += [f"[{au}] {t}" for t in lst[:per]]
+    texts = texts[:max_msgs]
     if len(texts) < 10:
         return {"ok": False, "error": f"мало ответов команды в истории ({len(texts)}), нужно хотя бы 10", "messages": len(texts)}
     model = setting("ai_model") or "claude-opus-5-5"
     t0 = time.time()
     resp = _client().messages.create(
-        model=model, max_tokens=1200, output_config={"effort": "medium"},
+        model=model, max_tokens=1800, output_config={"effort": "medium"},
         system="Ты анализируешь, как менеджеры апартаментов Nova Home (Ташкент) пишут гостям в мессенджере, чтобы ассистент писал так же. "
-               "Составь памятку до 1500 символов: тон и длина сообщений; как здороваются и обращаются (ты/вы, имя); эмодзи; "
-               "типичные фразы и обороты отдельно для русского, узбекского и английского (приведи 3–5 реальных коротких фраз на каждом языке, если есть); "
+               "Сообщения помечены автором в квадратных скобках. Составь памятку до 2500 символов: 1) общий тон и длина сообщений; как здороваются и обращаются (ты/вы, имя); эмодзи; "
+               "типичные фразы и обороты отдельно для русского, узбекского и английского (3–5 реальных коротких фраз на каждом языке, если есть); "
                "как называют цены и предлагают варианты; как просят предоплату и контакты; чего менеджеры никогда не пишут. "
-               "Только памятка, без вступления. Не включай персональные данные (имена гостей, телефоны, коды).",
+               "2) «Как отвечает каждый»: по 2–4 строки на каждого автора — манера, сильные приёмы, характерные фразы. "
+               "Только памятка, без вступления. Не включай персональные данные гостей (имена, телефоны, коды).",
         messages=[{"role": "user", "content": "Ответы команды (новые сверху):\n\n" + "\n---\n".join(texts)}])
-    memo = "\n".join(b.text for b in resp.content if b.type == "text").strip()[:3000]
+    memo = "\n".join(b.text for b in resp.content if b.type == "text").strip()[:4000]
     cost = _log(0, "style", model, "ok" if memo else "empty", memo[:400], resp.usage, (time.time() - t0) * 1000)
     if memo:
         from . import crm
         crm.set_setting("ai_style", memo)
     return {"ok": bool(memo), "messages": len(texts), "style": memo, "cost": cost}
+
+
+# ---------------------------------------------------------------------------
+# Lessons: the assistant's own accumulated experience
+# ---------------------------------------------------------------------------
+LESSON_SCHEMA = {"type": "object", "properties": {"lesson": {"type": "string"}, "skip": {"type": "boolean"}, "why": {"type": "string"}},
+                 "required": ["lesson", "skip", "why"], "additionalProperties": False}
+
+
+def lessons_list(limit: int = 100, all_rows: bool = False) -> list[dict]:
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM ai_lessons" + ("" if all_rows else " WHERE active = 1") + " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_lesson(text: str, source: str = "manual", chat_id: int | None = None) -> int:
+    text = re.sub(r"\s+", " ", (text or "")).strip()[:400]
+    if not text:
+        return 0
+    with database.get_conn() as conn:
+        dup = conn.execute("SELECT id FROM ai_lessons WHERE lower(text) = lower(?)", (text,)).fetchone()
+        if dup:
+            return dup["id"]
+        return conn.execute("INSERT INTO ai_lessons (text, source, chat_id, at, active) VALUES (?, ?, ?, ?, 1)", (text, source, chat_id, util.now())).lastrowid
+
+
+def set_lesson(lesson_id: int, active: bool | None = None, text: str | None = None, delete: bool = False) -> None:
+    with database.get_conn() as conn:
+        if delete:
+            conn.execute("DELETE FROM ai_lessons WHERE id = ?", (lesson_id,))
+            return
+        if active is not None:
+            conn.execute("UPDATE ai_lessons SET active = ? WHERE id = ?", (1 if active else 0, lesson_id))
+        if text is not None and text.strip():
+            conn.execute("UPDATE ai_lessons SET text = ? WHERE id = ?", (text.strip()[:400], lesson_id))
+
+
+def learn_lesson(chat_id: int, guest: str, ai_text: str, human_text: str, source: str) -> str:
+    """One cheap call: what did the person do differently from the assistant (or
+    what was wrong in a disliked reply) → one general, reusable lesson, or skip
+    when it is already known or purely situational."""
+    model = setting("ai_model_triage") or "claude-haiku-5-5"
+    known = "\n".join(f"- {x['text']}" for x in lessons_list(40)) or "(пока нет)"
+    t0 = time.time()
+    try:
+        resp = _client().messages.create(
+            model=model, max_tokens=300, output_config={"effort": "low", "format": {"type": "json_schema", "schema": LESSON_SCHEMA}},
+            system="Ты ведёшь базу опыта ассистента апартаментов Nova Home. Сравни ответ ассистента с тем, что сделал менеджер (или с замечанием), "
+                   "и сформулируй ОДИН общий, переиспользуемый урок для будущих разговоров: как понимать такие сообщения гостей, что отвечать, чего не делать. "
+                   "Урок — одно предложение до 200 символов, без имён и дат. skip=true, если разница ситуативная (конкретные даты, цены этого раза), "
+                   "урок уже есть в списке известных, или менеджер просто дописал приветствие. Отвечай только JSON.",
+            messages=[{"role": "user", "content": f"Известные уроки:\n{known}\n\nСообщение гостя: {guest[:600]}\n\nОтвет/черновик ассистента: {ai_text[:800]}\n\n"
+                                                  + (f"Что отправил менеджер вместо этого: {human_text[:800]}" if human_text else "Менеджер отметил этот ответ как плохой (👎).")}])
+        data = json.loads(next((b.text for b in resp.content if b.type == "text"), "{}"))
+        lesson = "" if data.get("skip") else (data.get("lesson") or "").strip()
+        _log(chat_id, "lesson", model, "add" if lesson else "skip", lesson or data.get("why") or "", resp.usage, (time.time() - t0) * 1000)
+        if lesson:
+            add_lesson(lesson, source, chat_id)
+        return lesson
+    except Exception as exc:  # noqa: BLE001
+        _log(chat_id, "lesson", model, "error", "", None, 0, str(exc))
+        return ""
+
+
+def learn_facts(max_msgs: int = 400) -> dict:
+    """What the team actually told guests about conditions, prices, payment,
+    registration, parking… → a draft fact list (setting ai_facts) for the admin
+    to check and move into the knowledge base."""
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT m.chat_id, m.direction, m.text, m.at FROM inbox_messages m WHERE m.kind = 'text' AND m.text != '' "
+                            "AND (m.direction = 'in' OR COALESCE(m.author, '') NOT IN (?, 'Автоответ')) AND LENGTH(m.text) BETWEEN 15 AND 900 "
+                            "ORDER BY m.id DESC LIMIT ?", (AUTHOR, max_msgs * 2)).fetchall()
+    pairs, prev = [], None
+    for r in reversed(rows):
+        if prev and prev["chat_id"] == r["chat_id"] and prev["direction"] == "in" and r["direction"] == "out":
+            pairs.append(f"Гость: {prev['text'][:250]}\nКоманда ({(r['at'] or '')[:7]}): {r['text'][:500]}")
+        prev = r
+    pairs = pairs[-max_msgs:]
+    if len(pairs) < 10:
+        return {"ok": False, "error": f"мало переписок для разбора ({len(pairs)} пар)", "pairs": len(pairs)}
+    model = setting("ai_model") or "claude-opus-5-5"
+    t0 = time.time()
+    resp = _client().messages.create(
+        model=model, max_tokens=1500, output_config={"effort": "medium"},
+        system="Ты разбираешь прошлые переписки команды апартаментов Nova Home (Ташкент) с гостями. Извлеки ФАКТЫ, которые команда реально сообщала гостям: "
+               "условия заселения и выезда, предоплата и возврат, способы оплаты, регистрация, парковка, ЗАГС, дети/животные, скидки, что входит, адрес и как добраться, "
+               "ответы на частые вопросы. Каждый факт — одна строка «- …» с пометкой месяца, если факт мог измениться (цены). Не придумывай, не обобщай спорное; "
+               "если команда отвечала по-разному — укажи оба варианта с пометкой «расходится». До 2500 символов, без вступления.",
+        messages=[{"role": "user", "content": "Пары «гость → команда» (старые сверху):\n\n" + "\n---\n".join(pairs)}])
+    text = "\n".join(b.text for b in resp.content if b.type == "text").strip()[:4000]
+    cost = _log(0, "facts", model, "ok" if text else "empty", text[:400], resp.usage, (time.time() - t0) * 1000)
+    if text:
+        from . import crm
+        crm.set_setting("ai_facts", text)
+    return {"ok": bool(text), "pairs": len(pairs), "facts": text, "cost": cost}
 
 
 def find_examples(text: str, limit: int = 6) -> list[dict]:
@@ -523,7 +649,8 @@ def _messages_for_model(history: list[dict]) -> list[dict]:
             if blk:
                 content.append(blk)
                 images_left -= 1
-        who = "" if role == "user" else f"[{m.get('author') or 'менеджер'}] "
+        au = m.get("author") or "менеджер"
+        who = "" if role == "user" else ("[ты] " if au == AUTHOR else "[менеджер с телефона] " if au == "Телефон" else f"[менеджер {au}] ")
         content.append({"type": "text", "text": f"({when}) {who}{body}"})
         if out and out[-1]["role"] == role:
             out[-1]["content"].extend(content)
@@ -561,6 +688,8 @@ def _system(ctx: dict) -> list[dict]:
     rules = rules_text()
     knowledge = setting("ai_knowledge") or "(база знаний пока не заполнена)"
     style = setting("ai_style")
+    facts = setting("ai_facts")
+    lessons = "\n".join(f"- {x['text']}" for x in lessons_list(40))
     co = docs.company()
     apt_rows = crm.apartment_info()
     apt_lines = [f"- {r['apartment'] if r['kind'] == 'apt' else ('блок ' + r['apartment'] if r['kind'] == 'block' else 'все квартиры')}: "
@@ -570,7 +699,9 @@ def _system(ctx: dict) -> list[dict]:
     stable = (f"{rules}\n\n## Методика продаж\n{playbook_text()}\n\n## Компания\n{co.get('name') or 'Nova Home'} · адрес: {co.get('address') or '—'} · телефон: {co.get('phone') or '—'} · "
               f"заезд с {ci}, выезд до {co_t}.\n\n## База знаний (правда только то, что здесь и в данных CRM)\n{knowledge}\n\n"
               f"## Квартиры\n" + ("\n".join(apt_lines) or "(нет данных)")
-              + (f"\n\n## Стиль команды (памятка из прошлых переписок)\n{style}" if style else ""))
+              + (f"\n\n## Стиль команды (памятка из прошлых переписок)\n{style}" if style else "")
+              + (f"\n\n## Из прошлых переписок команды (что команда реально отвечала; если противоречит базе знаний — база знаний главнее)\n{facts}" if facts else "")
+              + (f"\n\n## Опыт: уроки из прошлых переписок (соблюдай)\n{lessons}" if lessons else ""))
     chat, client, stays = ctx["chat"], ctx["client"], ctx["stays"]
     b = chat.get("booking")
     td = date.today()
@@ -869,7 +1000,7 @@ def on_incoming(chat_id: int) -> None:
     threading.Thread(target=later, daemon=True, name=f"ai-{chat_id}").start()
 
 
-def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: bool = False) -> dict:
+def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: bool = False, _retry: bool = False) -> dict:
     """One pass over the chat: triage → reply → send or draft. force=True is the
     «Ответить с ИИ» button (always a draft, ignores mode/pause/budget).
     nudge=True: the guest went silent after our offer — one gentle follow-up."""
@@ -891,10 +1022,13 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
         extra = (f"(Служебное: гость не ответил уже {hrs} ч. после твоего последнего сообщения. Напиши одно короткое тёплое напоминание без давления — "
                  f"уточни, актуально ли, или предложи помощь с выбором; 1–2 фразы, вопрос в конце, на языке гостя, не повторяй прошлое сообщение. "
                  f"Если напоминание неуместно — гость попрощался, отказался, вопрос закрыт, бронь уже оформлена — ответь ровно {NO_FOLLOWUP}.)")
+    last_in_id = max((m["id"] for m in ctx["history"] if m["direction"] == "in"), default=0)
     if not force and not nudge:
+        if not last_in_id or last_in_id <= int(chat.get("ai_last_in_id") or 0):
+            return {"status": "nothing new"}  # every guest message is already answered
         last = ctx["history"][-1] if ctx["history"] else None
-        if not last or last["direction"] != "in":
-            return {"status": "nothing new"}  # the last word is ours
+        if last and last["direction"] == "out" and last.get("author") != AUTHOR and last["id"] > last_in_id:
+            return {"status": "nothing new"}  # a person answered after the guest
         try:
             tri = _triage(ctx)
         except Exception as exc:  # noqa: BLE001
@@ -922,6 +1056,12 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
     if nudge and (not text or NO_FOLLOWUP in text):
         _log(chat_id, "followup", state.get("model") or "", "skip", text, state.get("usage"), state.get("ms") or 0)
         return {"status": "skip"}
+    if not nudge and not state.get("handover") and not state.get("lead"):
+        with database.get_conn() as conn:  # the guest wrote more while we were thinking: answer everything at once instead
+            newer = conn.execute("SELECT 1 FROM inbox_messages WHERE chat_id = ? AND direction = 'in' AND id > ? LIMIT 1", (chat_id, last_in_id)).fetchone()
+        if newer and not _retry:
+            _log(chat_id, "reply", state.get("model") or "", "stale", text, state.get("usage"), state.get("ms") or 0)
+            return handle(chat_id, force=force, want_draft=want_draft, _retry=True)
     if state.get("handover"):
         _do_handover(chat_id, state["handover"], mode)
     decision = "draft"
@@ -937,6 +1077,9 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
     if decision == "draft" and text:
         with database.get_conn() as conn:
             conn.execute("UPDATE inbox_chats SET ai_draft = ?, ai_draft_at = ?, rev = ? WHERE id = ?", (text, util.now(), inbox._bump(conn), chat_id))  # noqa: SLF001
+    if text and not nudge:
+        with database.get_conn() as conn:
+            conn.execute("UPDATE inbox_chats SET ai_last_in_id = ? WHERE id = ?", (last_in_id, chat_id))
     cost = _log(chat_id, "reply", state.get("model") or "", "handover" if state.get("handover") and not text else decision, text, state.get("usage"), state.get("ms") or 0)
     if state.get("handover") or state.get("lead"):
         bg.run(_update_memory, ctx, key=f"ai-mem-{chat_id}")
@@ -999,6 +1142,8 @@ def rate(chat_id: int, good: bool) -> None:
         if last_out and last_in and last_in["text"]:
             conn.execute("INSERT INTO ai_examples (q, a, source, chat_id, at, rating) VALUES (?, ?, 'rated', ?, ?, ?)",
                          (last_in["text"][:1000], last_out["text"][:2000], chat_id, util.now(), 1 if good else -1))
+    if not good and last_out and last_in and enabled():
+        bg.run(learn_lesson, chat_id, last_in["text"] or "", last_out["text"] or "", "", "dislike", key=f"ai-lesson-{chat_id}")
 
 
 def test_call() -> dict:

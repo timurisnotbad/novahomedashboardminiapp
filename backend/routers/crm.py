@@ -252,10 +252,34 @@ def ai_learn(user: dict = Depends(admin_user)):  # noqa: B008
     imported = ai.import_examples()
     try:
         r = ai.learn_style()
+        f = ai.learn_facts()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
     r["imported"] = imported
+    r["facts"] = f
     return r
+
+
+@router.get("/ai/lessons")
+def ai_lessons(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import ai
+    return ai.lessons_list(200, all_rows=True)
+
+
+@router.post("/ai/lessons")
+def ai_lesson_add(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    lid = ai.add_lesson(str(payload.get("text") or ""), "manual")
+    if not lid:
+        raise HTTPException(status_code=400, detail="Пустой урок")
+    return {"id": lid}
+
+
+@router.post("/ai/lessons/{lesson_id}")
+def ai_lesson_set(lesson_id: int, payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    ai.set_lesson(lesson_id, active=payload.get("active"), text=payload.get("text"), delete=bool(payload.get("delete")))
+    return {"ok": True}
 
 
 @router.post("/ai/test")
