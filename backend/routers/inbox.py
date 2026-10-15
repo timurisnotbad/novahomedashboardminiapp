@@ -289,11 +289,13 @@ def chat_ai_draft(chat_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
     from .. import ai
     if not ai.enabled():
         raise HTTPException(status_code=400, detail="ИИ-ассистент не настроен: Интеграции → ИИ-ассистент → ключ API")
-    from starlette.concurrency import run_in_threadpool  # noqa: F401
-    r = ai.handle(chat_id, force=True)
-    if r.get("status") == "error":
-        raise HTTPException(status_code=424, detail=config.redact(r.get("error") or "ошибка ИИ"))
-    return r
+    # The model with tools and photos can take 20–40 s; a request that long dies in the
+    # browser timeout or the tunnel («Нет связи с сервером»). Queue it and answer at once:
+    # the draft (or the reason there is none) reaches the chat through the usual poll.
+    from .. import bg
+    ai.mark_thinking(chat_id)
+    bg.run(ai.handle, chat_id, force=True, key=f"ai-draft-{chat_id}")
+    return {"status": "queued"}
 
 
 @router.delete("/chats/{chat_id}/ai/draft")

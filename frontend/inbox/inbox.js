@@ -202,7 +202,7 @@
     const box = $("ai-draft"); if (!box) return;
     if (!c || !c.ai_draft) {
       const eff = c && (c.ai_mode || (S.ai && S.ai.mode)) || "off";
-      if (c && c.ai_last_status && eff !== "off" && c.last_dir === "in") { box.innerHTML = `<div class="ib-draft__status">✨ ИИ ${esc(c.ai_last_status)} · <button class="ib-draft__link" data-draft="redo">ответить с ИИ</button></div>`; box.classList.remove("hidden"); return; }
+      if (c && c.ai_last_status && (c.last_dir === "in" || /думает/.test(c.ai_last_status)) && (eff !== "off" || /думает/.test(c.ai_last_status))) { box.innerHTML = `<div class="ib-draft__status">✨ ИИ ${esc(c.ai_last_status)} · <button class="ib-draft__link" data-draft="redo">ответить с ИИ</button></div>`; box.classList.remove("hidden"); return; }
       box.classList.add("hidden"); box.innerHTML = ""; return;
     }
     box.innerHTML = `<div class="ib-draft__head"><span>✨ Черновик ИИ${c.ai_note ? " · " + esc(c.ai_note.slice(0, 80)) : ""}</span><span>${esc((c.ai_draft_at || "").slice(11, 16))}</span></div>
@@ -213,9 +213,12 @@
   async function aiDraft() {
     if (!S.open) return;
     const btn = $("ai-btn"); if (btn) btn.disabled = true;
-    toast("ИИ читает переписку…");
-    try { const r = await req(`/chats/${S.open.id}/ai/draft`, { method: "POST" }); if (r.status === "handover") toast("ИИ считает, что нужен человек — чат помечен"); else if (!r.text) toast("ИИ не предложил ответ"); }
-    catch (e) { toast(e.message); }
+    const c = S.chats.get(S.open.id) || S.open;
+    try {
+      await req(`/chats/${S.open.id}/ai/draft`, { method: "POST" });  // queued: the draft arrives through the poll
+      c.ai_last_status = (new Date()).toTimeString().slice(0, 5) + " · думает…"; c.ai_draft = null; renderDraft(c);
+      toast("ИИ читает переписку, черновик появится здесь через 10–40 секунд");
+    } catch (e) { toast(e.message); }
     finally { if (btn) btn.disabled = false; }
   }
   function renderHead() {

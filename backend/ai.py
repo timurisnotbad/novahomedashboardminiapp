@@ -1044,6 +1044,10 @@ def _status(chat_id: int, text: str) -> None:
         conn.execute("UPDATE inbox_chats SET ai_last_status = ?, rev = ? WHERE id = ?", (f"{datetime.now().strftime('%H:%M')} · {text}"[:200], inbox._bump(conn), chat_id))  # noqa: SLF001
 
 
+def mark_thinking(chat_id: int) -> None:
+    _status(chat_id, "думает…")
+
+
 def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: bool = False, _retry: bool = False) -> dict:
     """One pass over the chat: triage → reply → send or draft. force=True is the
     «Ответить с ИИ» button (always a draft, ignores mode/pause/budget).
@@ -1058,6 +1062,9 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
     mode = "draft" if force else chat_mode(chat)
     if mode == "off":
         return {"status": "off"}
+    if force and not ctx["history"]:
+        _status(chat_id, "в чате ещё нет сообщений")
+        return {"status": "nothing new"}
     extra = ""
     if nudge:
         if mode != "auto":
