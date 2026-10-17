@@ -344,6 +344,40 @@ def user_send_album(payload: dict) -> dict:
         raise inbox.BridgeError(_err(exc)) from exc
 
 
+def backfill_profiles(limit: int = 2000) -> dict:
+    """Ask Telegram for the current profile of every Telegram chat we have:
+    @username and the phone (visible when the guest shares it or has us in
+    contacts). New facts go through the usual lead registration."""
+    if not _me:
+        return {"ok": False, "error": "Telegram-аккаунт не подключён", "checked": 0, "updated": 0}
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT id, jid, phone, username, push_name, name FROM inbox_chats WHERE channel = 'tg' ORDER BY last_at DESC LIMIT ?", (limit,)).fetchall()
+
+    async def go():
+        import asyncio as aio
+        out = []
+        for r in rows:
+            try:
+                uid = int(r["jid"].split(":")[1])
+                u = await _client.get_entity(uid)
+            except Exception:  # noqa: BLE001
+                continue
+            phone = re.sub(r"\D", "", getattr(u, "phone", "") or "")
+            uname = getattr(u, "username", None) or ""
+            if (phone and not r["phone"]) or (uname and uname != (r["username"] or "")):
+                out.append((r["id"], r["jid"], phone, uname, r["push_name"] or r["name"] or ""))
+            await aio.sleep(0.05)  # gentle on Telegram's limits
+        return out
+    found = _run(go(), 600)
+    n = 0
+    for chat_id, jid, phone, uname, name in found:
+        with database.get_conn() as conn:
+            inbox._ensure_chat(conn, jid, None, None, "tg", phone or None, uname or None)  # noqa: SLF001
+        n += 1
+    inbox._flush_new_clients()  # noqa: SLF001
+    return {"ok": True, "checked": len(rows), "updated": n}
+
+
 def user_lookup(phone: str) -> dict:
     """Is this number on Telegram? Imports the contact for a moment (the only
     way Telegram offers), returns {exists, id, name, phone}."""

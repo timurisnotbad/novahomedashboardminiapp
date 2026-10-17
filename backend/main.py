@@ -36,6 +36,21 @@ async def _initial_sync() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Initial sync failed: %s", exc)
     try:
+        if not crm.get_setting("leads_backfilled", ""):  # v92: once, every existing chat gets its contact card filled
+            def _leads():
+                from . import tg_channels
+                out = crm.backfill_leads()
+                try:
+                    out["telegram"] = tg_channels.backfill_profiles()
+                except Exception as exc:  # noqa: BLE001
+                    out["telegram"] = str(exc)[:100]
+                crm.set_setting("leads_backfilled", crm._now())  # noqa: SLF001
+                logger.info("leads backfill: %s", out)
+            await asyncio.sleep(90)  # after the channels have connected
+            await loop.run_in_executor(None, _leads)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("leads backfill failed: %s", exc)
+    try:
         from . import rc_rates
         await loop.run_in_executor(None, rc_rates.sync)  # nightly prices for the assistant
     except Exception as exc:  # noqa: BLE001

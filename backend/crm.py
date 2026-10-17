@@ -1016,6 +1016,38 @@ def merge_clients(keep_id: int, drop_id: int) -> None:
         conn.execute("UPDATE crm_clients SET updated_at = ? WHERE id = ?", (_now(), keep_id))
 
 
+def backfill_leads() -> dict:
+    """One pass over everything we already have: every chat gets its card with the
+    phone and @handle the chat knows; chats without a phone are searched for a
+    contact card or a number written by the guest (last 200 incoming messages)."""
+    from . import inbox
+    stats = {"chats": 0, "phones_found": 0}
+    with database.get_conn() as conn:
+        chats = [dict(r) for r in conn.execute("SELECT id, phone, username, push_name, name, channel FROM inbox_chats").fetchall()]
+    for ch in chats:
+        stats["chats"] += 1
+        src = inbox.CHANNELS.get(ch["channel"] or "wa", ch["channel"] or "wa")
+        try:
+            register_lead(ch["id"], ch["phone"] or "", ch["name"] or ch["push_name"] or "", src, ch["channel"] or "wa", ch["username"] or "")
+        except Exception:  # noqa: BLE001
+            continue
+        if ch["phone"]:
+            continue
+        with database.get_conn() as conn:
+            msgs = conn.execute("SELECT kind, text FROM inbox_messages WHERE chat_id = ? AND direction = 'in' AND kind IN ('text', 'contact') "
+                                "ORDER BY id DESC LIMIT 200", (ch["id"],)).fetchall()
+        for m in reversed(msgs):  # the oldest hint first: the guest's own number usually comes early
+            hint = inbox._phone_hint({"kind": m["kind"], "text": m["text"] or ""})  # noqa: SLF001
+            if hint:
+                lead_phone_hint(ch["id"], hint["phone"], hint["name"], hint["kind"])
+                with database.get_conn() as conn:
+                    got = conn.execute("SELECT phone FROM inbox_chats WHERE id = ?", (ch["id"],)).fetchone()["phone"]
+                if got:
+                    stats["phones_found"] += 1
+                    break
+    return stats
+
+
 def import_clients() -> int:
     """Create clients for every phone seen in bookings and chats."""
     n = 0

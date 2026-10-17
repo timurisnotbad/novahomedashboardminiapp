@@ -1361,6 +1361,22 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
 _last_manual_sync = {"at": 0.0}
 
 
+@router.post("/leads/backfill")
+async def leads_backfill(user: dict = Depends(admin_user)):  # noqa: B008
+    """«Собрать контакты из переписок»: phones and @handles for every existing chat."""
+    from .. import tg_channels
+
+    def run():
+        out = crm.backfill_leads()
+        try:
+            out["telegram"] = tg_channels.backfill_profiles()
+        except Exception as exc:  # noqa: BLE001
+            out["telegram"] = {"ok": False, "error": config.redact(str(exc))[:200]}
+        crm.set_setting("leads_backfilled", crm._now())  # noqa: SLF001
+        return out
+    return await asyncio.get_event_loop().run_in_executor(None, run)
+
+
 @router.post("/integrations/sync")
 async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
     import time
