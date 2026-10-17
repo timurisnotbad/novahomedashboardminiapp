@@ -285,7 +285,10 @@ textarea.ib-field { resize:vertical; min-height:80px; }
 /* iOS zooms into any control smaller than 16px — never on a phone */
 @media (max-width: 760px) {
   .ib input, .ib textarea, .ib select, .ib-field, .ib-compose textarea, .ib-modal__card input, .ib-modal__card textarea, .ib-modal__card select { font-size:16px; }
-  .ib { height:var(--vvh, 100dvh); }  /* follows the keyboard (visualViewport), nothing scrolls away */
+  /* standalone on a phone: the layout lives in the visible viewport (--vvh / --vvtop from visualViewport) */
+  body:not(.embed) { position:fixed; width:100%; top:0; left:0; }
+  body:not(.embed) .ib { position:fixed; left:0; right:0; top:var(--vvtop, 0px); height:var(--vvh, 100%); }
+  body.embed .ib { height:100%; }  /* the CRM shell sizes the frame itself */
 }
 /* photo viewer: swipe / arrows between photos, close, save */
 .ib-lightbox { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,.92); display:flex; align-items:center; justify-content:center; cursor:default; touch-action:pan-y; }
