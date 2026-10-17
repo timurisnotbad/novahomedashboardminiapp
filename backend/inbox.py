@@ -135,6 +135,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN notify_stage INTEGER DEFAULT 9")  # 0 new → 1 pushed → 2 escalated; 9 answered
         if "receipt_info" not in ccols:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN receipt_info TEXT")  # who showed the guest «read», and when
+        if "username" not in ccols:
+            conn.execute("ALTER TABLE inbox_chats ADD COLUMN username TEXT")  # @handle on Telegram / Instagram — the lead's identity before a phone is known
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -579,7 +581,8 @@ def _find_chat(conn, jid: str, lid: str | None):
 
 
 def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None = None,
-                 channel: str = "wa", phone: str | None = None):
+                 channel: str = "wa", phone: str | None = None, username: str | None = None):
+    username = (username or "").strip().lstrip("@")[:64] or None
     r = _find_chat(conn, jid, lid)
     if r:
         if push_name and push_name != r["push_name"]:
@@ -590,34 +593,38 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
         if channel != (r["channel"] or "wa") and channel in WA_LIKE and (r["channel"] or "wa") in WA_LIKE:
             # the same WhatsApp number now talks through the other transport: answer there
             conn.execute("UPDATE inbox_chats SET channel = ?, rev = ? WHERE id = ?", (channel, _bump(conn), r["id"]))
+        changed = False
         if phone and not r["phone"]:
-            conn.execute("UPDATE inbox_chats SET phone = ? WHERE id = ?", (phone, r["id"]))
+            conn.execute("UPDATE inbox_chats SET phone = ? WHERE id = ?", (phone, r["id"]))  # the guest shared the number / added us
+            changed = True
+        if username and username != (r["username"] or ""):
+            conn.execute("UPDATE inbox_chats SET username = ? WHERE id = ?", (username, r["id"]))
+            changed = True
+        if changed:
+            _lead_updates.append((r["id"], phone or r["phone"] or "", push_name or r["push_name"] or r["name"] or "", CHANNELS.get(channel, channel), channel, username or r["username"] or ""))
         return r["id"]
     phone = phone if phone is not None else phone_of_jid(jid)
     cur = conn.execute(
-        "INSERT INTO inbox_chats (channel, jid, lid, phone, push_name, created_at, rev, unread) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-        (channel, jid, lid, phone, push_name, _now(), _bump(conn)),
+        "INSERT INTO inbox_chats (channel, jid, lid, phone, push_name, username, created_at, rev, unread) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (channel, jid, lid, phone, push_name, username, _now(), _bump(conn)),
     )
-    _new_chat_ids.append((cur.lastrowid, phone, push_name or "", CHANNELS.get(channel, channel), channel))
+    _lead_updates.append((cur.lastrowid, phone or "", push_name or "", CHANNELS.get(channel, channel), channel, username or ""))
     return cur.lastrowid
 
 
-_new_chat_ids: list = []
+_lead_updates: list = []  # (chat_id, phone, name, source, channel, username): new chats and chats that just got a phone / handle
+_new_chat_ids = _lead_updates  # old name
 
 
 def _flush_new_clients() -> None:
-    """A new chat = a client card in the CRM (outside the chat's transaction)."""
-    while _new_chat_ids:
-        chat_id, phone, name, source, channel = _new_chat_ids.pop()
+    """Every lead gets a client card the moment it writes (outside the chat's
+    transaction); a phone or @handle learned later lands on the same card."""
+    while _lead_updates:
+        chat_id, phone, name, source, channel, username = _lead_updates.pop()
         try:
             from . import crm
-            if phone:
-                cid = crm.ensure_client(phone, name, source, chat_id)
-            else:
-                cid = crm.ensure_client_for_chat(chat_id, name, source)
-            if cid:
-                crm.note_channel(cid, channel, name or (("+" + phone) if phone and channel in ("tg", "wztg") else ""))
+            crm.register_lead(chat_id, phone, name, source, channel, username)
         except Exception:  # noqa: BLE001
             logger.exception("crm client from chat failed")
 
@@ -663,6 +670,30 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
         _flush_new_clients()
 
 
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?998[\s\-()]*\d{2}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2}|\+\d[\d\s\-()]{8,16}\d)(?!\d)")
+
+
+def _phone_hint(m: dict) -> dict | None:
+    """A phone number the guest just gave us: a shared contact card, or a number
+    written in the text («мой номер +998 90 …»)."""
+    kind, text = m.get("kind") or "text", (m.get("text") or "")
+    if kind == "contact":
+        d = re.sub(r"\D", "", text)
+        digits = re.findall(r"\+?\d[\d\s\-()]{7,}\d", text)
+        if not digits:
+            return None
+        num = re.sub(r"\D", "", digits[-1])
+        name = re.sub(r"\+?[\d\s\-()]{8,}", "", text).strip()
+        return {"phone": num, "name": name, "kind": "contact"} if 9 <= len(num) <= 15 else None
+    if kind == "text" and len(text) <= 400:
+        found = _PHONE_RE.search(text)
+        if found:
+            num = re.sub(r"\D", "", found.group(0))
+            if 9 <= len(num) <= 15:
+                return {"phone": num, "name": "", "kind": "text"}
+    return None
+
+
 def _tkey(t) -> str:
     return re.sub(r"\s+", "", (t or "")).lower()[:400]
 
@@ -682,7 +713,7 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
                 conn.execute("UPDATE inbox_messages SET reaction = ?, rev = ? WHERE wa_id = ?",
                              (m.get("text") or None, rev, target))
             return None
-        chat_id = _ensure_chat(conn, jid, m.get("lid"), None if out else m.get("push_name"), channel, m.get("phone"))
+        chat_id = _ensure_chat(conn, jid, m.get("lid"), None if out else m.get("push_name"), channel, m.get("phone"), None if out else m.get("username"))
         is_first = conn.execute("SELECT 1 FROM inbox_messages WHERE chat_id = ? LIMIT 1", (chat_id,)).fetchone() is None
         exists = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ?", (m["id"],)).fetchone()
         if exists:
@@ -720,6 +751,14 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
                     0 if (out or history) else 1)
         if out:
             conn.execute("UPDATE inbox_chats SET last_author = 'Телефон' WHERE id = ?", (chat_id,))
+    if not out:
+        hint = _phone_hint(m)
+        if hint:
+            try:
+                from . import crm
+                crm.lead_phone_hint(chat_id, hint["phone"], hint["name"], hint["kind"])
+            except Exception:  # noqa: BLE001
+                logger.exception("phone hint failed")
     if notify and not out and not history:
         st = _notify_settings()
         if st["delay"] == 0:  # «сразу»: push + Telegram right now, in the background

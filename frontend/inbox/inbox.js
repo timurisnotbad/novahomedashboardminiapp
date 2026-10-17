@@ -227,7 +227,7 @@
     $("conv-title").textContent = c.title;
     const phone = c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : "";
     const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
-    $("conv-sub").innerHTML = [ch, phone, c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
+    $("conv-sub").innerHTML = [ch, phone, c.username ? `<a href="${c.channel === "ig" || c.channel === "wzig" ? "https://instagram.com/" : "https://t.me/"}${esc(c.username)}" target="_blank" rel="noopener">@${esc(c.username)}</a>` : "", c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
     // AI assistant: the per-chat mode and the pending draft
     const aiSel = $("ai-mode");
     if (aiSel) {

@@ -932,6 +932,90 @@ def ensure_client_for_chat(chat_id: int, name: str = "", source: str = "") -> in
             (name.strip() or source or "Гость", source, chat_id, _now(), _now())).lastrowid
 
 
+def register_lead(chat_id: int, phone: str = "", name: str = "", source: str = "", channel: str = "", username: str = "") -> int | None:
+    """Every incoming lead is a client card: by phone when it is known, else by
+    chat. A phone learned later moves the chat's card onto the phone's card (or
+    gives the card the phone); the @handle lands in the Telegram / Instagram field."""
+    phone = digits(phone)
+    name = (name or "").strip()
+    with database.get_conn() as conn:
+        mine = conn.execute("SELECT id, phone FROM crm_clients WHERE chat_id = ?", (chat_id,)).fetchone()
+    cid = None
+    if len(phone) >= 7:
+        with database.get_conn() as conn:
+            byphone = conn.execute("SELECT id, chat_id FROM crm_clients WHERE phone LIKE ? ORDER BY id LIMIT 1", ("%" + phone[-9:],)).fetchone()
+        if mine and byphone and byphone["id"] != mine["id"]:
+            merge_clients(byphone["id"], mine["id"])  # the phone-less card of this chat folds into the known guest
+            cid = byphone["id"]
+            with database.get_conn() as conn:
+                conn.execute("UPDATE crm_clients SET chat_id = COALESCE(chat_id, ?), updated_at = ? WHERE id = ?", (chat_id, _now(), cid))
+        elif mine and not byphone:
+            cid = mine["id"]
+            with database.get_conn() as conn:
+                conn.execute("UPDATE crm_clients SET phone = ?, name = CASE WHEN name IN ('', 'Гость', 'Telegram', 'Instagram', 'WhatsApp') OR name LIKE '@%' THEN COALESCE(NULLIF(?, ''), name) ELSE name END, updated_at = ? WHERE id = ?",
+                             (phone, name, _now(), cid))
+        else:
+            cid = ensure_client(phone, name, source, chat_id)
+    else:
+        cid = mine["id"] if mine else ensure_client_for_chat(chat_id, name or (("@" + username) if username else ""), source)
+    if cid:
+        handle = ("@" + username.lstrip("@")) if username else (name or (("+" + phone) if phone and channel in ("tg", "wztg") else ""))
+        note_channel(cid, channel, handle)
+        if username:  # a handle is more useful than a name in that field: replace a plain name with it
+            col = "instagram" if channel in ("ig", "wzig") else "telegram" if channel in ("tg", "wztg", "tgbot") else None
+            if col:
+                with database.get_conn() as conn:
+                    conn.execute(f"UPDATE crm_clients SET {col} = ? WHERE id = ? AND ({col} IS NULL OR {col} = '' OR {col} NOT LIKE '@%')", ("@" + username.lstrip("@"), cid))  # noqa: S608
+    return cid
+
+
+def lead_phone_hint(chat_id: int, phone: str, contact_name: str = "", kind: str = "text") -> None:
+    """The guest wrote a number or shared a contact: the chat (and its card) get the
+    phone when they had none; otherwise it is kept as the second phone."""
+    phone = digits(phone)
+    if len(phone) < 9:
+        return
+    with database.get_conn() as conn:
+        ch = conn.execute("SELECT phone, push_name, name, channel FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
+        if not ch:
+            return
+        own = not ch["phone"] or digits(ch["phone"])[-9:] == phone[-9:]
+        if kind == "contact" and contact_name and ch["push_name"] and contact_name.lower()[:4] not in (ch["push_name"] or "").lower():
+            own = False  # someone else's card (a friend, a driver): not this guest's number
+        if not ch["phone"] and own:
+            from . import inbox
+            conn.execute("UPDATE inbox_chats SET phone = ?, rev = ? WHERE id = ?", (phone, inbox._bump(conn), chat_id))  # noqa: SLF001
+    if not ch["phone"] and own:
+        register_lead(chat_id, phone, ch["name"] or ch["push_name"] or "", "", ch["channel"] or "wa", "")
+        return
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT id FROM crm_clients WHERE chat_id = ?", (chat_id,)).fetchone()
+        if r:
+            conn.execute("UPDATE crm_clients SET phone2 = COALESCE(NULLIF(phone2, ''), ?), updated_at = ? WHERE id = ? AND COALESCE(phone, '') NOT LIKE ?",
+                         ("+" + phone, _now(), r["id"], "%" + phone[-9:]))
+
+
+def merge_clients(keep_id: int, drop_id: int) -> None:
+    """Fold one card into another: profile fields fill the blanks, deals, tasks,
+    notes and the chat link move, the duplicate goes."""
+    if keep_id == drop_id:
+        return
+    with database.get_conn() as conn:
+        d = conn.execute("SELECT * FROM crm_clients WHERE id = ?", (drop_id,)).fetchone()
+        if not d:
+            return
+        for col in ("email", "notes", "source", "chat_id", "ai_memory", *PROFILE_FIELDS):
+            if col in d.keys() and d[col] not in (None, ""):
+                conn.execute(f"UPDATE crm_clients SET {col} = COALESCE(NULLIF({col}, ''), ?) WHERE id = ?", (d[col], keep_id))  # noqa: S608
+        for tbl in ("crm_deals", "crm_tasks", "crm_notes"):
+            try:
+                conn.execute(f"UPDATE {tbl} SET client_id = ? WHERE client_id = ?", (keep_id, drop_id))  # noqa: S608
+            except Exception:  # noqa: BLE001
+                pass
+        conn.execute("DELETE FROM crm_clients WHERE id = ?", (drop_id,))
+        conn.execute("UPDATE crm_clients SET updated_at = ? WHERE id = ?", (_now(), keep_id))
+
+
 def import_clients() -> int:
     """Create clients for every phone seen in bookings and chats."""
     n = 0

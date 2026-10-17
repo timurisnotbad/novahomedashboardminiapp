@@ -156,8 +156,8 @@ async def _message_dict(msg, peer) -> dict | None:
         or (("@" + other.username) if getattr(other, "username", None) else None)
     phone = re.sub(r"\D", "", getattr(other, "phone", "") or "")
     m = {"channel": "tg", "id": f"tg:{other_id}:{msg.id}", "jid": f"tg:{other_id}", "phone": phone, "from_me": out,
-         "push_name": None if out else name, "at": (msg.date or datetime.now(timezone.utc)).isoformat(),
-         "kind": "text", "text": msg.message or ""}
+         "push_name": None if out else name, "username": getattr(other, "username", None) or None,
+         "at": (msg.date or datetime.now(timezone.utc)).isoformat(), "kind": "text", "text": msg.message or ""}
     if msg.reply_to and getattr(msg.reply_to, "reply_to_msg_id", None):
         m["quoted_id"] = f"tg:{other_id}:{msg.reply_to.reply_to_msg_id}"
     media = msg.media

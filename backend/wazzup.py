@@ -207,6 +207,7 @@ def _message(m: dict) -> dict | None:
                 "geo": "location", "sticker": "sticker", "wapi_template": "text", "unsupported": "other"}
     out = {"channel": CHANNEL_BY_TYPE.get(chat_type, "wz"), "id": "wz:" + m["messageId"], "jid": jid, "phone": phone,
            "from_me": bool(m.get("isEcho")), "push_name": None if m.get("isEcho") else (contact.get("name") or contact.get("username")),
+           "username": contact.get("username") or None,
            "at": m.get("dateTime") or "", "kind": kind_map.get(m.get("type"), "other"), "text": m.get("text") or "",
            "wz": {"channel_id": m.get("channelId"), "chat_type": chat_type, "ext_chat_id": ext_chat}}
     q = m.get("quotedMessage") or {}

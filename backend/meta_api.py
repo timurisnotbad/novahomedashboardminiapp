@@ -207,6 +207,7 @@ def wa_status() -> dict:
 # Instagram Direct (Messenger Platform, through the linked Facebook Page)
 # ---------------------------------------------------------------------------
 _ig_names: dict[str, str] = {}
+_ig_users: dict[str, str] = {}
 
 
 def _ig_name(igsid: str) -> str | None:
@@ -215,10 +216,18 @@ def _ig_name(igsid: str) -> str | None:
     try:
         d = _graph("GET", igsid, config.IG_PAGE_TOKEN, params={"fields": "name,username"}, timeout=10)
         nm = d.get("name") or (("@" + d["username"]) if d.get("username") else None)
+        if d.get("username"):
+            _ig_users[igsid] = d["username"]
     except Exception:  # noqa: BLE001
         nm = None
     _ig_names[igsid] = nm
     return nm
+
+
+def _ig_username(igsid: str) -> str | None:
+    if igsid not in _ig_names:
+        _ig_name(igsid)
+    return _ig_users.get(igsid)
 
 
 def _ig_event(ev: dict) -> dict | None:
@@ -231,7 +240,7 @@ def _ig_event(ev: dict) -> dict | None:
     if not igsid:
         return None
     out = {"channel": "ig", "id": "ig:" + (msg.get("mid") or uuid.uuid4().hex), "jid": f"ig:{igsid}", "phone": "",
-           "from_me": echo, "push_name": None if echo else _ig_name(igsid),
+           "from_me": echo, "push_name": None if echo else _ig_name(igsid), "username": None if echo else _ig_username(igsid),
            "at": _iso(int(ev.get("timestamp") or 0) / 1000), "kind": "text", "text": msg.get("text") or ""}
     if (msg.get("reply_to") or {}).get("mid"):
         out["quoted_id"] = "ig:" + msg["reply_to"]["mid"]
