@@ -29,8 +29,8 @@ try:
     from telegram.ext import (Application, ApplicationHandlerStop, CommandHandler, ContextTypes,
                               MessageHandler, filters)
 
-    from backend import (attendance, booking_prices, config, database, issues, logsetup, notify,
-                         pay_parse, rc_sync, services, supplies)
+    from backend import (attendance, booking_prices, config, database, inbox, issues, logsetup,
+                         notify, pay_parse, rc_sync, services, supplies)
 except BaseException as _import_exc:  # noqa: BLE001 — a missing library must not close the window
     import traceback
 
@@ -84,10 +84,13 @@ def _webapp_url(uid=None) -> str:
                 return url + "&okey=" + config.PAY_KEY
         except Exception:  # noqa: BLE001
             logger.exception("pay viewer url check failed")
-    if config.STAFF_KEY and uid:
-        # everyone else: the staff key proves the app was opened from the bot
-        # (the API rejects bare visits to the domain)
-        url += "&okey=" + config.STAFF_KEY
+    if uid:
+        # everyone else: a PERSONAL key (hashed in the DB, revoked by /staff_del)
+        # proves who opened the app — desktop clients pass no initData
+        try:
+            url += "&okey=" + database.issue_access_key(uid)
+        except Exception:  # noqa: BLE001
+            logger.exception("access key issue failed")
     return url
 
 
@@ -104,8 +107,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if not msg:
         return
-    _register(update.effective_user)
     uid = update.effective_user.id if update.effective_user else None
+    created = _register(update.effective_user)
     if chat and chat.type != "private":
         # Telegram allows Web App buttons in private chats only — sending them
         # here fails with Bad Request and the person gets nothing
@@ -113,6 +116,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text(
             f"Дашборд открывается из личного чата: напишите /start боту @{me}."
         )
+        return
+    if uid and not _may_open(uid):
+        # unknown person: nothing but a polite note; owners get a one-line alert
+        await msg.reply_text("Здравствуйте! Это рабочий бот Nova Home. Доступ к дашборду выдаёт владелец — "
+                             "я передал ему ваш запрос, после подтверждения напишите /start ещё раз.")
+        if created:
+            await _notify_owners(context.bot, f"👤 Новый человек написал боту: {update.effective_user.full_name} "
+                                 f"(@{update.effective_user.username or '—'}, id {uid}).\nДать доступ: /staff_ok {uid}")
         return
     markup = _webapp_markup(uid)
     apt_count = len(_apartment_names()) or config.TOTAL_APARTMENTS
@@ -134,6 +145,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             text + "\n\n⚠️ WEBAPP_URL не задан — доступна только текстовая сводка (/today).",
             parse_mode=ParseMode.MARKDOWN,
         )
+
+
+def _inbox_url(uid: int) -> str:
+    base = config.WEBAPP_URL.split("?")[0].rstrip("/")
+    return f"{base}/inbox/?v={config.APP_VERSION}&k={inbox.personal_key(uid)}"
+
+
+async def chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«Чаты» — the shared WhatsApp inbox. Everyone allowed gets a personal
+    link: it opens in Telegram and in any browser on the computer, and their
+    replies are signed with their name."""
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    _register(user)
+    if chat and chat.type != "private":
+        me = context.bot.username or "novahomedashboardbot"
+        await msg.reply_text(f"Чаты открываются из личного чата: напишите /chats боту @{me}.")
+        return
+    if not config.WEBAPP_URL:
+        await msg.reply_text("WEBAPP_URL не задан в .env — страница чатов недоступна.")
+        return
+    if not await asyncio.to_thread(inbox.may_use, user.id):
+        await msg.reply_text("У вас нет доступа к чатам. Попросите владельца добавить вас в INBOX_USERS.")
+        return
+    await asyncio.to_thread(inbox.remember_agent, user.id, user.full_name or user.first_name or "",
+                            user.username or "")
+    url = _inbox_url(user.id)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Открыть чаты", web_app=WebAppInfo(url=url))],
+        [InlineKeyboardButton("🖥 Открыть в браузере", url=url)],
+    ])
+    await msg.reply_text(
+        "💬 Чаты WhatsApp Nova Home — вся переписка с гостями в одном месте.\n\n"
+        "«Открыть в браузере» — личная ссылка для компьютера: сохраните её в закладки. "
+        "Не пересылайте её: ответы по ней подписываются вашим именем.",
+        reply_markup=markup,
+    )
+
+
+async def on_inbox_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A reply to a «💬 WhatsApp» alert is sent to the guest."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not msg.reply_to_message or not msg.text:
+        return
+    reply_to = msg.reply_to_message
+    if not reply_to.from_user or reply_to.from_user.id != context.bot.id:
+        return
+    chat_id = await asyncio.to_thread(inbox.chat_for_alert, msg.chat_id, reply_to.message_id)
+    if not chat_id:
+        return  # not an inbox alert — let the other handlers see it
+    if not await asyncio.to_thread(inbox.may_use, user.id):
+        raise ApplicationHandlerStop
+    await asyncio.to_thread(inbox.remember_agent, user.id, user.full_name or user.first_name or "",
+                            user.username or "")
+    name = await asyncio.to_thread(inbox._agent_name, user.id)  # noqa: SLF001
+    try:
+        await asyncio.to_thread(inbox.send, chat_id, name, msg.text)
+        await _ack(context, msg, REACT_OK, "✅ Отправлено в WhatsApp")
+    except inbox.BridgeError as exc:
+        await msg.reply_text(f"❌ Не отправлено: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("inbox reply failed")
+        await msg.reply_text("❌ Не отправлено — ошибка, подробности в logs\\bot.log")
+    raise ApplicationHandlerStop
 
 
 async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,6 +247,7 @@ _TOPIC_ROLES = {
     "явка": "attendance", "приход": "attendance", "attendance": "attendance",
     "поломки": "issues", "ремонт": "issues", "issues": "issues",
     "общий": "general", "общее": "general", "general": "general",
+    "чаты": "inbox", "whatsapp": "inbox", "вацап": "inbox", "ватсап": "inbox", "inbox": "inbox",
 }
 
 
@@ -185,7 +265,8 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = (msg.text or "").split()
     role = _TOPIC_ROLES.get(parts[1].lower()) if len(parts) > 1 else None
     if not role:
-        labels = {"cleaning": "уборки", "attendance": "явка", "issues": "поломки", "general": "общий"}
+        labels = {"cleaning": "уборки", "attendance": "явка", "issues": "поломки", "general": "общий",
+                  "inbox": "чаты"}
         lines = []
         try:
             for r in await asyncio.to_thread(database.chat_topics, chat.id):
@@ -203,6 +284,7 @@ async def topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/topic уборки — отчёты горничных, контроль 18:00, вечерний план\n"
             "/topic явка — приходы и перекличка\n"
             "/topic поломки — бот читает эту тему и заносит закупки и задачи в «Контроль»\n"
+            "/topic чаты — новые сообщения гостей из WhatsApp (ответ — reply на уведомление)\n"
             "/topic общий — всё остальное\n\n"
             "Тема General привязывается так же (отправьте команду в General)."
         )
@@ -405,15 +487,82 @@ async def daily_prices(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to send daily prices to %s: %s", uid, exc)
 
 
-def _register(user) -> None:
-    """Auto-register everyone who talks to the bot (owners excluded) — the
-    roster drives reminders and the roll call, no .env editing needed."""
+def _register(user) -> bool:
+    """Everyone who talks to the bot lands in the registry as PENDING (owners
+    excluded); an owner activates them with /staff_ok. Returns True for a
+    person seen for the first time."""
     if not user or user.id in config.OWNER_TELEGRAM_IDS:
-        return
+        return False
     try:
-        database.upsert_staff(user.id, user.full_name or user.first_name or "", user.username or "")
+        return database.upsert_staff(user.id, user.full_name or user.first_name or "", user.username or "")
     except Exception:  # noqa: BLE001
         logger.exception("staff auto-register failed")
+        return False
+
+
+def _may_open(uid: int) -> bool:
+    """Who gets the dashboard button: owners, confirmed staff, pay viewers.
+    Without a configured owner list (local dev) — everyone."""
+    if not config.OWNER_TELEGRAM_IDS:
+        return True
+    if uid in config.OWNER_TELEGRAM_IDS:
+        return True
+    try:
+        from backend import auth as _auth
+        if uid in _auth.pay_viewer_ids():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return database.is_active_staff(uid)
+
+
+async def _notify_owners(bot, text: str) -> None:
+    for oid in config.OWNER_TELEGRAM_IDS:
+        try:
+            await bot.send_message(oid, text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("owner notify failed for %s: %s", oid, exc)
+
+
+async def link_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/link CODE — tie this Telegram account to a CRM user (code from CRM → «Telegram-уведомления»)."""
+    user = update.effective_user
+    parts = (update.effective_message.text or "").split()
+    if not user or len(parts) < 2:
+        await update.effective_message.reply_text("Использование: /link КОД — код показывает CRM (меню → Telegram-уведомления).")
+        return
+    try:
+        from backend import crm
+        u = crm.link_telegram(parts[1], user.id, user.full_name or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("link failed: %s", exc)
+        u = None
+    if not u:
+        await update.effective_message.reply_text("Код не подошёл или устарел (действует 30 минут). Получите новый в CRM и отправьте /link КОД ещё раз.")
+        return
+    await update.effective_message.reply_text(f"✅ Готово, {u['name']}: сообщения гостей, которые ждут ответа, будут приходить сюда. "
+                                              "Ответьте на такое уведомление — ответ уйдёт гостю.")
+
+
+async def staff_ok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Owner: /staff_ok <id> — confirm a person who wrote to the bot."""
+    user = update.effective_user
+    if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
+        return
+    parts = (update.effective_message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await update.effective_message.reply_text("Использование: /staff_ok <id> (id из уведомления или /staff)")
+        return
+    sid = int(parts[1])
+    if not database.staff_known(sid):
+        await update.effective_message.reply_text("Этот человек ещё не писал боту — попросите его отправить /start.")
+        return
+    database.set_staff_active(sid, True)
+    await update.effective_message.reply_text(f"✅ Доступ выдан: {sid}. Сотрудник может нажать /start и открыть дашборд.")
+    try:
+        await context.bot.send_message(sid, "✅ Владелец подтвердил доступ. Нажмите /start, чтобы открыть дашборд.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("staff_ok notify failed: %s", exc)
 
 
 def _staff_roster() -> dict[int, str]:
@@ -453,9 +602,16 @@ async def staff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "напишет боту /start или пришлёт локацию."
         )
         return
-    lines = ["👥 Сотрудники (авто-список):"]
+    lines = ["👥 Сотрудники (с доступом):"]
     for uid, nm in sorted(roster.items(), key=lambda x: x[1].lower()):
         lines.append(f"  • {nm} — {uid}")
+    pending = [r for r in database.all_staff(active_only=False) if not r.get("active")]
+    if pending:
+        lines.append("")
+        lines.append("⏳ Ожидают подтверждения:")
+        for r in pending:
+            nm = f"@{r['username']}" if r.get("username") else (r.get("name") or str(r["staff_id"]))
+            lines.append(f"  • {nm} — {r['staff_id']} → /staff_ok {r['staff_id']}")
     lines.append("")
     lines.append("Убрать уволенного: /staff_del <id>")
     await _reply_long(update.message, "\n".join(lines))
@@ -471,8 +627,9 @@ async def staff_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text("Использование: /staff_del <id> (id смотри в /staff)")
         return
     database.set_staff_active(int(parts[1]), False)
+    database.revoke_access_key(int(parts[1]))
     await update.effective_message.reply_text(
-        "✅ Убран из списка. Если человек снова напишет боту — вернётся автоматически."
+        "✅ Доступ закрыт: ссылка на дашборд и чаты больше не работает. Вернуть можно командой /staff_ok <id>."
     )
 
 
@@ -842,6 +999,7 @@ _TOPIC_NAME_ROLES = (
     ("cleaning", ("уборк", "убор", "clean", "tozal", "отчёт", "отчет", "hisobot")),
     ("attendance", ("явк", "приход", "attend", "davomat", "локац", "location", "kelish")),
     ("issues", ("полом", "ремонт", "неисправ", "issue", "broken", "repair", "buzil", "muammo", "ta'mir", "tamir")),
+    ("inbox", ("чаты", "whatsapp", "вацап", "ватсап", "wazzup")),
 )
 
 
@@ -1613,6 +1771,7 @@ async def _set_commands(app) -> None:
         BotCommand("today", "Сводка на сегодня"),
         BotCommand("supplies", "Список закупок (/нужно)"),
         BotCommand("attendance", "Кто отметился сегодня"),
+        BotCommand("chats", "Чаты WhatsApp с гостями"),
         BotCommand("myid", "Мой Telegram ID"),
     ]
     owner = common + [
@@ -1697,12 +1856,20 @@ def main() -> None:
     app.add_handler(CommandHandler("myid", myid_cmd))
     app.add_handler(CommandHandler("staff", staff_cmd))
     app.add_handler(CommandHandler("staff_del", staff_del_cmd))
+    app.add_handler(CommandHandler("staff_ok", staff_ok_cmd))
+    app.add_handler(CommandHandler("link", link_cmd))
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("supplies", supplies_cmd))
+    app.add_handler(CommandHandler("chats", chats_cmd))
     # Telegram only detects latin /commands, so accept typed Cyrillic ones too
     # (slash required — a plain «цены» in the group is just conversation).
     _msg = filters.UpdateType.MESSAGE
+    # replies to «💬 WhatsApp» alerts go to the guest — checked before everything
+    # else (the handler stops the update only when it really was an alert)
+    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & _msg,
+                                   on_inbox_reply), group=-2)
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(чаты|чат)\b") & _msg, chats_cmd))
     # «Поломки» topic reader — its own group, so it sees every group text
     # (new and edited) before the group-0 handlers and can stop them
     app.add_handler(MessageHandler(

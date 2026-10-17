@@ -1,0 +1,1174 @@
+/* «Чаты» — shared WhatsApp inbox page.
+   Polls /api/inbox/poll?since=<rev> and patches only what changed. */
+(function () {
+  "use strict";
+  const API = (window.NH_API_BASE || "") + "/api/inbox";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const $ = (id) => document.getElementById(id);
+
+  // ---- access: personal link key (?k=), Telegram signature, owner key -------
+  function stored(name) {
+    try { return localStorage.getItem(name) || ""; } catch (e) { return ""; }
+  }
+  (function takeKeys() {
+    const params = new URLSearchParams(location.search);
+    let changed = false;
+    [["k", "nh_ikey"], ["okey", "nh_okey"]].forEach(([p, ls]) => {
+      const v = params.get(p);
+      if (!v) return;
+      try { localStorage.setItem(ls, v); } catch (e) { window["__" + ls] = v; }
+      params.delete(p);
+      changed = true;
+    });
+    if (changed) {
+      const q = params.toString();
+      history.replaceState(null, "", location.pathname + (q ? "?" + q : "") + location.hash);
+    }
+  })();
+  const initData = () => { try { return (tg && tg.initData) || ""; } catch (e) { return ""; } };
+  const headers = () => ({
+    "X-Telegram-Init-Data": initData(),
+    "X-Inbox-Key": stored("nh_ikey") || window.__nh_ikey || "",
+    "X-Owner-Key": stored("nh_okey") || window.__nh_okey || "",
+  });
+
+  async function req(path, opts) {
+    opts = Object.assign({}, opts || {});
+    opts.headers = Object.assign({}, headers(), opts.headers || {});
+    return NH.common.request(API + path, opts);  // timeout (40 s for the long-poll), JSON, one error shape; a caller's signal is honoured
+  }
+
+
+  // ---- state -------------------------------------------------------------
+  const S = {
+    me: null, agents: [], rev: 0, chats: new Map(), only: "all", q: "",
+    open: null, msgs: [], reply: null, wa: "…", loadingOlder: false, noOlder: false,
+    more: false, loadingMore: false, needReply: null,  // chat list paging; «нужен ответ» = chats with unread>0 (server-wide when the poll says so)
+  };
+
+  // ---- helpers -------------------------------------------------------------
+  const NH = window.NH;
+  const esc = NH.common.esc;
+  function linkify(s) {
+    // URLs first (they may contain `_` and `*`), formatting on the rest, then the anchors back
+    const urls = [];
+    return esc(s).replace(/(https?:\/\/[^\s<]+)/g, (u) => { urls.push(u); return `\u0000${urls.length - 1}\u0000`; })
+      .replace(/\*([^*\n]+)\*/g, "<b>$1</b>").replace(/_([^_\n]+)_/g, "<i>$1</i>")
+      .replace(/\u0000(\d+)\u0000/g, (m, i) => `<a href="${urls[i]}" target="_blank" rel="noopener">${urls[i]}</a>`);
+  }
+  function toast(t) {
+    const el = $("toast");
+    el.textContent = t;
+    el.classList.remove("hidden");
+    clearTimeout(toast.t);
+    toast.t = setTimeout(() => el.classList.add("hidden"), 3200);
+  }
+  const pad = NH.common.pad;
+  const hm = (iso) => (iso ? iso.slice(11, 16) : "");
+  function shortWhen(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return hm(iso);
+    const y = new Date(now); y.setDate(now.getDate() - 1);
+    if (d.toDateString() === y.toDateString()) return "вчера";
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}${d.getFullYear() !== now.getFullYear() ? "." + String(d.getFullYear()).slice(2) : ""}`;
+  }
+  const MONTHS = NH.common.MONTHS_GEN;
+  function dayLabel(iso) {
+    const d = new Date(iso);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return "Сегодня";
+    const y = new Date(now); y.setDate(now.getDate() - 1);
+    if (d.toDateString() === y.toDateString()) return "Вчера";
+    return `${d.getDate()} ${MONTHS[d.getMonth()]}${d.getFullYear() !== now.getFullYear() ? " " + d.getFullYear() : ""}`;
+  }
+  const dm = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "");
+  const COLORS = ["#2563EB", "#5B8DEF", "#2EAD6B", "#D9534F", "#8E6CC6", "#E08A2B", "#2A9DA8", "#C2577F"];
+  function avatar(c) {
+    const t = (c.title || "?").replace(/^\+/, "");
+    const letters = /\d/.test(t[0]) ? "#" : t.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+    const color = COLORS[(c.id || 0) % COLORS.length];
+    return `<div class="ib-av ch-${esc(c.channel || "wa")}" style="background:${color}" title="${esc(c.channel_name || "WhatsApp")}">${esc(letters)}</div>`;
+  }
+  const TICK1 = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.4 4.4L19 7.3"/></svg>';
+  const TICK2 = '<svg viewBox="0 0 24 24"><path d="M2 12.5l4.4 4.4L16 7.3"/><path d="M10 15l1.9 1.9L21.5 7.3"/></svg>';
+  const CLOCK = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 8.5V12l2.3 1.4"/></svg>';
+  const WARN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v5M12 16h.01"/></svg>';
+  function tick(status) {
+    if (!status) return "";
+    const ic = status === "pending" ? CLOCK : status === "failed" ? WARN : status === "sent" ? TICK1 : TICK2;
+    return `<span class="ib-tick ${esc(status)}">${ic}</span>`;
+  }
+  function bookingText(b, long) {
+    if (!b) return "";
+    const when = b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "был";
+    return long
+      ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : ' <span class="ib-muted">· по номеру</span>'}`
+      : `${esc(b.apartment)}`;
+  }
+  let statuses = null;
+  function loadStatuses() { if (statuses) return; req("/client-statuses").then((l) => { statuses = l || []; renderHead(); }).catch(() => { statuses = []; }); }
+
+  // ---- chat list --------------------------------------------------------------
+  function visibleChats() {
+    let list = Array.from(S.chats.values());
+    if (S.only === "unread") list = list.filter((c) => c.unread > 0 || (S.open && c.id === S.open.id));
+    if (S.only === "mine") list = list.filter((c) => c.assignee === S.me.name);
+    if (S.q) {
+      const q = S.q.toLowerCase();
+      const qd = S.q.replace(/\D/g, "");
+      list = list.filter((c) => (c.title || "").toLowerCase().includes(q)
+        || (qd && (c.phone || "").includes(qd))
+        || (c.booking && ((c.booking.apartment || "").toLowerCase().includes(q) || (c.booking.guest || "").toLowerCase().includes(q))));
+    }
+    return list.sort((a, b) => (b.last_at || "").localeCompare(a.last_at || ""));
+  }
+
+  function renderList() {
+    const list = visibleChats();
+    const el = $("chat-list");
+    if (!list.length) {
+      el.innerHTML = `<div class="ib-list__empty">${S.q ? "Ничего не найдено" : S.only !== "all" ? "Пусто" : "Чатов пока нет — они появятся, как только WhatsApp будет подключён"}</div>`;
+    } else {
+      el.innerHTML = list.map((c) => {
+        const last = (c.last_dir === "out" ? tick(c.last_status) + (S.ai && c.last_author === S.ai.author ? "✨ " : "") : "") + esc(c.last_text || "");
+        const apt = c.booking ? `<span class="ib-apt ${c.booking.when === "now" ? "now" : ""}">${bookingText(c.booking)}</span>` : "";
+        return `<div class="ib-chat ${S.open && S.open.id === c.id ? "is-on" : ""} ${c.unread ? "unread" : ""}" data-chat="${c.id}">
+          ${avatar(c)}
+          <div class="ib-chat__body">
+            <div class="ib-chat__top"><span class="ib-chat__name">${esc(c.title)}</span>${apt}<span class="ib-chat__time">${esc(shortWhen(c.last_at))}</span></div>
+            <div class="ib-chat__bot"><span class="ib-chat__last">${last}</span>${c.unread ? `<span class="ib-badge">${c.unread}</span>` : ""}</div>
+            ${c.assignee ? `<div class="ib-who">👤 ${esc(c.assignee)}</div>` : ""}
+          </div>
+          ${c.unread ? `<button class="ib-done" data-done="${c.id}" title="Отметить обработанным без ответа" aria-label="Обработано">✓</button>` : ""}
+        </div>`;
+      }).join("");
+    }
+    if (S.more) el.insertAdjacentHTML("beforeend", `<button class="ib-more ib-more--chats" id="more-chats" ${S.loadingMore ? "disabled" : ""}>${S.loadingMore ? "Загружаю…" : "Показать ещё"}</button>`);
+    // «нужен ответ» = the number of chats with unread>0 (not the sum of messages)
+    let local = 0;
+    S.chats.forEach((c) => { if (c.unread > 0) local++; });
+    const total = S.needReply != null ? Math.max(S.needReply, local) : local;
+    $("unread-total").textContent = total ? String(total) : "";
+    document.title = (total ? `(${total}) ` : "") + "Чаты · Nova Home";
+  }
+
+  // next page of the chat list: chats older than the oldest one we have
+  async function loadMoreChats() {
+    if (S.loadingMore || !S.more) return;
+    const all = Array.from(S.chats.values()).filter((c) => c.last_at).sort((a, b) => a.last_at.localeCompare(b.last_at));
+    if (!all.length) { S.more = false; renderList(); return; }
+    S.loadingMore = true;
+    renderList();
+    try {
+      const d = await req(`/chats?limit=300&before=${encodeURIComponent(all[0].last_at)}`);
+      const chats = (d && d.chats) || [];
+      const fresh = chats.filter((c) => !S.chats.has(c.id));
+      chats.forEach((c) => S.chats.set(c.id, c));
+      S.more = fresh.length > 0 && (d.more != null ? !!d.more : chats.length >= 300);
+      if (!fresh.length) toast("Это все чаты");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      S.loadingMore = false;
+      renderList();
+    }
+  }
+
+  // «✓ обработано» in the list: the chat is handled without a reply, the badge goes away
+  async function markHandled(id, btn) {
+    const c = S.chats.get(id);
+    if (!c || !c.unread) return;
+    if (btn) btn.disabled = true;
+    try {
+      await req(`/chats/${id}/read`, { method: "POST" });
+      const cur = S.chats.get(id);
+      if (cur && cur.unread) {
+        cur.unread = 0;
+        if (S.needReply != null) S.needReply = Math.max(0, S.needReply - 1);
+      }
+      if (S.open && S.open.id === id) { S.open = cur || S.open; renderHead(); }
+      renderList();
+    } catch (e) {
+      toast(e.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ---- conversation -----------------------------------------------------------
+  const nowLocalIso = () => { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
+  function renderDraft(c) {
+    const box = $("ai-draft"); if (!box) return;
+    if (!c || !c.ai_draft) {
+      const eff = c && (c.ai_mode || (S.ai && S.ai.mode)) || "off";
+      if (c && c.ai_last_status && (c.last_dir === "in" || /думает/.test(c.ai_last_status)) && (eff !== "off" || /думает/.test(c.ai_last_status))) { box.innerHTML = `<div class="ib-draft__status">✨ ИИ ${esc(c.ai_last_status)} · <button class="ib-draft__link" data-draft="redo">ответить с ИИ</button></div>`; box.classList.remove("hidden"); return; }
+      box.classList.add("hidden"); box.innerHTML = ""; return;
+    }
+    box.innerHTML = `<div class="ib-draft__head"><span>✨ Черновик ИИ${c.ai_note ? " · " + esc(c.ai_note.slice(0, 80)) : ""}</span><span>${esc((c.ai_draft_at || "").slice(11, 16))}</span></div>
+      <div class="ib-draft__text">${esc(c.ai_draft)}</div>${(() => { let a = []; try { a = JSON.parse(c.ai_draft_photos || "[]"); } catch (e) { a = []; } return a.length ? `<div class="ib-draft__photos">📷 вместе с ответом уйдут фото: ${esc(a.join(", "))}</div>` : ""; })()}
+      <div class="ib-draft__btns"><button class="primary" data-draft="send">Отправить</button><button data-draft="edit">Вставить и править</button><button data-draft="redo">Другой вариант</button><button data-draft="drop">✕ Убрать</button></div>`;
+    box.classList.remove("hidden");
+  }
+  async function aiDraft() {
+    if (!S.open) return;
+    const btn = $("ai-btn"); if (btn) btn.disabled = true;
+    const c = S.chats.get(S.open.id) || S.open;
+    try {
+      await req(`/chats/${S.open.id}/ai/draft`, { method: "POST" });  // queued: the draft arrives through the poll
+      c.ai_last_status = (new Date()).toTimeString().slice(0, 5) + " · думает…"; c.ai_draft = null; renderDraft(c);
+      toast("ИИ читает переписку, черновик появится здесь через 10–40 секунд");
+    } catch (e) { toast(e.message); }
+    finally { if (btn) btn.disabled = false; }
+  }
+  function renderHead() {
+    const c = S.open && S.chats.get(S.open.id) || S.open;
+    if (!c) return;
+    $("conv-title").textContent = c.title;
+    const phone = c.phone ? `<a href="tel:+${esc(c.phone)}">+${esc(c.phone)}</a>` : "";
+    const ch = c.channel && c.channel !== "wa" ? `<span class="ib-chan ch-${esc(c.channel)}">${esc(c.channel_name || "")}</span>` : "";
+    $("conv-sub").innerHTML = [ch, phone, c.username ? `<a href="${c.channel === "ig" || c.channel === "wzig" ? "https://instagram.com/" : "https://t.me/"}${esc(c.username)}" target="_blank" rel="noopener">@${esc(c.username)}</a>` : "", c.push_name && c.push_name !== c.title ? "~" + esc(c.push_name) : ""].filter(Boolean).join(" · ");
+    // AI assistant: the per-chat mode and the pending draft
+    const aiSel = $("ai-mode");
+    if (aiSel) {
+      aiSel.classList.toggle("hidden", !(S.ai && S.ai.enabled));
+      aiSel.value = c.ai_mode || "";
+      const eff = c.ai_mode || (S.ai && S.ai.mode) || "off";
+      aiSel.classList.toggle("on-auto", eff === "auto" && !(c.ai_paused_until && c.ai_paused_until > nowLocalIso()));
+      aiSel.title = c.ai_paused_until && c.ai_paused_until > nowLocalIso() ? "Пауза: в чате ответил человек, ИИ молчит до " + c.ai_paused_until.slice(11, 16) : "ИИ-ассистент в этом чате: выкл / черновики / отвечает сам";
+    }
+    const ab = $("ai-btn"); if (ab) ab.classList.toggle("hidden", !(S.ai && S.ai.enabled));
+    renderDraft(c);
+    const b = $("conv-booking");
+    const stay = !c.booking && c.bk_stay ? c.bk_stay : null;
+    const stayDates = stay && stay.checkin && stay.checkout ? `${esc(dm(stay.checkin))}–${esc(dm(stay.checkout))}` : "";
+    const roomShort = stay && stay.room ? ((stay.room.match(/[A-Za-zА-Я]{1,2}-?\d{2,4}/g) || []).join(", ") || stay.room.slice(0, 40)) : "";
+    const stayText = stay ? `<span class="ib-stay">Booking.com${stayDates ? ": " + stayDates : ""}${roomShort ? " · " + esc(roomShort) : ""}</span> <span class="ib-muted">· бронь в календаре не выбрана</span>` : "";
+    const bkBtn = c.channel === "bk" ? `<button class="ib-link ib-bkinfo" id="bk-info" title="Все данные гостя и брони из экстранета">ℹ️ Данные Booking</button>` : "";
+    const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
+    const d0 = new Date(); const today = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(d0.getDate()).padStart(2, "0")}`;
+    const etaChip = c.booking && c.booking.begin >= today ? `<button class="ib-eta ${c.booking.eta ? "set" : ""}" id="bk-eta" title="Во сколько гость приедет — попадёт в утренний список для горничных">🕒 ${c.booking.eta ? "приедет в " + esc(c.booking.eta) + (c.booking.eta_note ? " · " + esc(c.booking.eta_note) : "") : "время приезда?"}</button>` : "";
+    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    b.classList.remove("hidden");
+    $("receipt").classList.toggle("hidden", !c.receipt_pending);
+    const st = $("cl-status");
+    loadStatuses();
+    const stNames = (statuses || []).map((s) => s.name);
+    if (c.client_status && !stNames.includes(c.client_status)) stNames.push(c.client_status);
+    st.innerHTML = `<option value="">Статус</option>` + stNames.map((n) => `<option value="${esc(n)}" ${n === c.client_status ? "selected" : ""}>${esc(n)}</option>`).join("");
+    const col = ((statuses || []).find((s) => s.name === c.client_status) || {}).color;
+    st.classList.toggle("empty", !c.client_status); st.classList.toggle("has", !!(c.client_status && col));
+    st.style.backgroundColor = col ? col + "22" : ""; st.style.color = col || "";
+    const sel = $("assignee");
+    const names = Array.from(new Set(S.agents.concat(c.assignee ? [c.assignee] : [])));
+    sel.innerHTML = `<option value="">Ответственный</option>` + names.map((n) =>
+      `<option value="${esc(n)}" ${n === c.assignee ? "selected" : ""}>${esc(n)}</option>`).join("");
+    sel.classList.toggle("empty", !c.assignee);
+  }
+
+  function msgHtml(m) {
+    const out = m.direction === "out";
+    let body = "";
+    if (m.quoted_wa_id) {
+      const q = S.msgs.find((x) => x.wa_id === m.quoted_wa_id);
+      body += `<div class="ib-m__q">${esc(q ? (q.text || kindLabel(q.kind)) : "Сообщение")}</div>`;
+    }
+    const url = m.media_url ? esc(m.media_url) : "";
+    if (m.kind === "image" || m.kind === "sticker") {
+      body += url ? `<img class="ib-m__img" src="${url}" loading="lazy" alt="" data-zoom="${url}" ${m.kind === "sticker" ? 'style="max-width:160px"' : ""}/>` : `<div class="ib-m__doc">📷 <span>Фото</span></div>`;
+    } else if (m.kind === "video") {
+      body += url ? `<video class="ib-m__vid" src="${url}" controls preload="metadata"></video>` : `<div class="ib-m__doc">🎬 <span>Видео</span></div>`;
+    } else if (m.kind === "audio") {
+      body += url ? `<audio src="${url}" controls preload="none"></audio>` : `<div class="ib-m__doc">🎤 <span>Голосовое</span></div>`;
+      body += m.transcript ? `<div class="ib-m__tr">🎙 ${esc(m.transcript)}</div>` : (S.ai && S.ai.transcribe && !out) ? `<button class="ib-m__trbtn" data-transcribe="${m.id}" title="Расшифровать голосовое в текст">🎙 Текст</button>` : "";
+    } else if (m.kind === "document") {
+      const nm = m.file_name || "Файл";
+      body += url ? `<a class="ib-m__doc" href="${url}" download="${esc(nm)}" target="_blank">📄 <span>${esc(nm)}</span></a>` : `<div class="ib-m__doc">📄 <span>${esc(nm)}</span></div>`;
+    } else if (m.kind === "location" && m.lat != null) {
+      body += `<a class="ib-m__doc" href="https://maps.google.com/?q=${encodeURIComponent(m.lat + "," + m.lng)}" target="_blank" rel="noopener">📍 <span>Локация на карте</span></a>`;
+    } else if (m.kind === "contact") {
+      body += `<div class="ib-m__doc">👤 <span>Контакт</span></div>`;
+    }
+    const caption = m.kind === "document" && m.text === m.file_name ? "" : m.text;
+    if (caption) body += `<div class="ib-m__t">${linkify(caption)}</div>`;
+    if (!body) body = `<div class="ib-m__t" style="color:var(--label-2)">${esc(kindLabel(m.kind))}</div>`;
+    const author = out ? `<div class="ib-m__author ${m.author === (S.ai && S.ai.author) ? "ai" : ""}">${m.author === (S.ai && S.ai.author) ? "✨ " : ""}${esc(m.author || "")}</div>` : "";
+    const err = m.status === "failed"
+      ? `<div class="ib-m__err">Не отправлено${m.error ? ": " + esc(m.error) : ""} · <button data-retry="${m.id}">повторить</button></div>` : "";
+    return `${author}<div class="ib-m ${out ? "out" : "in"} ${m.reaction ? "has-react" : ""}" data-mid="${m.id}">
+      <div class="ib-m__b">${body}<div class="ib-m__meta">${esc(hm(m.at))}${out ? tick(m.status) : ""}</div></div>
+      ${m.reaction ? `<span class="ib-m__react">${esc(m.reaction)}</span>` : ""}
+      <div class="ib-m__act"><button data-reply="${m.id}" title="Ответить"><svg viewBox="0 0 24 24"><path d="M10 8L4 13l6 5"/><path d="M4 13h10a6 6 0 0 1 6 6"/></svg></button></div>
+    </div>${err}`;
+  }
+  function kindLabel(k) {
+    return { image: "📷 Фото", video: "🎬 Видео", audio: "🎤 Голосовое", document: "📄 Файл", sticker: "Стикер", location: "📍 Локация", contact: "👤 Контакт" }[k] || "Сообщение";
+  }
+
+  function renderMsgs(keepScroll) {
+    const el = $("msgs");
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const prevH = el.scrollHeight;
+    const prevTop = el.scrollTop;
+    let html = S.noOlder ? "" : `<button class="ib-more" id="older">Загрузить раньше</button>`;
+    let day = "";
+    let lastAuthor = null;
+    S.msgs.forEach((m) => {
+      const d = (m.at || "").slice(0, 10);
+      if (d !== day) {
+        day = d;
+        lastAuthor = null;
+        html += `<div class="ib-day">${esc(dayLabel(m.at))}</div>`;
+      }
+      // the author label once per run of replies by the same person
+      const key = m.direction === "out" ? "o:" + (m.author || "") : "in";
+      const mm = m.direction === "out" && key === lastAuthor ? Object.assign({}, m, { author: "" }) : m;
+      if (m.direction === "out" && !mm.author) html += msgHtml(mm).replace('<div class="ib-m__author"></div>', "");
+      else html += msgHtml(mm);
+      lastAuthor = key;
+    });
+    el.innerHTML = html || `<div class="ib-day">Сообщений пока нет</div>`;
+    if (keepScroll === "older") el.scrollTop = el.scrollHeight - prevH + prevTop;
+    else if (keepScroll === "bottom" || atBottom) el.scrollTop = el.scrollHeight;
+    else el.scrollTop = prevTop;
+  }
+
+  // Phones: the chat is a full screen of its own, so it gets a history entry —
+  // the OS/browser Back closes it (popstate) instead of leaving the section.
+  const isPhone = () => window.innerWidth <= 760;
+  let histPushed = false;  // the open chat's history entry is ours: ← does history.back()
+
+  async function openChat(id) {
+    const c = S.chats.get(id);
+    S.open = c || { id };
+    S.msgs = [];
+    S.noOlder = false;
+    setReply(null);
+    $("empty").classList.add("hidden");
+    $("conv").classList.remove("hidden");
+    $("ib").classList.add("show-conv");
+    renderHead();
+    renderList();
+    $("msgs").innerHTML = "";
+    try {
+      const st = history.state;
+      if (st && st.chat) {  // already on a chat entry (reload, forward, chat → chat): reuse it
+        histPushed = true;
+        if (st.chat !== id) history.replaceState({ chat: id }, "", "#chat=" + id);
+      } else if (isPhone()) {
+        history.pushState({ chat: id }, "", "#chat=" + id);
+        histPushed = true;
+      } else {
+        histPushed = false;
+        history.replaceState(null, "", "#chat=" + id);
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      const d = await req(`/chats/${id}`);
+      if (!S.open || S.open.id !== id) return;  // another chat was opened meanwhile
+      S.chats.set(id, d.chat);
+      S.open = d.chat;
+      S.msgs = d.messages;
+      S.noOlder = d.messages.length < 60;
+      renderHead();
+      renderMsgs("bottom");
+      repoll();  // the waiting poll does not know about this chat yet
+    } catch (e) {
+      if (S.open && S.open.id === id) toast(e.message);
+    }
+    if (S.open && S.open.id === id && !isPhone()) $("text").focus();
+  }
+
+  // Opening a chat does NOT clear its unread badge: the badge means «needs an
+  // answer» and goes away only when someone replies or presses ✓✓ («обработано»).
+
+  async function loadOlder() {
+    if (!S.open || S.loadingOlder || S.noOlder || !S.msgs.length) return;
+    S.loadingOlder = true;
+    const id = S.open.id;
+    try {
+      const d = await req(`/chats/${id}?before=${S.msgs[0].id}`);
+      if (!S.open || S.open.id !== id) return;  // another chat is open now
+      const have = new Set(S.msgs.map((m) => m.id));
+      const older = d.messages.filter((m) => !have.has(m.id));
+      S.noOlder = d.messages.length < 60;
+      S.msgs = older.concat(S.msgs);
+      renderMsgs("older");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      S.loadingOlder = false;
+    }
+  }
+
+  function closeChat(fromHistory) {
+    if (!fromHistory && histPushed) {  // ← on a phone: go back; popstate finishes the close
+      histPushed = false;
+      try { history.back(); return; } catch (e) { /* fall through */ }
+    }
+    histPushed = false;
+    S.open = null;
+    $("ib").classList.remove("show-conv");
+    $("conv").classList.add("hidden");
+    $("empty").classList.remove("hidden");
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* ignore */ }
+    renderList();
+  }
+
+  function mergeMsgs(list) {
+    let changed = false;
+    list.forEach((m) => {
+      const i = S.msgs.findIndex((x) => x.id === m.id);
+      if (i >= 0) S.msgs[i] = m;
+      else S.msgs.push(m);
+      changed = true;
+    });
+    if (changed) S.msgs.sort((a, b) => (a.at || "").localeCompare(b.at || "") || a.id - b.id);
+    return changed;
+  }
+
+  // ---- sending -------------------------------------------------------------------
+  function setReply(m) {
+    S.reply = m;
+    $("reply-bar").classList.toggle("hidden", !m);
+    if (m) {
+      $("reply-text").textContent = m.text || kindLabel(m.kind);
+      $("text").focus();
+    }
+  }
+
+  // template variables that stayed unfilled ({имя} when the chat has no name) and
+  // [placeholders] the operator was supposed to type over — asked about before sending
+  const unfilled = (text) => NH.common.unresolved(text);
+  function confirmUnfilled(text) {
+    const left = unfilled(text);
+    return !left.length || confirm(`В тексте остались незаполненные поля: ${left.join(", ")}. Отправить как есть?`);
+  }
+  // the composer text (and the reply quote) back after a failed send
+  function restoreDraft(text, reply, chatId) {
+    const ta = $("text");
+    if (!text) return;
+    ta.value = ta.value.trim() ? text + "\n" + ta.value : text;
+    autosize();
+    if (reply && !S.reply && S.open && S.open.id === chatId) setReply(reply);
+  }
+
+  let sending = false;
+  async function sendText() {
+    const ta = $("text");
+    const text = ta.value.trim();
+    if (!text || !S.open || sending) return;
+    if (!confirmUnfilled(text)) return;
+    sending = true;
+    $("send").disabled = true;
+    const chatId = S.open.id;
+    const reply = S.reply;
+    const quoted = reply && reply.wa_id && !reply.wa_id.startsWith("local-") ? reply.wa_id : null;
+    ta.value = "";
+    autosize();
+    setReply(null);
+    try {
+      const m = await req(`/chats/${chatId}/send`, { method: "POST", json: { text, quoted_id: quoted } });
+      if (m && S.open && S.open.id === chatId) { mergeMsgs([m]); renderMsgs("bottom"); }
+    } catch (e) {
+      toast(e.message);
+      restoreDraft(text, reply, chatId);
+      pollNow();
+    } finally {
+      sending = false;
+      $("send").disabled = false;
+    }
+  }
+
+  async function sendFile(file) {
+    if (!file || !S.open) return;
+    if (file.size > 30 * 1024 * 1024) { toast("Файл больше 30 МБ"); return; }
+    const caption = $("text").value.trim();
+    if (!confirmUnfilled(caption)) return;
+    const chatId = S.open.id;
+    $("text").value = "";
+    autosize();
+    toast("Отправляю файл…");
+    try {
+      const m = await req(`/chats/${chatId}/file`, {
+        method: "POST",
+        headers: {
+          "Content-Type": file.type || "application/octet-stream",
+          "X-File-Name": encodeURIComponent(file.name || "file"),
+          "X-Caption": encodeURIComponent(caption),
+        },
+        body: file,
+      });
+      if (m && S.open && S.open.id === chatId) { mergeMsgs([m]); renderMsgs("bottom"); }
+      toast("Отправлено");
+    } catch (e) {
+      toast(e.message);
+      restoreDraft(caption, null, chatId);
+      pollNow();
+    }
+  }
+
+  // ---- quick commands: «/wifi» in the composer → template with variables ----
+  function fillVars(text) {
+    const c = S.open && (S.chats.get(S.open.id) || S.open) || {};
+    const b = c.booking || {};
+    return NH.common.fillVars(text, { name: b.guest || c.title, apartment: b.apartment, checkin: b.begin, checkout: b.end, arrival_time: b.arrival_time,
+      departure_time: b.departure_time, nights: b.nights, amount: b.amount, phone: c.phone, times: b.default_times });
+  }
+
+  let tpls = [];
+  let cmdSel = 0;
+  function loadTpls() {
+    return req("/templates").then((l) => { tpls = l || []; }).catch(() => {});
+  }
+  function cmdMatches() {
+    const v = $("text").value;
+    if (!v.startsWith("/") || /\s/.test(v)) return [];
+    const q = v.slice(1).toLowerCase();
+    return tpls.filter((t) => (t.command && t.command.toLowerCase().startsWith(q)) || (!q && t.command)
+      || (q && (t.title || "").toLowerCase().includes(q))).slice(0, 8);
+  }
+  function renderCmd() {
+    let box = $("cmd-box");
+    const list = cmdMatches();
+    if (!list.length) { if (box) box.remove(); return; }
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "cmd-box";
+      box.className = "ib-cmd";
+      $("conv").insertBefore(box, document.querySelector(".ib-compose"));
+      box.addEventListener("mousedown", (e) => {
+        const it = e.target.closest("[data-cmd]");
+        if (it) { e.preventDefault(); useCmd(parseInt(it.dataset.cmd, 10)); }
+      });
+    }
+    cmdSel = Math.min(cmdSel, list.length - 1);
+    box.innerHTML = list.map((t, i) => `<div class="ib-cmd__it ${i === cmdSel ? "is-on" : ""}" data-cmd="${t.id}">
+      <b>${t.command ? "/" + esc(t.command) : "—"}</b><span>${esc(t.title || "")}</span><small>${esc((t.text || "").slice(0, 90))}</small></div>`).join("");
+  }
+  function useCmd(id) {
+    const t = tpls.find((x) => x.id === id);
+    if (!t) return;
+    const ta = $("text");
+    ta.value = fillVars(t.text);
+    const box = $("cmd-box");
+    if (box) box.remove();
+    autosize();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
+  function autosize() {
+    const ta = $("text");
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+  }
+
+  // ---- polling ---------------------------------------------------------------------
+  let pollTimer = null;
+  let polling = false;
+  let pollCtl = null;  // the long-poll in flight: aborted when another chat is opened
+  let lastIncoming = null;
+  let stopped = false;  // 403 from the poll: the session is gone, no point retrying every 4 s
+  function showDenied() {
+    stopped = true;
+    clearTimeout(pollTimer);
+    const p = $("denied-text");
+    if (p && EMBED) p.textContent = "Сессия истекла — войдите в CRM заново";
+    $("denied").classList.remove("hidden");
+  }
+  function repoll() { if (pollCtl) { try { pollCtl.abort(); } catch (e) { /* ignore */ } } else pollNow(); }
+  async function pollNow() {
+    if (polling || stopped) return;
+    polling = true;
+    clearTimeout(pollTimer);
+    const since = S.rev, reqChat = S.open ? S.open.id : null;
+    pollCtl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    try {
+      // long-poll: the server answers at once when something changed, otherwise
+      // holds the request up to 25 s — far fewer round trips over the tunnel
+      // always long-poll while visible (on an empty base rev is 0 and the old «since &&» made this a 300 ms loop)
+      const d = await req(`/poll?since=${since}${reqChat ? "&chat=" + reqChat : ""}${document.visibilityState === "visible" ? "&wait=25" : ""}`, pollCtl ? { signal: pollCtl.signal } : undefined);
+      if (S.open && S.open.id !== reqChat && d.chats.some((c) => c.id === S.open.id)) {
+        // another chat was opened while this request waited: its new messages are
+        // not in this answer — keep `since` so the next poll (with the chat) brings them
+        d.rev = since;
+      }
+      if (d.rev < S.rev) {  // DB was reset — start over
+        S.rev = 0;
+        S.chats.clear();
+      }
+      let ping = false;
+      d.chats.forEach((c) => {
+        const old = S.chats.get(c.id);
+        if (c.last_dir === "in" && c.unread && (!old || old.last_at !== c.last_at) && S.rev) ping = true;
+        S.chats.set(c.id, c);
+      });
+      S.rev = d.rev;
+      const nrChanged = typeof d.need_reply === "number" && d.need_reply !== S.needReply;
+      if (nrChanged) S.needReply = d.need_reply;
+      // messages belong to the chat this request asked for — never to one opened meanwhile
+      if (S.open && S.open.id === reqChat && d.messages && d.messages.length) {
+        mergeMsgs(d.messages);
+        renderMsgs();
+      }
+      if (d.chats.length || nrChanged) {
+        renderList();
+        if (S.open && d.chats.some((c) => c.id === S.open.id)) renderHead();
+      }
+      if (ping) beep();
+      pollFailed = false;
+    } catch (e) {
+      pollFailed = !(e && e.name === "AbortError");
+      if (e.status === 403) showDenied();
+    } finally {
+      pollCtl = null;
+      polling = false;
+      if (!stopped) pollTimer = setTimeout(pollNow, pollFailed ? 4000 : document.visibilityState === "visible" ? 300 : 30000);
+    }
+  }
+  let pollFailed = false;
+
+  const EMBED = /[?&]embed=1/.test(location.search);
+  function beep() {
+    if (EMBED) return; // the CRM shell plays the sound and shows the popup
+    const now = Date.now();
+    if (lastIncoming && now - lastIncoming < 3000) return;
+    lastIncoming = now;
+    try {
+      const ctx = beep.ctx || (beep.ctx = new (window.AudioContext || window.webkitAudioContext)());
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+      o.connect(g).connect(ctx.destination);
+      o.start();
+      o.stop(ctx.currentTime + 0.4);
+    } catch (e) { /* no audio */ }
+  }
+
+  // ---- WhatsApp connection ------------------------------------------------------------
+  async function refreshWa() {
+    try {
+      const st = await req("/status");
+      S.wa = st.status;
+      const el = $("wa-state");
+      const ok = st.status === "connected";
+      const viaWz = !ok && st.wazzup;  // WhatsApp goes through Wazzup; the QR bridge is a spare, its state is not a warning
+      el.className = "wa-state " + (ok || viaWz ? "ok" : "bad");
+      el.querySelector("span").textContent = ok ? "WhatsApp" : viaWz ? "WhatsApp · Wazzup" : st.status === "qr" || st.status === "logged_out" ? "Нужен QR" : st.status === "offline" ? "Мост выключен" : "Подключение…";
+      el.title = ok && st.me ? "Подключён: +" + (st.me.id || "").split("@")[0].split(":")[0] : viaWz ? "WhatsApp работает через Wazzup. Привязка по QR не нужна" : (st.error || "");
+      if (connModalOpen) renderConn(st);
+    } catch (e) { /* poll errors are shown by pollNow */ }
+  }
+
+  let connModalOpen = false;
+  function renderConn(st) {
+    const ok = st.status === "connected";
+    let html = `<h3>Подключение WhatsApp</h3>`;
+    if (ok) {
+      const num = st.me ? "+" + (st.me.id || "").split("@")[0].split(":")[0] : "";
+      html += `<p>✅ Подключён ${esc(num)}. Все сотрудники видят и отвечают в этих чатах; телефон продолжает работать как обычно.</p>`;
+      if (S.me.owner) html += `<div class="ib-row"><button class="ib-btn danger" data-logout>Отключить WhatsApp</button><button class="ib-btn" data-close>Закрыть</button></div>`;
+      else html += `<div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    } else if (st.status === "offline") {
+      html += `<p>Программа-мост WhatsApp не запущена на компьютере. Запустите <b>restart_all.bat</b> (или <b>start_wa.bat</b>) — должно открыться окно «Nova WhatsApp».</p><div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    } else if (st.qr && S.me.owner) {
+      html += `<ol><li>Откройте WhatsApp на рабочем телефоне</li><li>Настройки → <b>Связанные устройства</b> → Привязка устройства</li><li>Наведите камеру на этот код</li></ol>
+        <img class="ib-qr" src="${esc(st.qr)}" alt="QR" /><p style="text-align:center">Код обновляется сам каждые ~20 секунд</p>
+        <div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    } else if (st.status === "qr" || st.status === "logged_out") {
+      html += `<p>WhatsApp ещё не привязан. Попросите владельца открыть «Чаты» и отсканировать QR-код.</p><div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    } else {
+      html += `<p>Соединяюсь с WhatsApp… ${st.error ? "<br><small>" + esc(st.error) + "</small>" : ""}</p><div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    }
+    $("modal-card").innerHTML = html;
+  }
+  let connTimer = null;
+  function openConn() {
+    connModalOpen = true;
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    $("modal").classList.remove("hidden");
+    refreshWa();
+    clearInterval(connTimer);
+    connTimer = setInterval(refreshWa, 3000);
+  }
+  function closeModal() {
+    $("modal").classList.add("hidden");
+    $("modal-card").onclick = null;
+    connModalOpen = false;
+    clearInterval(connTimer);
+  }
+
+  // ---- templates -------------------------------------------------------------------
+  async function openTemplates() {
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let list = [];
+    try { list = await req("/templates"); tpls = list; } catch (e) { toast(e.message); }
+    $("modal-card").innerHTML = `<h3>Шаблоны ответов</h3>
+      <p>Нажмите на шаблон, чтобы вставить его. В поле сообщения можно набрать «/» и начало команды. Переменные {имя} {объект} {заезд} {выезд} подставляются из брони гостя.</p>
+      <div>${list.map((t) => `<div class="ib-tpl"><div class="ib-tpl__body" data-tpl-use="${t.id}"><b>${t.command ? '<i class="ib-cmdtag">/' + esc(t.command) + '</i> ' : ""}${esc(t.title)}</b><span>${esc(t.text)}</span></div>
+        <button class="ib-icon" data-tpl-del="${t.id}" title="Удалить"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>`).join("") || '<p>Пока нет шаблонов.</p>'}</div>
+      <h3 style="margin-top:14px;font-size:16px">Новый шаблон</h3>
+      <input class="ib-field" id="tpl-cmd" placeholder="Команда, например wifi (необязательно)" maxlength="30" />
+      <input class="ib-field" id="tpl-title" placeholder="Название (например: Инструкция заезда)" maxlength="60" />
+      <textarea class="ib-field" id="tpl-text" placeholder="Текст сообщения"></textarea>
+      <div class="ib-row"><button class="ib-btn" data-close>Закрыть</button><button class="ib-btn primary" data-tpl-add>Сохранить</button></div>`;
+    $("modal-card").dataset.tpls = JSON.stringify(list);
+  }
+
+  // ---- guest card right from the chat (pencil in the header) -------------------------
+  async function openGuestEdit() {
+    if (!S.open) return;
+    const id = S.open.id;
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let g;
+    try { g = await req(`/chats/${id}/client`); } catch (e) { toast(e.message); closeModal(); return; }
+    loadStatuses();
+    const f = (k, label, ph, type) => `<div><label class="ib-lbl">${label}</label><input class="ib-field" id="ge-${k}" type="${type || "text"}" value="${esc(g[k] || "")}" placeholder="${ph || ""}" /></div>`;
+    $("modal-card").innerHTML = `<h3>Гость</h3>
+      <p>Карточка гостя в CRM. Всё, что вы впишете здесь, видно в «Клиентах», в карточке брони и в этом чате.</p>
+      <div class="ib-2col">${f("name", "Имя", "Имя Фамилия")}<div><label class="ib-lbl">Статус</label><select class="ib-field" id="ge-status"><option value="">— без статуса —</option>${(statuses || []).map((s) => `<option value="${esc(s.name)}" ${s.name === g.status ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div></div>
+      <div class="ib-2col">${f("phone", "Телефон", "+998 90 123 45 67", "tel")}${f("phone2", "Доп. телефон", "", "tel")}</div>
+      <div class="ib-2col">${f("email", "Email", "guest@example.com", "email")}${f("instagram", "Instagram", "@username")}</div>
+      <div class="ib-2col">${f("telegram", "Telegram", "@username")}${f("city", "Город / страна", "")}</div>
+      ${f("lang", "Язык общения", "RU / EN / UZ")}
+      <label class="ib-lbl">Особенности гостя</label><textarea class="ib-field" id="ge-notes" placeholder="Аллергии, предпочтения, во сколько обычно заезжает…">${esc(g.notes || "")}</textarea>
+      <div class="ib-row"><button class="ib-btn" data-close>Отмена</button><button class="ib-btn primary" id="ge-save">Сохранить</button></div>`;
+    $("ge-save").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      const body = {};
+      ["name", "phone", "phone2", "email", "instagram", "telegram", "city", "lang", "notes", "status"].forEach((k) => { body[k] = $("ge-" + k).value.trim(); });
+      try {
+        const c = await req(`/chats/${id}/client`, { method: "PATCH", json: body });
+        S.chats.set(c.id, c); if (S.open && S.open.id === c.id) S.open = c;
+        renderHead(); renderList(); closeModal(); toast("Карточка гостя сохранена");
+      } catch (err) { toast(err.message); e.target.disabled = false; }
+    });
+  }
+
+  // ---- photo viewer: all photos of the chat, ← → / swipe, ✕, save ----------------------
+  function openLightbox(url) {
+    const urls = Array.from($("msgs").querySelectorAll("[data-zoom]")).map((i) => i.dataset.zoom);
+    let i = Math.max(0, urls.indexOf(url));
+    const lb = document.createElement("div");
+    lb.className = "ib-lightbox";
+    const draw = () => {
+      lb.innerHTML = `<div class="ib-lb__bar"><button class="ib-lb__x" aria-label="Закрыть">✕ Закрыть</button><a href="${esc(urls[i])}" download target="_blank" rel="noopener">⬇ Сохранить</a></div>
+        <button class="ib-lb__nav prev" ${i ? "" : "disabled"} aria-label="Предыдущее">‹</button><img src="${esc(urls[i])}" alt="" /><button class="ib-lb__nav next" ${i < urls.length - 1 ? "" : "disabled"} aria-label="Следующее">›</button>
+        <div class="ib-lb__cnt">${i + 1} / ${urls.length}</div>`;
+    };
+    const go = (d) => { const n = i + d; if (n >= 0 && n < urls.length) { i = n; draw(); } };
+    const close = () => { lb.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); if (e.key === "ArrowLeft") go(-1); if (e.key === "ArrowRight") go(1); };
+    lb.addEventListener("click", (e) => {
+      if (e.target.closest(".ib-lb__x") || e.target === lb) close();
+      else if (e.target.closest(".prev")) go(-1);
+      else if (e.target.closest(".next")) go(1);
+    });
+    let x0 = null;
+    lb.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    lb.addEventListener("touchend", (e) => { if (x0 === null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1); }, { passive: true });
+    document.addEventListener("keydown", onKey);
+    draw();
+    document.body.appendChild(lb);
+  }
+
+  // ---- link the chat to a booking from the calendar ------------------------------
+  async function openBookingPick() {
+    if (!S.open) return;
+    const id = S.open.id;
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    const when = (b) => b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "прошлая";
+    const row = (b, pinned) => `<div class="ib-tpl ${b.strong ? "strong" : ""}"><div class="ib-tpl__body"><b>${esc(b.apartment)} · ${esc(dm(b.checkin))}–${esc(dm(b.checkout))}</b><span>${esc(b.guest || "гость")}${b.phone ? " · +" + esc(b.phone) : ""} · ${when(b)} · ${esc(b.source || "")}</span>${b.reason ? `<span class="ib-reason">${b.strong ? "✓" : "~"} ${esc(b.reason)}</span>` : ""}</div>
+      ${pinned ? `<button class="ib-btn danger" data-bk-unlink="${b.id}">Отвязать</button>` : `<button class="ib-btn primary" data-bk-link="${b.id}">Привязать</button>`}</div>`;
+    let d;
+    try { d = await req(`/chats/${id}/bookings`); } catch (e) { toast(e.message); closeModal(); return; }
+    $("modal-card").innerHTML = `<h3>Бронь гостя</h3>
+      <p>Бронь из RealtyCalendar, к которой относится этот чат. Данные брони подтягиваются из календаря и обновляются сами. В карточке брони чат появится в списке «Чаты по этой брони».</p>
+      ${d.stay ? `<div class="ib-stay-box">Booking.com говорит: <b>${d.stay.checkin ? esc(dm(d.stay.checkin)) : "?"}–${d.stay.checkout ? esc(dm(d.stay.checkout)) : "?"}</b>${d.stay.room ? " · " + esc(d.stay.room) : ""}${d.stay.reservation ? " · № " + esc(d.stay.reservation) : ""}<br><span class="ib-muted">Номер и даты в Booking могут отличаться от календаря — сверьте и выберите бронь вручную.</span></div>` : ""}
+      ${d.pinned.length ? `<div class="ib-sec">Привязано</div>${d.pinned.map((b) => row(b, true)).join("")}` : ""}
+      ${(d.candidates || []).length ? `<div class="ib-sec">Похоже на эту бронь</div>${d.candidates.map((b) => row(b, false)).join("")}` : d.stay ? `<p class="ib-muted">В календаре нет броней с заездом ${d.stay.checkin ? esc(dm(d.stay.checkin)) : "в этот день"} — найдите вручную ниже.</p>` : ""}
+      ${d.suggested.length ? `<div class="ib-sec">По номеру телефона</div>${d.suggested.map((b) => row(b, false)).join("")}` : ""}
+      <div class="ib-sec">Найти в календаре</div>
+      <input class="ib-field" id="bk-q" placeholder="Гость, телефон, квартира или дата (12.10)" autocomplete="off" />
+      <div id="bk-res"><p class="ib-muted">Введите имя гостя, номер или квартиру</p></div>
+      <div class="ib-row"><button class="ib-btn" data-close>Закрыть</button></div>`;
+    let t;
+    const search = async () => {
+      const q = $("bk-q").value.trim();
+      if (!q) { $("bk-res").innerHTML = ""; return; }
+      try {
+        const list = await req(`/bookings/search?q=${encodeURIComponent(q)}`);
+        const ids = new Set(d.pinned.map((b) => b.id));
+        $("bk-res").innerHTML = list.filter((b) => !ids.has(b.id)).map((b) => row(b, false)).join("") || "<p>Ничего не найдено</p>";
+      } catch (e) { toast(e.message); }
+    };
+    $("bk-q").addEventListener("input", () => { clearTimeout(t); t = setTimeout(search, 300); });
+    $("bk-q").focus();
+    $("modal-card").onclick = async (e) => {
+      const l = e.target.closest("[data-bk-link]"), u = e.target.closest("[data-bk-unlink]");
+      if (!l && !u) return;
+      try {
+        const c = l ? await req(`/chats/${id}/bookings`, { method: "POST", json: { booking_id: parseInt(l.dataset.bkLink, 10) } })
+          : await req(`/chats/${id}/bookings/${u.dataset.bkUnlink}`, { method: "DELETE" });
+        S.chats.set(c.id, c); if (S.open && S.open.id === c.id) S.open = c;
+        renderHead(); renderList(); toast(l ? "Бронь привязана" : "Бронь отвязана");
+        openBookingPick();
+      } catch (err) { toast(err.message); }
+    };
+  }
+
+  // ---- «приедет в …»: the time the guest told us, for the housekeepers' list ---------------
+  function openEta() {
+    const c = S.open && (S.chats.get(S.open.id) || S.open); const b = c && c.booking;
+    if (!b) return;
+    $("modal").classList.remove("hidden");
+    const presets = ["12:00", "14:00", "15:00", "16:00", "18:00", "20:00", "22:00", "00:00"];
+    $("modal-card").innerHTML = `<h3>Во сколько приедет гость</h3>
+      <p class="ib-muted" style="font-size:13px">${esc(b.apartment)} · заезд ${esc(dm(b.begin))}${b.guest ? " · " + esc(b.guest) : ""}. Это пометка для утреннего списка горничным, в календарь она не пишется.</p>
+      <div class="ib-presets">${presets.map((t) => `<button class="ib-btn ${b.eta === t ? "primary" : ""}" data-eta="${t}">${t}</button>`).join("")}</div>
+      <div class="ib-check"><input class="ib-field" id="eta-time" type="time" value="${esc(b.eta || "")}" style="margin:0" /><span class="ib-muted small">или точное время</span></div>
+      <input class="ib-field" id="eta-note" placeholder="Откуда / комментарий: поезд из Бухары, рейс в 19:40…" maxlength="120" value="${esc(b.eta_note || "")}" style="margin-top:8px" />
+      <div class="ib-row"><button class="ib-btn primary" id="eta-save">Сохранить</button>${b.eta ? '<button class="ib-btn danger" id="eta-clear">Убрать</button>' : ""}<button class="ib-btn" data-close>Отмена</button></div>`;
+    const save = async (eta, note) => {
+      try {
+        const r = await req(`/chats/${c.id}/eta`, { method: "POST", json: { eta, note } });
+        S.chats.set(r.chat.id, r.chat); if (S.open && S.open.id === r.chat.id) S.open = r.chat;
+        renderHead(); closeModal(); toast(eta ? `Приедет в ${eta}` : "Пометка убрана");
+      } catch (err) { toast(err.message); }
+    };
+    $("modal-card").onclick = (e) => {
+      const pr = e.target.closest("[data-eta]");
+      if (pr) { $("eta-time").value = pr.dataset.eta; save(pr.dataset.eta, $("eta-note").value.trim()); }
+      else if (e.target.id === "eta-save") save($("eta-time").value, $("eta-note").value.trim());
+      else if (e.target.id === "eta-clear") save("", "");
+    };
+  }
+
+  // ---- everything Booking.com told us about the stay --------------------------------
+  async function openBookingInfo() {
+    if (!S.open) return;
+    const id = S.open.id;
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let d;
+    try { d = await req(`/chats/${id}/bookings`); } catch (e) { toast(e.message); closeModal(); return; }
+    const st = d.stay || {};
+    const rowsDef = [["Номер брони", st.reservation], ["Гость", st.guest], ["Заезд", st.checkin ? dm(st.checkin) + "." + st.checkin.slice(0, 4) : ""], ["Выезд", st.checkout ? dm(st.checkout) + "." + st.checkout.slice(0, 4) : ""],
+      ["Номер / объект", st.room], ["Гостей", st.guests], ["Сумма", st.total], ["Язык", st.lang], ["Обновлено", st.updated_at ? st.updated_at.replace("T", " ").slice(0, 16) : ""]];
+    const rows = rowsDef.filter((r) => r[1]).map((r) => `<div class="ib-kv"><span>${esc(r[0])}</span><b>${esc(r[1])}</b></div>`).join("");
+    $("modal-card").innerHTML = `<h3>Данные Booking.com</h3>
+      <p class="ib-muted" style="font-size:13px">Что расширение прочитало в экстранете. Если чего-то не хватает или поле разобрано неверно — ниже весь текст панели брони как есть.</p>
+      ${rows || '<p class="ib-muted">Расширение пока не передало данные брони — откройте этот разговор в экстранете, оно дочитает их за минуту.</p>'}
+      ${st.url ? `<p style="font-size:13px"><a href="${esc(st.url)}" target="_blank" rel="noopener">Открыть в экстранете ↗</a></p>` : ""}
+      ${st.raw ? `<details class="ib-raw"><summary>Весь текст панели брони</summary><pre>${esc(st.raw)}</pre></details>` : ""}
+      <div class="ib-row"><button class="ib-btn primary" id="bk-info-pick">${d.pinned.length ? "Изменить бронь в календаре" : "Выбрать бронь в календаре"}</button><button class="ib-btn" data-close>Закрыть</button></div>`;
+    $("bk-info-pick").onclick = () => openBookingPick();
+  }
+
+  async function openNewChat() {
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = "<p>Загрузка…</p>";
+    let chans = [];
+    try { chans = await req("/new/channels"); } catch (e) { chans = [{ code: "wa", name: "WhatsApp", ready: true, check: true }]; }
+    const first = (chans.find((c) => c.ready) || chans[0] || {}).code;
+    $("modal-card").innerHTML = `<h3>Новый чат</h3>
+      <p>Написать гостю первым. Номер — с кодом страны. Выберите канал: гость может быть в WhatsApp, но не в Telegram, и наоборот — кнопка «Проверить» покажет, есть ли он там.</p>
+      <div class="ib-chans">${chans.map((c) => `<label class="ib-chan-opt ${c.ready ? "" : "off"}"><input type="radio" name="nc-ch" value="${c.code}" ${c.code === first ? "checked" : ""} ${c.ready ? "" : "disabled"} /><span class="ch-dot ch-${c.code === "wz" ? "wa" : c.code}"></span>${esc(c.name)}${c.hint ? `<small>${esc(c.hint)}</small>` : ""}</label>`).join("")}</div>
+      <div class="ib-check"><input class="ib-field" id="nc-phone" type="tel" placeholder="+998 90 123 45 67" style="margin:0" /><button class="ib-btn" id="nc-check">Проверить</button></div>
+      <div id="nc-res" class="ib-muted" style="font-size:13px;margin:4px 0 8px"></div>
+      <input class="ib-field" id="nc-name" placeholder="Имя (необязательно)" maxlength="80" />
+      <textarea class="ib-field" id="nc-text" placeholder="Сообщение (необязательно)"></textarea>
+      <div class="ib-row"><button class="ib-btn" data-close>Отмена</button><button class="ib-btn primary" data-nc-go>Открыть чат</button></div>`;
+    const check = async () => {
+      const phone = $("nc-phone").value.trim(), ch = (document.querySelector("input[name=nc-ch]:checked") || {}).value;
+      if (!phone) { toast("Введите номер"); return; }
+      $("nc-res").textContent = "Проверяю…"; $("nc-res").className = "ib-muted";
+      try {
+        const r = await req(`/new/check?phone=${encodeURIComponent(phone)}&channel=${ch}`);
+        $("nc-res").textContent = (r.exists === true ? "✅ " : r.exists === false ? "❌ " : "ℹ️ ") + r.note;
+        $("nc-res").className = r.exists === true ? "ib-ok" : r.exists === false ? "ib-bad" : "ib-muted";
+        if (r.name && !$("nc-name").value) $("nc-name").value = r.name;
+      } catch (e) { $("nc-res").textContent = "✕ " + e.message; $("nc-res").className = "ib-bad"; }
+    };
+    $("nc-check").addEventListener("click", check);
+    $("nc-phone").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); check(); } });
+    document.querySelectorAll("input[name=nc-ch]").forEach((r) => r.addEventListener("change", () => { $("nc-res").textContent = ""; }));
+    setTimeout(() => $("nc-phone").focus(), 50);
+  }
+
+  // ---- events ----------------------------------------------------------------------
+  function bind() {
+    $("chat-list").addEventListener("click", (e) => {
+      const done = e.target.closest("[data-done]");
+      if (done) { e.stopPropagation(); e.preventDefault(); markHandled(parseInt(done.dataset.done, 10), done); return; }
+      if (e.target.closest("#more-chats")) { loadMoreChats(); return; }
+      const it = e.target.closest("[data-chat]");
+      if (it) openChat(parseInt(it.dataset.chat, 10));
+    });
+    // phones: Back closes the open chat (its history entry is ours), forward re-opens it
+    window.addEventListener("popstate", (e) => {
+      const st = e.state;
+      if (st && st.chat) {
+        if (!S.open || S.open.id !== st.chat) openChat(st.chat);
+      } else if (S.open) {
+        closeChat(true);
+      }
+    });
+    // a «#chat=N» typed into the address bar of the already open page (popstate ran first, so this is a no-op after Back)
+    window.addEventListener("hashchange", () => {
+      const m = /chat=(\d+)/.exec(location.hash);
+      if (m && (!S.open || S.open.id !== parseInt(m[1], 10))) openChat(parseInt(m[1], 10));
+    });
+    $("filters").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-only]");
+      if (!b) return;
+      S.only = b.dataset.only;
+      document.querySelectorAll("#filters button").forEach((x) => x.classList.toggle("is-on", x === b));
+      renderList();
+    });
+    let qT = null;
+    $("search").addEventListener("input", (e) => { S.q = e.target.value.trim(); clearTimeout(qT); qT = setTimeout(renderList, 150); });
+    $("back").addEventListener("click", () => closeChat());  // not `closeChat` itself: the event would read as `fromHistory`
+    $("send").addEventListener("click", sendText);
+    $("text").addEventListener("input", () => { autosize(); renderCmd(); });
+    $("text").addEventListener("blur", () => setTimeout(() => { const b = $("cmd-box"); if (b) b.remove(); }, 150));
+    $("text").addEventListener("keydown", (e) => {
+      const list = cmdMatches();
+      if (list.length && $("cmd-box")) {
+        if (e.key === "ArrowDown") { e.preventDefault(); cmdSel = (cmdSel + 1) % list.length; renderCmd(); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); cmdSel = (cmdSel - 1 + list.length) % list.length; renderCmd(); return; }
+        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); useCmd(list[cmdSel].id); return; }
+        if (e.key === "Escape") { $("cmd-box").remove(); return; }
+      }
+      // Enter sends on a computer; on phones Enter is a new line (send button)
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && window.innerWidth > 760) {
+        e.preventDefault();
+        sendText();
+      }
+      if (e.key === "Escape") setReply(null);
+    });
+    $("text").addEventListener("paste", (e) => {
+      const f = e.clipboardData && e.clipboardData.files && e.clipboardData.files[0];
+      if (f) { e.preventDefault(); sendFile(f); }
+    });
+    $("attach").addEventListener("click", () => $("file").click());
+    $("file").addEventListener("change", (e) => { sendFile(e.target.files[0]); e.target.value = ""; });
+    $("tpl-btn").addEventListener("click", openTemplates);
+    $("reply-cancel").addEventListener("click", () => setReply(null));
+    $("wa-state").addEventListener("click", openConn);
+    $("new-chat").addEventListener("click", openNewChat);
+    $("ai-mode").addEventListener("change", async (e) => {
+      if (!S.open) return;
+      try { const r = await req(`/chats/${S.open.id}/ai`, { method: "POST", json: { mode: e.target.value || null } }); toast(r.effective === "auto" ? "ИИ отвечает в этом чате сам" : r.effective === "draft" ? "ИИ готовит черновики" : r.reason ? "ИИ не работает здесь: " + r.reason : "ИИ выключен в этом чате"); }
+      catch (err) { toast(err.message); }
+    });
+    $("ai-btn").addEventListener("click", aiDraft);
+    $("ai-draft").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-draft]"); if (!b || !S.open) return;
+      const c = S.chats.get(S.open.id) || S.open; const text = c.ai_draft || "";
+      if (b.dataset.draft === "send") { b.disabled = true; try { await req(`/chats/${S.open.id}/ai/draft/send`, { method: "POST", json: { text } }); c.ai_draft = null; c.ai_draft_photos = null; renderDraft(c); } catch (err) { b.disabled = false; toast(err.message); } return; }
+      if (b.dataset.draft === "edit") { $("text").value = text; autosize(); $("text").focus(); c.ai_draft = null; renderDraft(c); try { await req(`/chats/${S.open.id}/ai/draft`, { method: "DELETE" }); } catch (err) { /* ignore */ } return; }
+      if (b.dataset.draft === "redo") { aiDraft(); return; }
+      if (b.dataset.draft === "drop") { c.ai_draft = null; renderDraft(c); try { await req(`/chats/${S.open.id}/ai/draft`, { method: "DELETE" }); } catch (err) { /* ignore */ } }
+    });
+    $("assignee").addEventListener("change", async (e) => {
+      if (!S.open) return;
+      try {
+        const c = await req(`/chats/${S.open.id}`, { method: "PATCH", json: { assignee: e.target.value || null } });
+        S.chats.set(c.id, c);
+        renderList();
+        toast(c.assignee ? "Ответственный: " + c.assignee : "Ответственный снят");
+      } catch (err) { toast(err.message); }
+    });
+    $("cl-status").addEventListener("change", async (e) => {
+      if (!S.open) return;
+      try {
+        const c = await req(`/chats/${S.open.id}/client`, { method: "PATCH", json: { status: e.target.value } });
+        S.chats.set(c.id, c); S.open = c; renderHead();
+        toast(c.client_status ? "Статус: " + c.client_status : "Статус снят");
+      } catch (err) { toast(err.message); }
+    });
+    $("conv-booking").addEventListener("click", (e) => {
+      if (e.target.id === "bk-pick") { openBookingPick(); return; }
+      if (e.target.id === "bk-info") { openBookingInfo(); return; }
+      if (e.target.closest("#bk-eta")) { openEta(); return; }
+      const a = e.target.closest("[data-bk-open]");
+      if (a) {
+        e.preventDefault();
+        const id = parseInt(a.dataset.bkOpen, 10);
+        if (!id) return;
+        if (EMBED) { try { window.parent.postMessage({ nh: "booking", id }, location.origin); } catch (err) { /* ignore */ } }
+        else window.open(`/crm/#bookings/${id}`, "_blank");
+      }
+    });
+    $("rename").addEventListener("click", () => openGuestEdit());
+    $("receipt").addEventListener("click", async () => {
+      if (!S.open) return;
+      try {
+        const r = await req(`/chats/${S.open.id}/receipt`, { method: "POST" });
+        if (r.chat) { S.chats.set(r.chat.id, r.chat); S.open = r.chat; renderHead(); renderList(); }
+        toast(r.sent ? "Отмечено обработанным: гость увидит «прочитано»" : r.note ? "Уже " + r.note : "Нечего отмечать: новых сообщений от гостя нет");
+      } catch (err) { toast(err.message); }
+    });
+
+    $("msgs").addEventListener("click", async (e) => {
+      if (e.target.id === "older") { loadOlder(); return; }
+      const tb = e.target.closest("[data-transcribe]");
+      if (tb) { tb.disabled = true; tb.textContent = "…"; try { const r = await req(`/messages/${tb.dataset.transcribe}/transcribe`, { method: "POST" }); tb.outerHTML = `<div class="ib-m__tr">🎙 ${esc(r.text)}</div>`; } catch (err) { tb.disabled = false; tb.textContent = "🎙 Текст"; toast(err.message); } return; }
+      const r = e.target.closest("[data-reply]");
+      if (r) { setReply(S.msgs.find((m) => m.id === parseInt(r.dataset.reply, 10))); return; }
+      const rt = e.target.closest("[data-retry]");
+      if (rt) {
+        req(`/messages/${rt.dataset.retry}/retry`, { method: "POST" })
+          .then(() => { S.msgs = S.msgs.filter((m) => m.id !== parseInt(rt.dataset.retry, 10)); pollNow(); })
+          .catch((err) => { toast(err.message); pollNow(); });
+        return;
+      }
+      const z = e.target.closest("[data-zoom]");
+      if (z) openLightbox(z.dataset.zoom);
+    });
+    // double tap / double click on a message = reply to it (phones have no hover)
+    $("msgs").addEventListener("dblclick", (e) => {
+      const b = e.target.closest("[data-mid]");
+      if (b) setReply(S.msgs.find((m) => m.id === parseInt(b.dataset.mid, 10)));
+    });
+    $("msgs").addEventListener("scroll", (e) => { if (e.target.scrollTop < 40) loadOlder(); });
+
+    $("modal").addEventListener("click", async (e) => {
+      if (e.target.closest("[data-close]")) { closeModal(); return; }
+      if (e.target.closest("[data-logout]")) {
+        if (!confirm("Отключить WhatsApp от «Чатов»? Чтобы вернуть, нужно будет снова сканировать QR.")) return;
+        try { await req("/logout", { method: "POST" }); toast("Отключено"); refreshWa(); } catch (err) { toast(err.message); }
+        return;
+      }
+      const use = e.target.closest("[data-tpl-use]");
+      if (use) {
+        const list = JSON.parse($("modal-card").dataset.tpls || "[]");
+        const t = list.find((x) => String(x.id) === use.dataset.tplUse);
+        if (t) {
+          const ta = $("text");
+          const txt = fillVars(t.text);
+          ta.value = ta.value ? ta.value + "\n" + txt : txt;
+          autosize();
+          closeModal();
+          ta.focus();
+        }
+        return;
+      }
+      const del = e.target.closest("[data-tpl-del]");
+      if (del) {
+        if (!confirm("Удалить шаблон?")) return;
+        try { await req(`/templates/${del.dataset.tplDel}`, { method: "DELETE" }); openTemplates(); } catch (err) { toast(err.message); }
+        return;
+      }
+      if (e.target.closest("[data-tpl-add]")) {
+        const text = $("tpl-text").value.trim();
+        if (!text) { toast("Введите текст шаблона"); return; }
+        try {
+          await req("/templates", { method: "POST", json: { title: $("tpl-title").value.trim(), text, command: $("tpl-cmd").value.trim() } });
+          openTemplates();
+        } catch (err) { toast(err.message); }
+        return;
+      }
+      if (e.target.closest("[data-nc-go]")) {
+        const phone = $("nc-phone").value.trim();
+        if (!phone) { toast("Введите номер"); return; }
+        e.target.disabled = true;
+        try {
+          const channel = (document.querySelector("input[name=nc-ch]:checked") || {}).value || "wa";
+          const c = await req("/new", { method: "POST", json: { phone, name: $("nc-name").value, text: $("nc-text").value, channel } });
+          S.chats.set(c.id, c);
+          closeModal();
+          openChat(c.id);
+        } catch (err) {
+          toast(err.message);
+          e.target.disabled = false;
+        }
+      }
+    });
+
+    // the CRM shell asks to open a chat (the iframe is kept alive between sections)
+    window.addEventListener("message", (e) => {
+      if (e.origin === location.origin && e.data && e.data.nh === "open" && e.data.chat) openChat(e.data.chat);
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        pollNow();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal();
+    });
+  }
+
+  // ---- start -----------------------------------------------------------------------
+  async function start() {
+    try {
+      if (tg) { tg.ready(); tg.expand(); if (tg.setHeaderColor) tg.setHeaderColor("#FFFFFF"); }
+    } catch (e) { /* not in Telegram */ }
+    bind();
+    // everything the first screen needs goes out at once: over the tunnel each round trip is slow
+    const chatsP = req("/chats?limit=300").catch((e) => e);
+    const tplP = loadTpls().catch(() => null);
+    try {
+      const me = await req("/me");
+      S.me = me.user;
+      S.ai = me.ai || { enabled: false };
+      S.agents = me.agents || [];
+      $("me-name").textContent = "Вы: " + S.me.name;
+    } catch (e) {
+      if (e.status === 403) showDenied();
+      else toast("Сервер недоступен: " + e.message);
+      return;
+    }
+    const d = await chatsP;
+    if (d instanceof Error) toast(d.message);
+    else {
+      d.chats.forEach((c) => S.chats.set(c.id, c));
+      S.rev = d.rev;
+      S.more = d.more != null ? !!d.more : d.chats.length >= 300;  // a full page: there may be older chats
+    }
+    renderList();
+    refreshWa();
+    await tplP;
+    setInterval(() => { if (document.visibilityState === "visible") refreshWa(); }, 60000);  // the QR modal has its own 3 s timer
+    const m = /chat=(\d+)/.exec(location.hash);
+    if (m) openChat(parseInt(m[1], 10));
+    pollTimer = setTimeout(pollNow, 2500);
+  }
+  // iOS keyboard (chats opened directly, not inside the CRM): same trick as the
+  // CRM shell — <body> sized to the visible box and shifted by its offset
+  const toBottom = () => { const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight; };
+  const unscroll = () => { if (window.scrollY || (document.scrollingElement && document.scrollingElement.scrollTop)) window.scrollTo(0, 0); };
+  if (window.visualViewport && window.innerWidth <= 760 && !EMBED) {
+    const vv = window.visualViewport;
+    const fit = () => {
+      const root = document.documentElement.style;
+      root.setProperty("--vvh", Math.round(vv.height) + "px");
+      root.setProperty("--vvtop", Math.round(vv.offsetTop) + "px");
+      document.body.classList.toggle("kb", vv.height < window.innerHeight - 80);
+      unscroll(); toBottom();
+    };
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
+    window.addEventListener("focusin", () => setTimeout(fit, 350));
+    window.addEventListener("focusout", () => setTimeout(fit, 350));
+    fit();
+  }
+  if (EMBED) {  // inside the CRM the frame itself is resized by the shell: keep the thread at the bottom, never scroll the frame's own page
+    document.body.classList.add("embed");
+    window.addEventListener("resize", () => { unscroll(); toBottom(); });
+    window.addEventListener("message", (e) => { if (e.origin === location.origin && e.data && e.data.nh === "vv") { unscroll(); toBottom(); } });
+    const tell = (on) => { try { window.parent.postMessage({ nh: "focus", on }, location.origin); } catch (e) { /* ignore */ } };
+    window.addEventListener("focusin", (e) => { if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) { tell(true); setTimeout(() => { unscroll(); toBottom(); }, 350); } });
+    window.addEventListener("focusout", () => { tell(false); setTimeout(unscroll, 350); });
+  }
+  start();
+})();

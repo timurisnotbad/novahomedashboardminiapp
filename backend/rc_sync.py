@@ -97,13 +97,43 @@ def _headers() -> dict:
     }
 
 
-def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
+def refresh_booking(bid: int) -> None:
+    """Re-read one booking's apartment for its dates (seconds, not a full sync)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    rows = fetch_bookings(d0, d1, [cur["apartment_id"]])
+    if rows:
+        database.upsert_bookings(rows)
+
+
+RAW_EXTRA = ("apartment_name", "client_name", "client_phone", "client_email", "client_phone2")
+
+
+def fetch_raw_event(bid: int) -> dict | None:
+    """The calendar's own full object for one booking (for a full-object PUT)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return None
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    for ev in fetch_bookings(d0, d1, [cur["apartment_id"]]):
+        if ev.get("id") == bid:
+            return {k: v for k, v in ev.items() if k not in RAW_EXTRA}
+    return None
+
+
+def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = None) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 
     Dates are sent as DD.MM.YYYY and apartment_ids as a comma-separated string,
     exactly as the RC API expects.
     """
-    apt_ids = ",".join(str(i) for i in config.APARTMENTS.keys())
+    apt_ids = ",".join(str(i) for i in (apartment_ids or config.APARTMENTS.keys()))
     params = {
         "apartment_ids": apt_ids,
         "begin_date": date_from.strftime("%d.%m.%Y"),
@@ -134,6 +164,17 @@ def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
                 logger.warning("RC event %s without dates skipped", event.get("id"))
                 continue
             client = event.get("client") or {}
+            if not event.get("prepayment"):
+                for k in ("paid", "payed", "paid_amount", "payments_sum", "payed_amount", "total_paid"):
+                    if isinstance(event.get(k), (int, float)) and event[k]:
+                        event["prepayment"] = event[k]
+                        break
+                pays = event.get("payments")
+                if isinstance(pays, list) and pays and not event.get("prepayment"):
+                    try:
+                        event["prepayment"] = sum(float(p.get("amount") or p.get("sum") or 0) for p in pays if isinstance(p, dict))
+                    except (TypeError, ValueError):
+                        pass
             bookings.append({
                 **event,
                 "apartment_id": apt_id,
@@ -155,21 +196,56 @@ def sync_to_db() -> int:
     today = date.today()
     try:
         if config.DEMO_MODE:
+            d0, d1 = today - timedelta(days=7), today + timedelta(days=13)
             bookings = generate_demo_bookings(today)
         else:
             refresh_apartments()  # pick up units newly added in RC
-            bookings = fetch_bookings(today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD))
+            d0, d1 = today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD)
+            bookings = fetch_bookings(d0, d1)
             # An expired session sometimes yields "200 OK, 0 items" rather than
             # an error. 18 units never have zero bookings for a month — treat
             # that as a failed sync instead of wiping the calendar.
             if not bookings and database.count_bookings() > 0:
                 raise RuntimeError("RC returned 0 bookings — keeping the previous data (token/cookies?)")
-        database.replace_all_bookings(bookings)
+        # Window mirror instead of DELETE-all: history outside the window stays,
+        # readers never see an empty table mid-sync, and a booking has to be
+        # missing twice in a row before it is treated as cancelled.
+        stats = database.replace_window_bookings(bookings, d0.isoformat(), d1.isoformat())
+        try:
+            from . import inbox
+            inbox._phone_cache["at"] = 0.0  # noqa: SLF001 — phone → booking index follows the calendar at once
+        except Exception:  # noqa: BLE001
+            pass
+        if stats["removed"] or stats["missing"]:
+            logger.info("sync: %d written, %d removed, %d missing (pending)", stats["written"], stats["removed"], stats["missing"])
         database.log_sync(len(bookings), True)
+        if not config.DEMO_MODE:
+            _sync_history(today)
         return len(bookings)
     except Exception:  # noqa: BLE001 - log failure, keep the app alive
         database.log_sync(0, False)
         raise
+
+
+HISTORY_DAYS = 400
+
+
+def _sync_history(today: date) -> None:
+    """Once a day pull the past year so the CRM keeps a guest's previous stays
+    (the regular sync only covers [yesterday, +60d]). Failures are logged and
+    never break the main sync."""
+    from . import crm  # noqa: WPS433 - lazy, crm imports database
+    key = "rc_history_synced"
+    try:
+        if (crm.get_setting(key) or "")[:10] == today.isoformat():
+            return
+        rows = fetch_bookings(today - timedelta(days=HISTORY_DAYS), today - timedelta(days=2))
+        if rows:
+            database.upsert_bookings(rows)
+        crm.set_setting(key, today.isoformat())
+        logger.info("history sync: %d past bookings", len(rows))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history sync failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
