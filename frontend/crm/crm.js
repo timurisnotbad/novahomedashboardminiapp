@@ -1642,30 +1642,16 @@
   // then stay exactly where the eye expects them, nothing scrolls away.
   if (window.visualViewport && window.innerWidth <= 760) {
     const vv = window.visualViewport;
-    let fitTimer = null;
     const fit = () => {
-      const h = Math.round(vv.height), top = Math.round(vv.offsetTop);
-      // the keyboard is open when the visible box is much shorter than the layout box
-      // (iOS), or when a text field is focused and the box shrank at all (Android resizes the layout box itself)
-      const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || inboxFocused;
-      const kb = h < window.innerHeight - 80 || (typing && h < (window.screen.height || 10000) * 0.8);
-      const root = document.documentElement.style;
-      root.setProperty("--vvh", h + "px");
-      root.setProperty("--vvtop", top + "px");
+      const kb = vv.height < window.innerHeight - 80;  // keyboard (or Safari bars) open
+      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+      document.body.style.height = kb ? Math.round(vv.height) + "px" : "";
+      document.body.style.transform = kb ? `translateY(${Math.round(vv.offsetTop)}px)` : "";
       document.body.classList.toggle("kb", kb);
-      if (window.scrollY) window.scrollTo(0, 0);  // the page itself never scrolls: fixed elements stay put
-      const f = document.querySelector(".inbox-frame");
-      if (f && f.contentWindow) { try { f.contentWindow.postMessage({ nh: "vv", kb, height: h - 52 - (kb ? 0 : 58) }, location.origin); } catch (e) { /* ignore */ } }
+      if (!kb && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
     };
-    let inboxFocused = false;
-    window.addEventListener("message", (e) => {
-      if (e.origin !== location.origin || !e.data) return;
-      if (e.data.nh === "focus") { inboxFocused = !!e.data.on; clearTimeout(fitTimer); fitTimer = setTimeout(fit, 350); }  // iOS reports the new viewport a beat after focus
-    });
     vv.addEventListener("resize", fit);
     vv.addEventListener("scroll", fit);
-    window.addEventListener("focusin", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 350); });
-    window.addEventListener("focusout", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 350); });
     fit();
   }
   async function boot() {

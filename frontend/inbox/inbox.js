@@ -1145,30 +1145,22 @@
   }
   // iOS keyboard (chats opened directly, not inside the CRM): same trick as the
   // CRM shell — <body> sized to the visible box and shifted by its offset
-  const toBottom = () => { const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight; };
-  const unscroll = () => { if (window.scrollY || (document.scrollingElement && document.scrollingElement.scrollTop)) window.scrollTo(0, 0); };
   if (window.visualViewport && window.innerWidth <= 760 && !EMBED) {
     const vv = window.visualViewport;
     const fit = () => {
-      const root = document.documentElement.style;
-      root.setProperty("--vvh", Math.round(vv.height) + "px");
-      root.setProperty("--vvtop", Math.round(vv.offsetTop) + "px");
-      document.body.classList.toggle("kb", vv.height < window.innerHeight - 80);
-      unscroll(); toBottom();
+      const kb = vv.height < window.innerHeight - 80;
+      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+      document.body.style.height = kb ? Math.round(vv.height) + "px" : "";
+      document.body.style.transform = kb ? `translateY(${Math.round(vv.offsetTop)}px)` : "";
+      if (!kb && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
+      const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight;
     };
     vv.addEventListener("resize", fit);
     vv.addEventListener("scroll", fit);
-    window.addEventListener("focusin", () => setTimeout(fit, 350));
-    window.addEventListener("focusout", () => setTimeout(fit, 350));
     fit();
   }
-  if (EMBED) {  // inside the CRM the frame itself is resized by the shell: keep the thread at the bottom, never scroll the frame's own page
-    document.body.classList.add("embed");
-    window.addEventListener("resize", () => { unscroll(); toBottom(); });
-    window.addEventListener("message", (e) => { if (e.origin === location.origin && e.data && e.data.nh === "vv") { unscroll(); toBottom(); } });
-    const tell = (on) => { try { window.parent.postMessage({ nh: "focus", on }, location.origin); } catch (e) { /* ignore */ } };
-    window.addEventListener("focusin", (e) => { if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) { tell(true); setTimeout(() => { unscroll(); toBottom(); }, 350); } });
-    window.addEventListener("focusout", () => { tell(false); setTimeout(unscroll, 350); });
+  if (EMBED) {  // inside the CRM the frame itself is resized by the shell: just keep the thread at the bottom
+    window.addEventListener("resize", () => { const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight; });
   }
   start();
 })();
