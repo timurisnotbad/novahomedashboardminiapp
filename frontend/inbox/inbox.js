@@ -296,7 +296,7 @@
     const err = m.status === "failed"
       ? `<div class="ib-m__err">Не отправлено${m.error ? ": " + esc(m.error) : ""} · <button data-retry="${m.id}">повторить</button></div>` : "";
     return `${author}<div class="ib-m ${out ? "out" : "in"} ${m.reaction ? "has-react" : ""}" data-mid="${m.id}">
-      <div class="ib-m__b">${body}<div class="ib-m__meta">${esc(hm(m.at))}${out ? tick(m.status) : ""}</div></div>
+      <div class="ib-m__b">${body}<div class="ib-m__meta">${m.edited_at ? `<span class="ib-m__edited" title="Сообщение изменили в мессенджере ${esc(hm(m.edited_at))}">изменено · </span>` : ""}${esc(hm(m.at))}${out ? tick(m.status) : ""}</div></div>
       ${m.reaction ? `<span class="ib-m__react">${esc(m.reaction)}</span>` : ""}
       <div class="ib-m__act"><button data-reply="${m.id}" title="Ответить"><svg viewBox="0 0 24 24"><path d="M10 8L4 13l6 5"/><path d="M4 13h10a6 6 0 0 1 6 6"/></svg></button></div>
     </div>${err}`;

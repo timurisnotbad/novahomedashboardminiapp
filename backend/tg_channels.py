@@ -97,6 +97,8 @@ async def _after_login() -> None:
     _error = None
     _client.remove_event_handler(_on_message)
     _client.add_event_handler(_on_message, events.NewMessage())
+    _client.remove_event_handler(_on_edited)
+    _client.add_event_handler(_on_edited, events.MessageEdited())
     _client.remove_event_handler(_on_raw)
     _client.add_event_handler(_on_raw, events.Raw())
     logger.info("telegram account connected: %s", _me)
@@ -143,6 +145,20 @@ async def _on_message(event) -> None:
             await asyncio.get_event_loop().run_in_executor(None, inbox.store_message, m, True)
     except Exception:  # noqa: BLE001
         logger.exception("telegram message failed")
+
+
+async def _on_edited(event) -> None:
+    """The guest (or we, from the phone) edited a message: the CRM shows the new text."""
+    try:
+        if not event.is_private:
+            return
+        sender = await event.get_sender()
+        m = await _message_dict(event.message, sender)
+        if m:
+            m["edited"] = True
+            await asyncio.get_event_loop().run_in_executor(None, inbox.store_message, m, False)
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram edit failed")
 
 
 async def _message_dict(msg, peer) -> dict | None:

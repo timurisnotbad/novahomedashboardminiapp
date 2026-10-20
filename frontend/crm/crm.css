@@ -78,9 +78,11 @@ select.field { appearance:auto; }
 .grid.c2 { grid-template-columns:1fr 1fr; }
 .grid.c3 { grid-template-columns:repeat(3, 1fr); }
 .grid.c4 { grid-template-columns:repeat(4, 1fr); }
-.grid.c5 { grid-template-columns:repeat(5, 1fr); }
-.stat { background:var(--card); border:1px solid var(--sep); border-radius:var(--r); padding:16px 18px; cursor:pointer; }
-.stat b { display:block; font-size:28px; font-weight:700; letter-spacing:-.02em; }
+.grid.c5 { grid-template-columns:repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1180px) { .grid.c5 { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
+.stat { background:var(--card); border:1px solid var(--sep); border-radius:var(--r); padding:16px 18px; cursor:pointer; min-width:0; overflow:hidden; }
+.stat b { display:block; font-size:clamp(20px, 1.1vw + 14px, 28px); font-weight:700; letter-spacing:-.02em; line-height:1.15; overflow-wrap:anywhere; }
+.stat span { display:block; overflow-wrap:anywhere; }
 .stat span { color:var(--label-2); font-size:13px; }
 .stat.warn b { color:var(--red); }
 .form-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }

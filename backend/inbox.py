@@ -137,6 +137,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN receipt_info TEXT")  # who showed the guest «read», and when
         if "username" not in ccols:
             conn.execute("ALTER TABLE inbox_chats ADD COLUMN username TEXT")  # @handle on Telegram / Instagram — the lead's identity before a phone is known
+        mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
+        if "edited_at" not in mcols:
+            conn.execute("ALTER TABLE inbox_messages ADD COLUMN edited_at TEXT")  # the guest (or we) edited the message in the messenger
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -694,6 +697,26 @@ def _phone_hint(m: dict) -> dict | None:
     return None
 
 
+def _apply_edit(conn, mid: int, text: str) -> None:
+    rev = _bump(conn)
+    conn.execute("UPDATE inbox_messages SET text = ?, edited_at = ?, rev = ? WHERE id = ?", (text, _now(), rev, mid))
+    r = conn.execute("SELECT chat_id, kind, at FROM inbox_messages WHERE id = ?", (mid,)).fetchone()
+    if r:
+        last = conn.execute("SELECT id FROM inbox_messages WHERE chat_id = ? ORDER BY at DESC, id DESC LIMIT 1", (r["chat_id"],)).fetchone()
+        conn.execute("UPDATE inbox_chats SET rev = ?" + (", last_text = ?" if last and last["id"] == mid else "") + " WHERE id = ?",
+                     (rev, _preview(r["kind"], text), r["chat_id"]) if last and last["id"] == mid else (rev, r["chat_id"]))
+
+
+def edit_message(wa_id: str, text: str) -> bool:
+    """An edit that arrives on its own (WhatsApp bridge): update the stored text."""
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT id, text FROM inbox_messages WHERE wa_id = ?", (wa_id,)).fetchone()
+        if not r or (text or "") == (r["text"] or ""):
+            return False
+        _apply_edit(conn, r["id"], text or "")
+    return True
+
+
 def _tkey(t) -> str:
     return re.sub(r"\s+", "", (t or "")).lower()[:400]
 
@@ -715,8 +738,12 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
             return None
         chat_id = _ensure_chat(conn, jid, m.get("lid"), None if out else m.get("push_name"), channel, m.get("phone"), None if out else m.get("username"))
         is_first = conn.execute("SELECT 1 FROM inbox_messages WHERE chat_id = ? LIMIT 1", (chat_id,)).fetchone() is None
-        exists = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ?", (m["id"],)).fetchone()
+        exists = conn.execute("SELECT id, text FROM inbox_messages WHERE wa_id = ?", (m["id"],)).fetchone()
         if exists:
+            # the same message again with another text = an edit (Telegram says so; Wazzup re-delivers the id)
+            new_text = (m.get("text") or "")
+            if (m.get("edited") or channel in ("wz", "wzig", "wztg")) and new_text and new_text != (exists["text"] or ""):
+                _apply_edit(conn, exists["id"], new_text)
             return None
         if out:
             # our own reply coming back from the channel before send() stored its id

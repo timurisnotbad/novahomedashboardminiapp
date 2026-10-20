@@ -159,8 +159,21 @@ async function parse(m, { download }) {
   if (!content) return null;
   const type = getContentType(content);
   const kind = KIND[type] || "other";
-  if (kind === "protocol" || type === "senderKeyDistributionMessage") return null;
+  if (type === "senderKeyDistributionMessage") return null;
+  if (kind === "protocol" && type !== "protocolMessage") return null;
   const body = content[type] || {};
+  if (type === "protocolMessage") {
+    // an edit: the new text travels inside editedMessage with the key of the original
+    const ed = body.editedMessage && normalizeMessageContent(body.editedMessage);
+    const target = body.key && body.key.id;
+    if (ed && target) {
+      const et = getContentType(ed);
+      const eb = ed[et] || {};
+      const text = et === "conversation" ? ed.conversation || "" : eb.text || eb.caption || "";
+      return { edit: true, id: target, text };
+    }
+    return null;
+  }
   const jid = await phoneJid(remote, key.remoteJidAlt);
   const out = {
     id: key.id,
@@ -277,7 +290,8 @@ async function connect() {
     for (const m of messages) {
       try {
         const msg = await parse(m, { download: true });
-        if (msg) post({ event: "message", message: msg, notify: type === "notify" });
+        if (msg && msg.edit) post({ event: "edit", id: msg.id, text: msg.text });
+        else if (msg) post({ event: "message", message: msg, notify: type === "notify" });
       } catch (e) {
         log("message parse failed", e.message);
       }
@@ -291,7 +305,7 @@ async function connect() {
     for (const m of messages || []) {
       try {
         const msg = await parse(m, { download: false });
-        if (msg && Date.parse(msg.at) >= cutoff) batch.push(msg);
+        if (msg && !msg.edit && Date.parse(msg.at) >= cutoff) batch.push(msg);
       } catch (e) { /* skip */ }
     }
     const names = [];
