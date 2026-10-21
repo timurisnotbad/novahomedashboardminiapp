@@ -163,6 +163,7 @@
     const main = $("main");
     main.classList.remove("hidden");
     if (inboxFrame && r !== "messages") inboxFrame.classList.add("hidden");
+    if (cashFrame && r !== "cash") cashFrame.classList.add("hidden");
     main.onclick = null;
     main.innerHTML = `<div class="empty">Загрузка…</div>`;
     Promise.resolve(ROUTES[r](arg)).then(() => { if (!stale(seq) && typeof after === "function") after(); }, (err) => {
@@ -268,6 +269,21 @@
     $("main").innerHTML = "";
     $("main").classList.add("hidden");
     inboxFrame.classList.remove("hidden");
+  };
+
+  // ---- cash («Оплаты», embedded page) -----------------------------------
+  let cashFrame = null;
+  ROUTES.cash = (sub) => {
+    if (!cashFrame) {
+      cashFrame = document.createElement("iframe");
+      cashFrame.className = "inbox-frame";
+      cashFrame.title = "Оплаты";
+      cashFrame.src = "/cash/?v=" + (window.NH_VERSION || "0") + "&embed=1" + (sub ? "#" + sub : "");
+      document.getElementById("app").appendChild(cashFrame);
+    }
+    $("main").innerHTML = "";
+    $("main").classList.add("hidden");
+    cashFrame.classList.remove("hidden");
   };
 
   // ---- deals ------------------------------------------------------------------

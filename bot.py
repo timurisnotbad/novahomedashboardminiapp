@@ -26,10 +26,10 @@ try:
         WebAppInfo,
     )
     from telegram.constants import ParseMode
-    from telegram.ext import (Application, ApplicationHandlerStop, CommandHandler, ContextTypes,
-                              MessageHandler, filters)
+    from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler,
+                              ContextTypes, MessageHandler, filters)
 
-    from backend import (attendance, booking_prices, config, database, inbox, issues, logsetup,
+    from backend import (attendance, booking_prices, cash, config, database, inbox, issues, logsetup,
                          notify, pay_parse, rc_sync, services, supplies)
 except BaseException as _import_exc:  # noqa: BLE001 — a missing library must not close the window
     import traceback
@@ -185,6 +185,112 @@ async def chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Не пересылайте её: ответы по ней подписываются вашим именем.",
         reply_markup=markup,
     )
+
+
+def _cash_url(uid: int) -> str:
+    base = config.WEBAPP_URL.split("?")[0].rstrip("/")
+    return f"{base}/cash/?v={config.APP_VERSION}&k={inbox.personal_key(uid)}"
+
+
+def _cash_who(user) -> dict:
+    return {"uid": user.id, "name": user.full_name or user.first_name or str(user.id), "owner": user.id in config.OWNER_TELEGRAM_IDS}
+
+
+async def cash_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«Оплаты» — record what a guest paid; the row lands in the owner's sheet."""
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    _register(user)
+    if chat and chat.type != "private":
+        me = context.bot.username or "novahomedashboardbot"
+        await msg.reply_text(f"Оплаты записываются из личного чата: напишите /оплата боту @{me}.")
+        return
+    if not config.WEBAPP_URL:
+        await msg.reply_text("WEBAPP_URL не задан в .env — страница оплат недоступна.")
+        return
+    if not await asyncio.to_thread(inbox.may_use, user.id):
+        await msg.reply_text("У вас нет доступа. Попросите владельца добавить вас в INBOX_USERS.")
+        return
+    await asyncio.to_thread(inbox.remember_agent, user.id, user.full_name or user.first_name or "", user.username or "")
+    url = _cash_url(user.id)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💵 Записать оплату", web_app=WebAppInfo(url=url))],
+        [InlineKeyboardButton("🖥 Открыть в браузере", url=url)],
+    ])
+    await msg.reply_text(
+        "💵 Оплаты — квартира, сумма, счёт, даты. Строка сразу попадает в таблицу.\n\n"
+        "Ещё быстрее — одной строкой прямо сюда, например:\n«110 400$ 480 000 19.10-23.10»\n"
+        "или «5 100$ хумо 1 200 000 21-22.10» — я покажу, как понял, и запишу после ✅.",
+        reply_markup=markup,
+    )
+
+
+def _cash_preview(q: dict) -> str:
+    apts = ", ".join(str(cash._apt_num(a)) for a in q["apartments"]) or "—"  # noqa: SLF001
+    lines = " + ".join(f"{cash._fmt(x['amount'], x['currency'])} ({x['method']})" for x in q["lines"]) or "—"  # noqa: SLF001
+    total = round(sum(cash.to_usd(x["amount"], x["currency"]) for x in q["lines"]), 2)
+    text = f"💵 Записать оплату?\nКвартира: {apts}\nСумма: {lines}"
+    if len(q["lines"]) > 1 or any(x["currency"] != "USD" for x in q["lines"]):
+        text += f" ≈ {total:g} $"
+    text += f"\nПроживание: {q['stay'] or 'не указано'}\nСтатья: {cash.ARTICLE}"
+    if len(q["apartments"]) > 1:
+        text += f"\n⚠️ Несколько квартир: в таблицу — касса кв. {cash._apt_num(q['apartments'][0])}, остальное на проверку владельцу"  # noqa: SLF001
+    return text
+
+
+async def on_cash_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A private message that reads like a payment («110 400$ 480 000 19.10-23.10»): show how it was
+    understood, record after ✅. Anything else falls through to the other handlers."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not msg.text or msg.chat.type != "private" or msg.text.startswith("/"):
+        return
+    if not re.search(r"\d", msg.text) or len(msg.text) > 300:
+        return
+    try:
+        q = await asyncio.to_thread(cash.parse_quick, msg.text)
+    except Exception:  # noqa: BLE001
+        return
+    if q["missing"]:
+        return
+    if not await asyncio.to_thread(inbox.may_use, user.id):
+        return
+    context.user_data["cash_pending"] = {"q": q, "text": msg.text}
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Записать", callback_data="cash:ok"),
+                                    InlineKeyboardButton("✖ Нет", callback_data="cash:no")]])
+    await msg.reply_text(_cash_preview(q), reply_markup=markup)
+    raise ApplicationHandlerStop
+
+
+async def on_cash_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cq = update.callback_query
+    if not cq or not update.effective_user:
+        return
+    pend = context.user_data.pop("cash_pending", None)
+    if cq.data == "cash:no" or not pend:
+        await cq.answer("Отменено" if pend else "Устарело")
+        try:
+            await cq.edit_message_text((cq.message.text or "") + "\n\n✖ Не записано" if cq.message else "✖ Не записано")
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    q = pend["q"]
+    try:
+        p = await asyncio.to_thread(cash.add, {"apartments": q["apartments"], "lines": q["lines"], "stay": q["stay"], "raw_text": pend["text"]},
+                                    _cash_who(update.effective_user), "bot", True)
+    except Exception as exc:  # noqa: BLE001
+        await cq.answer()
+        await cq.edit_message_text(f"❌ Не записано: {config.redact(str(exc))[:200]}")
+        return
+    await cq.answer("Записано")
+    tail = ("✅ В таблице: строки " + ", ".join(str(x["sheet_row"]) for x in p["lines"] if x.get("sheet_row"))) if p.get("sheet") == "ok" \
+        else "⏳ Таблица не ответила — запишу автоматически"
+    if p["status"] == "review":
+        tail += "\n⚠️ Совместный платёж — ждёт проверки владельца"
+    await cq.edit_message_text(f"💵 Оплата №{p['id']} записана · {cash.summary(p)}\n{tail}")
 
 
 async def on_inbox_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1477,6 +1583,23 @@ async def on_channel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     except Exception:  # noqa: BLE001
         logger.exception("payment post parse failed")
+    # the same post as a cash receipt for the sheet («110 / 400$ / 480 000 / 19.10-23.10»)
+    try:
+        ref = f"{msg.chat_id}:{msg.message_id}"
+        q = cash.parse_quick(text, post_date)
+        if q["missing"]:
+            return
+        who = {"uid": 0, "name": "канал Оплаты", "owner": True}
+        existing = await asyncio.to_thread(cash.by_ref, ref)
+        data = {"apartments": q["apartments"], "lines": q["lines"], "stay": q["stay"], "raw_text": text}
+        if existing:
+            if update.edited_channel_post and existing["status"] != "cancelled":
+                await asyncio.to_thread(cash.edit, existing["id"], data, who)
+            return
+        data.update(day=post_date.isoformat(), channel_ref=ref)
+        await asyncio.to_thread(cash.add, data, who, "channel", True)
+    except Exception:  # noqa: BLE001
+        logger.exception("payment post -> cash failed")
 
 
 async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1862,6 +1985,8 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("supplies", supplies_cmd))
     app.add_handler(CommandHandler("chats", chats_cmd))
+    app.add_handler(CommandHandler("cash", cash_cmd))
+    app.add_handler(CallbackQueryHandler(on_cash_callback, pattern=r"^cash:"))
     # Telegram only detects latin /commands, so accept typed Cyrillic ones too
     # (slash required — a plain «цены» in the group is just conversation).
     _msg = filters.UpdateType.MESSAGE
@@ -1870,6 +1995,9 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & _msg,
                                    on_inbox_reply), group=-2)
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(чаты|чат)\b") & _msg, chats_cmd))
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(оплата|оплаты|касса)\b") & _msg, cash_cmd))
+    # «110 400$ 480 000 19.10-23.10» in a private chat: a payment to confirm (before the cleaning-report text handler)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE & _msg, on_cash_text), group=-3)
     # «Поломки» topic reader — its own group, so it sees every group text
     # (new and edited) before the group-0 handlers and can stop them
     app.add_handler(MessageHandler(

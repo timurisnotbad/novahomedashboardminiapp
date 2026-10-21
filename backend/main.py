@@ -9,11 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, auth, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
+from . import ai, auth, cash, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
 from .routers import inbox as inbox_router
+from .routers import cash as cash_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logsetup.setup("server")  # everything also goes to logs/server.log
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     webpush.init_db()
     booking_ext.init_db()
     ai.init_db()
+    cash.init_db()
     scheduler.start()
     if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
         logger.error("META_APP_SECRET is empty: the Meta webhook stays CLOSED (404) until it is set in .env")
@@ -112,6 +114,8 @@ app.include_router(inbox_router.router, prefix=config.API_PREFIX)
 app.include_router(inbox_router.public, prefix=config.API_PREFIX)
 # Nova Home CRM (/crm/): cookie session, its own guards inside the router
 app.include_router(crm_router.router, prefix=config.API_PREFIX)
+# «Оплаты»: same access as the chats page (cookie / personal key / Telegram signature)
+app.include_router(cash_router.router, prefix=config.API_PREFIX)
 
 
 @app.middleware("http")
@@ -158,7 +162,8 @@ def me(request: Request):
 # served through this route, which stamps the current APP_VERSION into the
 # tags and exposes it as window.NH_VERSION (api.js and the chats iframe use it).
 _HTML_PAGES = {"/": "index.html", "/index.html": "index.html", "/crm/": "crm/index.html", "/crm/index.html": "crm/index.html",
-               "/inbox/": "inbox/index.html", "/inbox/index.html": "inbox/index.html"}
+               "/inbox/": "inbox/index.html", "/inbox/index.html": "inbox/index.html",
+               "/cash/": "cash/index.html", "/cash/index.html": "cash/index.html"}
 
 
 def _stamped_html(rel: str) -> str:
