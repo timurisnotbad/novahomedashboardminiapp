@@ -426,6 +426,7 @@ def _chat_out(r) -> dict:
             c["booking"]["eta"], c["booking"]["eta_note"] = e.get("eta") or "", e.get("note") or ""
         except Exception:  # noqa: BLE001
             c["booking"]["eta"], c["booking"]["eta_note"] = "", ""
+    c["stays"] = _stays_for_chat(c["id"], c.get("phone") or "")
     c["receipt"] = _receipt_text(c)
     if c["channel"] == "bk" and not pb:
         # Booking.com chat without a confirmed calendar booking: show what Booking says
@@ -479,6 +480,29 @@ def _pinned_booking(chat_id: int):
     b = dict((cur or nxt or past)[0])
     b["when"] = "now" if cur else "next" if nxt else "past"
     return b
+
+
+def _stays_for_chat(chat_id: int, phone: str) -> list[dict]:
+    """Every booking of the guest worth showing in the chat list: the ones pinned to the chat
+    plus the ones found by phone; current and upcoming (a guest with several apartments sees
+    them all), else the latest past one. [{id, apartment, begin, end, when}]."""
+    rows: dict[int, dict] = {}
+    _pinned_booking(chat_id)  # fills the cache
+    for r in _pin_cache["map"].get(chat_id) or []:
+        rows[r["id"]] = r
+    d = digits(phone)
+    if len(d) >= 7:
+        for r in _bookings_by_phone().get(d[-9:]) or []:
+            rows.setdefault(r["id"], r)
+    if not rows:
+        return []
+    today = date.today().isoformat()
+    def when(r):
+        return "now" if r["begin_date"] <= today <= r["end_date"] else "next" if r["begin_date"] > today else "past"
+    live = sorted((r for r in rows.values() if when(r) != "past"), key=lambda r: (r["begin_date"], r["apartment_name"] or ""))
+    if not live:
+        live = sorted(rows.values(), key=lambda r: r["end_date"], reverse=True)[:1]
+    return [{"id": r["id"], "apartment": r["apartment_name"], "begin": r["begin_date"], "end": r["end_date"], "when": when(r)} for r in live[:6]]
 
 
 def _msg_out(r) -> dict:

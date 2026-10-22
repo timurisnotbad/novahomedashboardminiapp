@@ -107,6 +107,14 @@
       ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : ' <span class="ib-muted">· по номеру</span>'}`
       : `${esc(b.apartment)}`;
   }
+  // chat list: every apartment the guest holds, with the stay dates — same dates are grouped («B-008, B-110 · 22–27.10»)
+  function staysLine(c) {
+    const st = (c.stays && c.stays.length) ? c.stays : (c.booking ? [c.booking] : []);
+    if (!st.length) return "";
+    const groups = [];
+    st.forEach((b) => { const k = `${b.begin}|${b.end}|${b.when}`; let g = groups.find((x) => x.k === k); if (!g) { g = { k, b, apts: [] }; groups.push(g); } if (!g.apts.includes(b.apartment)) g.apts.push(b.apartment); });
+    return `<div class="ib-stay">${groups.map((g) => `<span class="ib-stay__g"><span class="ib-apt ${g.b.when === "now" ? "now" : g.b.when === "past" ? "past" : ""}">${esc(g.apts.join(", "))}</span> ${esc(dm(g.b.begin))}–${esc(dm(g.b.end))}${g.b.when === "past" ? " · был" : ""}</span>`).join("")}</div>`;
+  }
   let statuses = null;
   function loadStatuses() { if (statuses) return; req("/client-statuses").then((l) => { statuses = l || []; renderHead(); }).catch(() => { statuses = []; }); }
 
@@ -133,12 +141,12 @@
     } else {
       el.innerHTML = list.map((c) => {
         const last = (c.last_dir === "out" ? tick(c.last_status) + (S.ai && c.last_author === S.ai.author ? "✨ " : "") : "") + esc(c.last_text || "");
-        const apt = c.booking ? `<span class="ib-apt ${c.booking.when === "now" ? "now" : ""}">${bookingText(c.booking)}</span>` : "";
         return `<div class="ib-chat ${S.open && S.open.id === c.id ? "is-on" : ""} ${c.unread ? "unread" : ""}" data-chat="${c.id}">
           ${avatar(c)}
           <div class="ib-chat__body">
-            <div class="ib-chat__top"><span class="ib-chat__name">${esc(c.title)}</span>${apt}<span class="ib-chat__time">${esc(shortWhen(c.last_at))}</span></div>
+            <div class="ib-chat__top"><span class="ib-chat__name">${esc(c.title)}</span><span class="ib-chat__time">${esc(shortWhen(c.last_at))}</span></div>
             <div class="ib-chat__bot"><span class="ib-chat__last">${last}</span>${c.unread ? `<span class="ib-badge">${c.unread}</span>` : ""}</div>
+            ${staysLine(c)}
             ${c.assignee ? `<div class="ib-who">👤 ${esc(c.assignee)}</div>` : ""}
           </div>
           ${c.unread ? `<button class="ib-done" data-done="${c.id}" title="Отметить обработанным без ответа" aria-label="Обработано">✓</button>` : ""}

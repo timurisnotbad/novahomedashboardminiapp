@@ -28,6 +28,9 @@
     const st = K.state;
     try { st.learned = +localStorage.getItem("nh_kbh") || 0; } catch (e) { /* ignore */ }
     let frameTyping = false, timers = [];
+    const applied = { h: -1, top: -1, kb: null };
+    let raf = 0;
+    const soon = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; fit(false); }); };  // one measure per frame while iOS animates
     const typing = () => frameTyping || isField(document.activeElement);
     let probe = null;
     const reflow = () => {  // iOS home-screen apps sometimes keep the shrunken window after the keyboard: force a re-measure
@@ -50,6 +53,8 @@
         if (window.scrollY && !top) window.scrollTo(0, 0);  // the page itself never scrolls; fixed boxes follow --vvtop instead
       }
       Object.assign(st, { h, top, kb, guessed, typing: t, vh, ih });
+      if (h === applied.h && top === applied.top && kb === applied.kb) { if (K._dbg) K.debug(true); return; }  // nothing moved: no relayout, no message
+      Object.assign(applied, { h, top, kb });
       root.setProperty("--vvh", h + "px");
       root.setProperty("--vvtop", top + "px");
       document.body.classList.toggle("kb", kb);
@@ -59,13 +64,13 @@
     }
     const burst = (guessAtEnd) => {  // iOS reports the new box a beat (or three) after focus
       timers.forEach(clearTimeout);
-      timers = [60, 180, 320, 500, 760].map((ms, i, arr) => setTimeout(() => {
-        if (!guessAtEnd && isIOS && standalone && i === 2 && !typing() && window.innerHeight < st.full - 80) reflow();
+      timers = [120, 360, 760].map((ms, i, arr) => setTimeout(() => {
+        if (!guessAtEnd && isIOS && standalone && i === 1 && !typing() && window.innerHeight < st.full - 80) reflow();
         fit(guessAtEnd && i === arr.length - 1);
       }, ms));
     };
-    if (vv) { vv.addEventListener("resize", () => fit(false)); vv.addEventListener("scroll", () => fit(false)); }
-    window.addEventListener("resize", () => fit(false));
+    if (vv) { vv.addEventListener("resize", soon); vv.addEventListener("scroll", soon); }
+    window.addEventListener("resize", soon);
     window.addEventListener("orientationchange", () => { st.full = 0; burst(false); });
     document.addEventListener("focusin", (e) => { if (isField(e.target)) burst(true); }, true);
     document.addEventListener("focusout", (e) => { if (isField(e.target)) burst(false); }, true);

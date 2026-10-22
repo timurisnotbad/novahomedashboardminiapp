@@ -74,6 +74,9 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-apt { font-size:11px; font-weight:700; color:var(--tint-text); background:var(--tint-soft); padding:1px 6px; border-radius:6px; flex:none; }
 .ib-apt.now { background:#E3F6E8; color:#2E7D46; }
 .ib-who { font-size:11px; color:var(--label-2); margin-top:1px; }
+.ib-stay { display:flex; flex-wrap:wrap; align-items:center; gap:3px 8px; margin-top:3px; font-size:12px; color:var(--label-2); }
+.ib-stay__g { white-space:nowrap; }
+.ib-apt.past { background:#F3F4F6; color:var(--label-2); }
 .ib-tick { display:inline-flex; vertical-align:-3px; margin-right:2px; }
 .ib-tick svg { width:16px; height:16px; stroke-width:2.2; }
 .ib-tick.read { color:var(--blue); }
