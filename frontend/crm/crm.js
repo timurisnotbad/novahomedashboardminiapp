@@ -1656,19 +1656,10 @@
   // layout viewport under it; fixed elements drift. Size <body> to the visible box
   // and shift it by the offset — the header, the chats frame and the tab bar
   // then stay exactly where the eye expects them, nothing scrolls away.
-  if (window.visualViewport && window.innerWidth <= 760) {
-    const vv = window.visualViewport;
-    const fit = () => {
-      const kb = vv.height < window.innerHeight - 80;  // keyboard (or Safari bars) open
-      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
-      document.body.style.height = kb ? Math.round(vv.height) + "px" : "";
-      document.body.style.transform = kb ? `translateY(${Math.round(vv.offsetTop)}px)` : "";
-      document.body.classList.toggle("kb", kb);
-      if (!kb && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
-    };
-    vv.addEventListener("resize", fit);
-    vv.addEventListener("scroll", fit);
-    fit();
+  // Phones: the shell follows the keyboard (js/keyboard.js); frames get the visible box
+  if (NH.keyboard) {
+    NH.keyboard.watch({ frames: () => [inboxFrame, cashFrame].filter(Boolean) });
+    NH.keyboard.tapToDebug(document.querySelector(".side__brand"));
   }
   async function boot() {
     $("auth").classList.add("hidden");

@@ -381,6 +381,7 @@
   $("sheet").addEventListener("click", (e) => { if (e.target.hasAttribute("data-close")) closeSheet(); });
 
   // ---- boot ---------------------------------------------------------------------------
+  if (EMBED && NH.keyboard) NH.keyboard.embed(() => { const a = document.activeElement; if (a && /^(INPUT|TEXTAREA)$/.test(a.tagName)) { try { a.scrollIntoView({ block: "center" }); } catch (e) { /* ignore */ } } });
   async function boot() {
     if (tg && !EMBED) { try { tg.ready(); tg.expand(); if (tg.setHeaderColor) tg.setHeaderColor("#F5F6F8"); if (tg.setBackgroundColor) tg.setBackgroundColor("#F5F6F8"); } catch (e) { /* ignore */ } }
     try { S.meta = await get("/meta"); } catch (e) { if (e.status !== 403) $("main").innerHTML = `<div class="empty">${esc(e.message)}<div style="margin-top:12px"><button class="btn" id="retry">Повторить</button></div></div>`; const r = $("retry"); if (r) r.addEventListener("click", boot); return; }

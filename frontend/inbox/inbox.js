@@ -1143,24 +1143,14 @@
     if (m) openChat(parseInt(m[1], 10));
     pollTimer = setTimeout(pollNow, 2500);
   }
-  // iOS keyboard (chats opened directly, not inside the CRM): same trick as the
-  // CRM shell — <body> sized to the visible box and shifted by its offset
-  if (window.visualViewport && window.innerWidth <= 760 && !EMBED) {
-    const vv = window.visualViewport;
-    const fit = () => {
-      const kb = vv.height < window.innerHeight - 80;
-      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
-      document.body.style.height = kb ? Math.round(vv.height) + "px" : "";
-      document.body.style.transform = kb ? `translateY(${Math.round(vv.offsetTop)}px)` : "";
-      if (!kb && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
-      const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight;
-    };
-    vv.addEventListener("resize", fit);
-    vv.addEventListener("scroll", fit);
-    fit();
-  }
-  if (EMBED) {  // inside the CRM the frame itself is resized by the shell: just keep the thread at the bottom
-    window.addEventListener("resize", () => { const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight; });
+  // Phone keyboard: the page lives in the visible box (js/keyboard.js); inside the CRM the
+  // shell sizes the frame and this page only tells it about focus and keeps the thread at the bottom
+  const toBottom = () => { const m = $("msgs"); if (m && S.open) m.scrollTop = m.scrollHeight; };
+  if (EMBED) {
+    if (NH.keyboard) NH.keyboard.embed(() => toBottom());
+  } else if (NH.keyboard) {
+    NH.keyboard.watch({ onFit: () => toBottom() });
+    const brand = document.querySelector(".ib-brand h1"); if (brand) NH.keyboard.tapToDebug(brand);
   }
   start();
 })();

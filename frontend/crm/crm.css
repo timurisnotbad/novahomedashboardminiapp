@@ -259,18 +259,20 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 }
 @media (max-width: 760px) {
   /* the shell is fixed: header on top, tab bar at the bottom, only the content scrolls */
-  html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
+  /* The whole shell lives inside the *visible* box: --vvh / --vvtop come from js/keyboard.js
+     (visualViewport, window size, or an assumed keyboard when iOS reports nothing); the page
+     itself can never scroll, so nothing drifts under the keyboard. */
+  html, body { height:100%; overflow:hidden; overscroll-behavior:none; position:fixed; width:100%; top:0; left:0; }
   body { padding-bottom:0; }
   .app { display:block; height:100%; min-height:0; }
-  .side { width:100%; height:52px; position:fixed; top:0; left:0; right:0; z-index:30; padding:8px 14px; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; border-right:none; border-bottom:1px solid var(--sep); overflow:hidden; }
-  .side.open { height:auto; max-height:100dvh; overflow-y:auto; box-shadow:0 12px 30px rgba(0,0,0,.15); }
-  .main, .inbox-frame { position:fixed; top:52px; bottom:calc(58px + env(safe-area-inset-bottom, 0px)); left:0; right:0; width:100%; min-height:0; }
-  .main { height:auto; }
-  .inbox-frame { height:calc(100dvh - 52px - 58px - env(safe-area-inset-bottom, 0px)); }  /* an iframe does not stretch between top and bottom */
-  /* keyboard open: <body> is the visible box (height + translateY set from JS); fixed children follow it */
-  body.kb { position:relative; overflow:hidden; }
-  body.kb .inbox-frame, body.kb .main { height:calc(var(--vvh) - 52px - 58px); bottom:58px; }
-  body.kb .tabbar, body.kb .side { transform:none; }
+  .side { width:100%; height:52px; position:fixed; top:var(--vvtop, 0px); left:0; right:0; z-index:30; padding:8px 14px; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; border-right:none; border-bottom:1px solid var(--sep); overflow:hidden; }
+  .side.open { height:auto; max-height:var(--vvh, 100dvh); overflow-y:auto; box-shadow:0 12px 30px rgba(0,0,0,.15); }
+  .main, .inbox-frame { position:fixed; top:calc(52px + var(--vvtop, 0px)); bottom:auto; left:0; right:0; width:100%; min-height:0;
+    height:calc(var(--vvh, 100dvh) - 52px - 58px - env(safe-area-inset-bottom, 0px)); }
+  /* keyboard open: the tab bar goes away, the content takes everything down to the keyboard */
+  body.kb .main, body.kb .inbox-frame { height:calc(var(--vvh) - 52px); }
+  body.kb .tabbar { display:none; }
+  .tabbar { top:auto; }
   .main { overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; padding:12px 14px 24px; }
   .main > * { max-width:100%; }
   .side__brand { padding:0; flex:1; font-size:16px; }
