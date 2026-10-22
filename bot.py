@@ -646,8 +646,9 @@ async def link_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not u:
         await update.effective_message.reply_text("Код не подошёл или устарел (действует 30 минут). Получите новый в CRM и отправьте /link КОД ещё раз.")
         return
-    await update.effective_message.reply_text(f"✅ Готово, {u['name']}: сообщения гостей, которые ждут ответа, будут приходить сюда. "
-                                              "Ответьте на такое уведомление — ответ уйдёт гостю.")
+    await update.effective_message.reply_text(f"✅ Готово, {u['name']}: уведомления CRM будут приходить сюда — сообщения гостей без ответа, "
+                                              "задачи, брони, ассистент. Какие именно — настраивается в CRM → «Telegram-уведомления». "
+                                              "Ответьте на уведомление о сообщении — ответ уйдёт гостю.")
 
 
 async def staff_ok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

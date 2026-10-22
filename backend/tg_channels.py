@@ -335,6 +335,60 @@ def user_send(payload: dict) -> dict:
         raise inbox.BridgeError(_err(exc)) from exc
 
 
+def _tg_ids(payload: dict) -> tuple[int, int]:
+    uid = int(payload["jid"].split(":")[1])
+    mid = int(str(payload["id"]).rsplit(":", 1)[1])
+    return uid, mid
+
+
+def user_edit(payload: dict) -> dict:
+    if not _me:
+        raise inbox.BridgeError("Telegram-аккаунт не подключён")
+    uid, mid = _tg_ids(payload)
+
+    async def go():
+        await _client.edit_message(uid, mid, payload.get("text") or "")
+        return {"ok": True}
+    try:
+        return _run(go(), 60)
+    except inbox.BridgeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise inbox.BridgeError(_err(exc)) from exc
+
+
+def user_delete(payload: dict) -> dict:
+    if not _me:
+        raise inbox.BridgeError("Telegram-аккаунт не подключён")
+    uid, mid = _tg_ids(payload)
+
+    async def go():
+        await _client.delete_messages(uid, [mid], revoke=True)
+        return {"ok": True}
+    try:
+        return _run(go(), 60)
+    except inbox.BridgeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise inbox.BridgeError(_err(exc)) from exc
+
+
+def bot_edit(payload: dict) -> dict:
+    if not bot_configured():
+        raise inbox.BridgeError("Telegram-бот для гостей не настроен")
+    cid, mid = _tg_ids(payload)
+    method = "editMessageCaption" if payload.get("has_media") else "editMessageText"
+    field = "caption" if payload.get("has_media") else "text"
+    return _bot_api(method, json={"chat_id": cid, "message_id": mid, field: payload.get("text") or ""})
+
+
+def bot_delete(payload: dict) -> dict:
+    if not bot_configured():
+        raise inbox.BridgeError("Telegram-бот для гостей не настроен")
+    cid, mid = _tg_ids(payload)
+    return _bot_api("deleteMessage", json={"chat_id": cid, "message_id": mid})
+
+
 def user_send_album(payload: dict) -> dict:
     """Several photos/videos as one Telegram album (max 10): payload.media is a
     list of file names, payload.text the caption of the first one."""

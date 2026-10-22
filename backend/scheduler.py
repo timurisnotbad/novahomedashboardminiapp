@@ -85,6 +85,14 @@ def _prune_auto_log() -> None:
         logger.warning("auto log prune failed: %s", exc)
 
 
+def _task_alerts():
+    try:
+        from . import alerts
+        alerts.task_reminders()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("task alerts failed: %s", exc)
+
+
 def _cash_retry():
     try:
         from . import cash
@@ -216,6 +224,7 @@ def start() -> None:
     _scheduler.add_job(_housekeeping, "cron", hour=4, minute=17, id="housekeeping", max_instances=1, coalesce=True)
     _scheduler.add_job(_ai_followups, "interval", minutes=10, id="ai_followups", max_instances=1, coalesce=True)
     _scheduler.add_job(_cash_retry, "interval", minutes=10, id="cash_retry", max_instances=1, coalesce=True)
+    _scheduler.add_job(_task_alerts, "interval", minutes=5, id="task_alerts", max_instances=1, coalesce=True)
     _scheduler.start()
     logger.info("Scheduler started (sync %s min, reminders 10 min, summary 22:00, watchdog 1 min)",
                 config.SYNC_INTERVAL_MINUTES)

@@ -699,8 +699,7 @@ def _notify(p: dict, who: dict, action: str, before: dict | None = None) -> None
             text += "\n⏳ В таблицу пока не записано (повторю автоматически)"
         if p.get("joint") and p["status"] == "review":
             text += "\n⚠️ Совместный платёж за несколько квартир — ждёт вашего решения в CRM → Оплаты"
-        targets = list(config.OWNER_TELEGRAM_IDS) if getattr(config, "OWNER_TELEGRAM_IDS", None) else None
-        if targets:
-            notify.send(text, targets=targets)
+        from . import alerts
+        alerts.broadcast("cash", text, base=list(getattr(config, "OWNER_TELEGRAM_IDS", None) or []))
     except Exception:  # noqa: BLE001
         logger.exception("cash notify failed")

@@ -595,8 +595,8 @@ def booking_flow() -> int:
         logger.exception("client statuses refresh failed")
     if cancelled_notes:
         try:
-            from . import notify
-            notify.send("❌ Бронь отменена в календаре:\n" + "\n".join(cancelled_notes[:20]))
+            from . import alerts
+            alerts.broadcast("bookings", "❌ Бронь отменена в календаре:\n" + "\n".join(cancelled_notes[:20]))
         except Exception:  # noqa: BLE001
             logger.exception("cancel notice failed")
     return moved

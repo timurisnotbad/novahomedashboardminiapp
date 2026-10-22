@@ -871,7 +871,8 @@ def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
                                  "due": (datetime.now() + timedelta(hours=1)).isoformat(timespec="minutes"), "assignee_uid": uid, "deal_id": deal["id"], "client_id": cid}, uid)
             state["lead"] = deal["id"]
             try:
-                notify.send(f"🤖 Новая заявка из чата ({chat.get('channel_name')}): {summary}\n{config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat['id']}" if config.WEBAPP_URL else f"🤖 Новая заявка из чата: {summary}")
+                from . import alerts
+                alerts.broadcast("ai", f"🤖 Новая заявка из чата ({chat.get('channel_name')}): {summary}\n{config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat['id']}" if config.WEBAPP_URL else f"🤖 Новая заявка из чата: {summary}")
             except Exception:  # noqa: BLE001
                 pass
             return json.dumps({"ok": True, "deal_id": deal["id"]}, ensure_ascii=False)
@@ -900,8 +901,9 @@ def _do_handover(chat_id: int, info: dict, mode: str) -> None:
     try:
         c = inbox.get_chat(chat_id)
         link = f"\n🔗 {config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat_id}" if config.WEBAPP_URL else ""
-        notify.send(f"🙋 Чат {c['title'] if c else chat_id} ({c.get('channel_name') if c else ''}): нужен человек.\n{info.get('reason') or ''}\n{info.get('summary') or ''}{link}",
-                    targets=list(dict.fromkeys(list(config.inbox_notify_targets()) + crm.users_tg_ids())))
+        from . import alerts
+        alerts.broadcast("ai", f"🙋 Чат {c['title'] if c else chat_id} ({c.get('channel_name') if c else ''}): нужен человек.\n{info.get('reason') or ''}\n{info.get('summary') or ''}{link}",
+                         base=list(config.inbox_notify_targets()))
     except Exception:  # noqa: BLE001
         logger.exception("handover notify failed")
 

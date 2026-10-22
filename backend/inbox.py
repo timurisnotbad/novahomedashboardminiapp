@@ -140,6 +140,8 @@ def init_db() -> None:
         mcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_messages)").fetchall()]
         if "edited_at" not in mcols:
             conn.execute("ALTER TABLE inbox_messages ADD COLUMN edited_at TEXT")  # the guest (or we) edited the message in the messenger
+        if "deleted_at" not in mcols:
+            conn.execute("ALTER TABLE inbox_messages ADD COLUMN deleted_at TEXT")  # we deleted it for the guest; the row stays
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -1163,6 +1165,74 @@ def _dispatch_send(channel: str, payload: dict) -> dict:
     raise BridgeError(f"Неизвестный канал {channel}")
 
 
+EDITABLE = {"wa": "WhatsApp", "tg": "Telegram", "tgbot": "Telegram-бот"}
+
+
+def _own_message(conn, message_id: int, who: dict):
+    r = conn.execute("SELECT m.*, c.channel, c.jid FROM inbox_messages m JOIN inbox_chats c ON c.id = m.chat_id WHERE m.id = ?", (message_id,)).fetchone()
+    if not r:
+        raise BridgeError("Сообщение не найдено")
+    if r["direction"] != "out":
+        raise BridgeError("Можно менять только свои сообщения")
+    if r["status"] in ("pending", "failed") or not r["wa_id"] or str(r["wa_id"]).startswith("local-"):
+        raise BridgeError("Сообщение ещё не доставлено")
+    if r["deleted_at"]:
+        raise BridgeError("Сообщение уже удалено")
+    if not who.get("owner") and (r["author"] or "") != (who.get("name") or ""):
+        raise BridgeError("Чужое сообщение может изменить только владелец")
+    ch = r["channel"] or "wa"
+    if ch not in EDITABLE:
+        raise BridgeError(f"{CHANNELS.get(ch, ch)}: мессенджер не даёт менять отправленные сообщения")
+    return dict(r)
+
+
+def _dispatch_change(channel: str, action: str, payload: dict) -> None:
+    if channel == "wa":
+        if bridge_status().get("status") != "connected":
+            raise BridgeError("WhatsApp (QR) не подключён — изменить сообщение нельзя")
+        _bridge("POST", f"/{action}", payload, timeout=60)
+        return
+    from . import tg_channels
+    if channel == "tg":
+        (tg_channels.user_edit if action == "edit" else tg_channels.user_delete)(payload)
+    elif channel == "tgbot":
+        (tg_channels.bot_edit if action == "edit" else tg_channels.bot_delete)(payload)
+    else:
+        raise BridgeError("Канал не поддерживает правку")
+
+
+def edit_sent(message_id: int, text: str, who: dict) -> dict:
+    """Change the text of our own message for the guest too (WhatsApp QR, Telegram account, guest bot)."""
+    text = (text or "").strip()
+    if not text:
+        raise BridgeError("Пустой текст")
+    with database.get_conn() as conn:
+        r = _own_message(conn, message_id, who)
+    if r["kind"] not in ("text", "image", "video", "document"):
+        raise BridgeError("Этот тип сообщения не редактируется")
+    _dispatch_change(r["channel"] or "wa", "edit", {"jid": r["jid"], "id": r["wa_id"], "text": text, "has_media": bool(r["media"])})
+    with database.get_conn() as conn:
+        _apply_edit(conn, message_id, text)
+        conn.execute("UPDATE inbox_chats SET last_text = ? WHERE id = ? AND (SELECT MAX(id) FROM inbox_messages WHERE chat_id = ?) = ?",
+                     (text, r["chat_id"], r["chat_id"], message_id))
+        row = conn.execute("SELECT * FROM inbox_messages WHERE id = ?", (message_id,)).fetchone()
+    return _msg_out(row)
+
+
+def delete_sent(message_id: int, who: dict) -> dict:
+    """Delete our own message for the guest; the row stays in the CRM, marked «удалено»."""
+    with database.get_conn() as conn:
+        r = _own_message(conn, message_id, who)
+    _dispatch_change(r["channel"] or "wa", "delete", {"jid": r["jid"], "id": r["wa_id"]})
+    with database.get_conn() as conn:
+        rev = _bump(conn)
+        conn.execute("UPDATE inbox_messages SET deleted_at = ?, rev = ? WHERE id = ?", (_now(), rev, message_id))
+        conn.execute("UPDATE inbox_chats SET last_text = '🚫 Сообщение удалено', rev = ? WHERE id = ? AND (SELECT MAX(id) FROM inbox_messages WHERE chat_id = ?) = ?",
+                     (rev, r["chat_id"], r["chat_id"], message_id))
+        row = conn.execute("SELECT * FROM inbox_messages WHERE id = ?", (message_id,)).fetchone()
+    return _msg_out(row)
+
+
 def retry(message_id: int, author: str) -> dict:
     with database.get_conn() as conn:
         r = conn.execute("SELECT * FROM inbox_messages WHERE id = ? AND status = 'failed'", (message_id,)).fetchone()
@@ -1389,11 +1459,12 @@ def _notify_chat(chat_id: int, stage: int, st: dict) -> None:
     if st["telegram"]:
         # personal Telegram: the responsible manager (everyone when unassigned); the escalation goes to admins
         users = crm.list_users()
+        from . import alerts
         if stage == 2:
-            personal = crm.users_tg_ids(admins_only=True)
+            personal = [t for t in alerts.targets("messages") if t in crm.users_tg_ids(admins_only=True)]
         else:
             mine = [u["id"] for u in users if u["active"] and u["name"] == c.get("assignee")]
-            personal = crm.users_tg_ids(mine) if mine else crm.users_tg_ids()
+            personal = alerts.targets("messages", mine) if mine else alerts.targets("messages")
         _alert(chat_id, {"kind": last["kind"] if last else "text", "text": (("⚠️ без ответа · " if stage == 2 else "") + (last["text"] if last else ""))}, personal)
 
 

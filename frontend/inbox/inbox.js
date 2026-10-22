@@ -301,14 +301,20 @@
     if (caption) body += `<div class="ib-m__t">${linkify(caption)}</div>`;
     if (!body) body = `<div class="ib-m__t" style="color:var(--label-2)">${esc(kindLabel(m.kind))}</div>`;
     const author = out ? `<div class="ib-m__author ${m.author === (S.ai && S.ai.author) ? "ai" : ""}">${m.author === (S.ai && S.ai.author) ? "✨ " : ""}${esc(m.author || "")}</div>` : "";
+    if (m.deleted_at) {
+      return `${author}<div class="ib-m ${out ? "out" : "in"} deleted" data-mid="${m.id}"><div class="ib-m__b"><div class="ib-m__t">🚫 Сообщение удалено</div><div class="ib-m__meta">${esc(hm(m.at))}</div></div></div>`;
+    }
+    const mine = out && S.open && EDITABLE[S.open.channel] && ["sent", "delivered", "read"].includes(m.status) && m.wa_id && !String(m.wa_id).startsWith("local-");
+    const tools = mine ? `${["text", "image", "video", "document"].includes(m.kind) && (m.text || m.kind === "text") ? `<button data-edit="${m.id}" title="Изменить"><svg viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M12.5 7.5l4 4"/></svg></button>` : ""}<button data-del="${m.id}" title="Удалить у гостя"><svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3M8 7l1 13h6l1-13"/></svg></button>` : "";
     const err = m.status === "failed"
       ? `<div class="ib-m__err">Не отправлено${m.error ? ": " + esc(m.error) : ""} · <button data-retry="${m.id}">повторить</button></div>` : "";
     return `${author}<div class="ib-m ${out ? "out" : "in"} ${m.reaction ? "has-react" : ""}" data-mid="${m.id}">
       <div class="ib-m__b">${body}<div class="ib-m__meta">${m.edited_at ? `<span class="ib-m__edited" title="Сообщение изменили в мессенджере ${esc(hm(m.edited_at))}">изменено · </span>` : ""}${esc(hm(m.at))}${out ? tick(m.status) : ""}</div></div>
       ${m.reaction ? `<span class="ib-m__react">${esc(m.reaction)}</span>` : ""}
-      <div class="ib-m__act"><button data-reply="${m.id}" title="Ответить"><svg viewBox="0 0 24 24"><path d="M10 8L4 13l6 5"/><path d="M4 13h10a6 6 0 0 1 6 6"/></svg></button></div>
+      <div class="ib-m__act"><button data-reply="${m.id}" title="Ответить"><svg viewBox="0 0 24 24"><path d="M10 8L4 13l6 5"/><path d="M4 13h10a6 6 0 0 1 6 6"/></svg></button>${tools}</div>
     </div>${err}`;
   }
+  const EDITABLE = { wa: "WhatsApp", tg: "Telegram", tgbot: "Telegram-бот" };  // channels where our sent messages can be edited / deleted
   function kindLabel(k) {
     return { image: "📷 Фото", video: "🎬 Видео", audio: "🎤 Голосовое", document: "📄 Файл", sticker: "Стикер", location: "📍 Локация", contact: "👤 Контакт" }[k] || "Сообщение";
   }
@@ -436,7 +442,23 @@
   }
 
   // ---- sending -------------------------------------------------------------------
+  function setEdit(m) {
+    S.editing = m || null;
+    const bar = $("reply-bar");
+    if (m) {
+      S.reply = null;
+      bar.classList.remove("hidden");
+      bar.querySelector("b").textContent = "Изменение сообщения:";
+      $("reply-text").textContent = m.text || "";
+      const ta = $("text"); ta.value = m.text || ""; autosize(); ta.focus();
+    } else {
+      bar.querySelector("b").textContent = "Ответ на:";
+      bar.classList.toggle("hidden", !S.reply);
+      if (!S.reply) { $("text").value = ""; autosize(); }
+    }
+  }
   function setReply(m) {
+    if (S.editing) setEdit(null);
     S.reply = m;
     $("reply-bar").classList.toggle("hidden", !m);
     if (m) {
@@ -467,6 +489,15 @@
     const text = ta.value.trim();
     if (!text || !S.open || sending) return;
     if (!confirmUnfilled(text)) return;
+    if (S.editing) {  // the same text box: save the change instead of sending a new message
+      const ed = S.editing;
+      if (text === (ed.text || "")) { setEdit(null); return; }
+      sending = true; $("send").disabled = true;
+      try { const m = await req(`/messages/${ed.id}`, { method: "PATCH", json: { text } }); setEdit(null); mergeMsgs([m]); renderMsgs(); toast("Изменено"); }
+      catch (e) { toast(e.message); }
+      finally { sending = false; $("send").disabled = false; }
+      return;
+    }
     sending = true;
     $("send").disabled = true;
     const chatId = S.open.id;
@@ -969,7 +1000,7 @@
     $("attach").addEventListener("click", () => $("file").click());
     $("file").addEventListener("change", (e) => { sendFile(e.target.files[0]); e.target.value = ""; });
     $("tpl-btn").addEventListener("click", openTemplates);
-    $("reply-cancel").addEventListener("click", () => setReply(null));
+    $("reply-cancel").addEventListener("click", () => { if (S.editing) setEdit(null); else setReply(null); });
     $("wa-state").addEventListener("click", openConn);
     $("new-chat").addEventListener("click", openNewChat);
     $("ai-mode").addEventListener("change", async (e) => {
@@ -1032,6 +1063,15 @@
       if (tb) { tb.disabled = true; tb.textContent = "…"; try { const r = await req(`/messages/${tb.dataset.transcribe}/transcribe`, { method: "POST" }); tb.outerHTML = `<div class="ib-m__tr">🎙 ${esc(r.text)}</div>`; } catch (err) { tb.disabled = false; tb.textContent = "🎙 Текст"; toast(err.message); } return; }
       const r = e.target.closest("[data-reply]");
       if (r) { setReply(S.msgs.find((m) => m.id === parseInt(r.dataset.reply, 10))); return; }
+      const ed = e.target.closest("[data-edit]");
+      if (ed) { setEdit(S.msgs.find((m) => m.id === parseInt(ed.dataset.edit, 10))); return; }
+      const dl = e.target.closest("[data-del]");
+      if (dl) {
+        if (!confirm("Удалить это сообщение у гостя? В CRM останется пометка «удалено».")) return;
+        dl.disabled = true;
+        try { const m = await req(`/messages/${dl.dataset.del}`, { method: "DELETE" }); mergeMsgs([m]); renderMsgs(); toast("Удалено"); } catch (err) { dl.disabled = false; toast(err.message); }
+        return;
+      }
       const rt = e.target.closest("[data-retry]");
       if (rt) {
         req(`/messages/${rt.dataset.retry}/retry`, { method: "POST" })

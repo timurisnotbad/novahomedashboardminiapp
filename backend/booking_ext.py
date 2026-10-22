@@ -179,7 +179,8 @@ def _alert_session(kind: str) -> None:
     _state["alerted"] = f"{kind}|{datetime.now().isoformat(timespec='seconds')}"
     try:
         if _cfg.BOT_TOKEN and _cfg.notify_targets():
-            notify.send(f"⚠️ Booking.com: {SESSION_TEXT[kind]}. Пока это не сделано, сообщения гостей Booking не приходят в CRM.")
+            from . import alerts
+            alerts.broadcast("system", f"⚠️ Booking.com: {SESSION_TEXT[kind]}. Пока это не сделано, сообщения гостей Booking не приходят в CRM.")
     except Exception:  # noqa: BLE001
         logger.exception("session alert failed")
 

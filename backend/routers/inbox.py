@@ -4,6 +4,8 @@ import mimetypes
 import re
 import uuid
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -355,6 +357,22 @@ async def send_file(chat_id: int, request: Request, user: dict = Depends(inbox_u
     from starlette.concurrency import run_in_threadpool
     try:
         return await run_in_threadpool(inbox.send, chat_id, user["name"], caption, stored, mime, name)
+    except inbox.BridgeError as exc:
+        _fail(exc)
+
+
+@router.patch("/messages/{message_id}")
+async def edit_message(message_id: int, data: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    try:
+        return await asyncio.to_thread(inbox.edit_sent, message_id, str(data.get("text") or ""), user)
+    except inbox.BridgeError as exc:
+        _fail(exc)
+
+
+@router.delete("/messages/{message_id}")
+async def delete_message(message_id: int, user: dict = Depends(inbox_user)):  # noqa: B008
+    try:
+        return await asyncio.to_thread(inbox.delete_sent, message_id, user)
     except inbox.BridgeError as exc:
         _fail(exc)
 

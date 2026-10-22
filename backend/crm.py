@@ -1829,8 +1829,9 @@ def refresh_arrivals_report(bid: int, old: dict | None, new: dict | None, who: s
         now = (new or {}).get("eta") or "14:00 (не уточнено)"
         if was != now or ((old or {}).get("note") or "") != ((new or {}).get("note") or ""):
             note = f" — {new['note']}" if new and new.get("note") else ""
-            notify.send(f"🔄 {b['apartment_name']} — {b['client_name'] or 'Гость'}: приедет в {now}{note} (было {was}). Список выше обновлён.",
-                        targets=ids, topic="cleaning")
+            from . import alerts
+            alerts.broadcast("bookings", f"🔄 {b['apartment_name']} — {b['client_name'] or 'Гость'}: приедет в {now}{note} (было {was}). Список выше обновлён.",
+                             base=ids, topic="cleaning")
     except Exception:  # noqa: BLE001
         logger.exception("arrivals report refresh failed")
 

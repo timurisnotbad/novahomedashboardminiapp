@@ -416,6 +416,20 @@ const server = http.createServer(async (req, res) => {
       const sent = await sock.sendMessage(jid, content, opts);
       return reply(res, 200, { id: sent.key.id, jid: jidNormalizedUser(sent.key.remoteJid || jid), at: tsOf(sent) });
     }
+    if (req.method === "POST" && (req.url === "/edit" || req.url === "/delete")) {
+      // our own message: WhatsApp lets the sender edit for ~15 minutes and delete for everyone for ~2 days
+      if (state.status !== "connected") throw Object.assign(new Error("WhatsApp не подключён"), { code: 503 });
+      const b = await readJson(req);
+      const jid = toJid(b.jid);
+      const key = { remoteJid: jid, fromMe: true, id: String(b.id) };
+      if (req.url === "/edit") {
+        if (!b.text || !String(b.text).trim()) throw new Error("empty message");
+        await sock.sendMessage(jid, { text: String(b.text), edit: key });
+      } else {
+        await sock.sendMessage(jid, { delete: key });
+      }
+      return reply(res, 200, { ok: true });
+    }
     if (req.method === "POST" && req.url === "/read") {
       if (state.status !== "connected") return reply(res, 200, { ok: false });
       const b = await readJson(req);

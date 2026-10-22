@@ -182,8 +182,14 @@ class PasswordIn(BaseModel):
 
 @router.get("/me/telegram")
 def me_telegram(user: dict = Depends(current_user)):  # noqa: B008
-    u = crm.get_user(user["id"]) or {}
-    return {"linked": bool(u.get("tg_id")), "bot": getattr(config, "BOT_USERNAME", "") or "", "configured": bool(config.BOT_TOKEN)}
+    from .. import alerts
+    return alerts.status(user["id"])
+
+
+@router.post("/me/telegram/prefs")
+def me_telegram_prefs(data: dict, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import alerts
+    return {"prefs": alerts.set_prefs(user["id"], data)}
 
 
 @router.post("/me/telegram/code")
