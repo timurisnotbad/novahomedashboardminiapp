@@ -1308,6 +1308,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
                      "checkin_time": crm.default_times()[0], "checkout_time": crm.default_times()[1],
                      "auto_checklist": crm.get_setting("auto_checklist", "1") == "1",
                      "auto_bilingual": crm.get_setting("auto_bilingual", "1") == "1",
+                     "auto_step_messages": crm.get_setting("auto_step_messages", "0") == "1",
                      "steps": crm.steps()},
     }
 
@@ -1315,6 +1316,7 @@ def integrations(user: dict = Depends(current_user)):  # noqa: B008
 class SettingsIn(BaseModel):
     auto_tasks: bool | None = None
     auto_checklist: bool | None = None
+    auto_step_messages: bool | None = None
     auto_all_channels: bool | None = None
     checklist: str | None = None
     auto_deal: bool | None = None
@@ -1333,6 +1335,8 @@ def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa
         crm.set_setting("auto_tasks", "1" if payload.auto_tasks else "0")
     if payload.auto_checklist is not None:
         crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
+    if payload.auto_step_messages is not None:
+        crm.set_setting("auto_step_messages", "1" if payload.auto_step_messages else "0")
     if payload.auto_all_channels is not None:
         crm.set_setting("auto_all_channels", "1" if payload.auto_all_channels else "0")
     if payload.report_auto is not None:

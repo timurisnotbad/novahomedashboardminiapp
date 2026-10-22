@@ -908,7 +908,7 @@ def run_auto_rules(dry: bool = False) -> list[dict]:
     return results
 
 
-UNRESOLVED = re.compile(r"\{[^{}\n]{1,40}\}|\[[^\[\]\n]{1,40}\]")
+UNRESOLVED = re.compile(r"\{[^{}\n]{1,40}\}|\[[^\[\]\n]{1,40}\]|\.{3}|…")  # «адрес — ...» is a blank, not a message
 
 
 def unresolved(text: str) -> str:
@@ -994,6 +994,8 @@ def run_task_messages() -> int:
     """Every 5 minutes: due message-tasks go out; tasks overdue by more than a day
     are left to people (no late spam). A task that could not be sent is retried
     at most MAX_TASK_TRIES times, an hour apart, then stays open for a person."""
+    if crm.get_setting("auto_step_messages", "0") != "1":
+        return 0  # the switch in Интеграции → «Этапы заезда гостя»; off: steps are tasks for people only
     now = crm._now()[:16]
     cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
     retry_before = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
