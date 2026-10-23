@@ -296,6 +296,8 @@
       body += `<a class="ib-m__doc" href="https://maps.google.com/?q=${encodeURIComponent(m.lat + "," + m.lng)}" target="_blank" rel="noopener">📍 <span>Локация на карте</span></a>`;
     } else if (m.kind === "contact") {
       body += `<div class="ib-m__doc">👤 <span>Контакт</span></div>`;
+    } else if (m.kind === "call") {
+      return `<div class="ib-m in call" data-mid="${m.id}"><div class="ib-m__b"><div class="ib-m__t">${esc(m.text || "📞 Пропущенный звонок")}</div><div class="ib-m__meta">${esc(hm(m.at))}</div></div></div>`;
     }
     const caption = m.kind === "document" && m.text === m.file_name ? "" : m.text;
     if (caption) body += `<div class="ib-m__t">${linkify(caption)}</div>`;
@@ -316,7 +318,7 @@
   }
   const EDITABLE = { wa: "WhatsApp", tg: "Telegram", tgbot: "Telegram-бот" };  // channels where our sent messages can be edited / deleted
   function kindLabel(k) {
-    return { image: "📷 Фото", video: "🎬 Видео", audio: "🎤 Голосовое", document: "📄 Файл", sticker: "Стикер", location: "📍 Локация", contact: "👤 Контакт" }[k] || "Сообщение";
+    return { image: "📷 Фото", video: "🎬 Видео", audio: "🎤 Голосовое", document: "📄 Файл", sticker: "Стикер", location: "📍 Локация", contact: "👤 Контакт", call: "📞 Пропущенный звонок" }[k] || "Сообщение";
   }
 
   function renderMsgs(keepScroll) {

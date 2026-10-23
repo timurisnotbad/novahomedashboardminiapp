@@ -149,6 +149,8 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-m__act { position:absolute; top:4px; right:-30px; opacity:0; transition:opacity .15s; }
 .ib-m.out .ib-m__act { right:auto; left:auto; right:100%; margin-right:4px; display:flex; gap:2px; }
 .ib-m.deleted .ib-m__b { opacity:.6; font-style:italic; }
+.ib-m.call { align-self:center; max-width:90%; }
+.ib-m.call .ib-m__b { background:#FFF4E5; color:#9A5B00; font-weight:600; box-shadow:none; }
 .ib-m:hover .ib-m__act { opacity:1; }
 .ib-m__act button { width:26px; height:26px; border-radius:50%; background:rgba(255,255,255,.9); display:grid; place-items:center; color:var(--label-2); }
 .ib-m__act svg { width:15px; height:15px; }

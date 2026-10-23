@@ -1165,6 +1165,60 @@ def _dispatch_send(channel: str, payload: dict) -> dict:
     raise BridgeError(f"Неизвестный канал {channel}")
 
 
+# ---------------------------------------------------------------------------
+# Missed calls (WhatsApp QR bridge): a «📞» line in the chat, the chat waits
+# for a call back, and an auto-reply in the guest's language — Russian for
+# Russian-speaking cards and numbers, English for everyone else.
+# ---------------------------------------------------------------------------
+RU_PHONE_PREFIXES = ("7", "998", "996", "992", "993", "994", "375", "374")
+MISSED_CALL_RU = "Здравствуйте! Не смогли ответить на звонок. Напишите, пожалуйста, здесь — ответим в ближайшее время."
+MISSED_CALL_EN = "Hello! We missed your call. Please write to us here and we will reply shortly."
+
+
+def guest_language(chat: dict) -> str:
+    """'ru' or 'en': the guest card's language first, else the number's country."""
+    try:
+        from . import crm_ext
+        lang = crm_ext.guest_lang(chat)
+    except Exception:  # noqa: BLE001
+        lang = ""
+    if lang:
+        return "ru" if lang in ("RU", "UZ") else "en"
+    d = digits(chat.get("phone") or "")
+    return "ru" if any(d.startswith(p) for p in RU_PHONE_PREFIXES) else "en"
+
+
+def on_missed_call(jid: str, call_id: str, status: str = "timeout", at: str = "") -> dict:
+    from . import crm
+    if not jid:
+        return {}
+    now = _now()
+    with database.get_conn() as conn:
+        chat_id = _ensure_chat(conn, jid, None, None, "wa", phone_of_jid(jid))
+        key = f"call:{call_id or now}"
+        if call_id and conn.execute("SELECT 1 FROM inbox_messages WHERE wa_id = ?", (key,)).fetchone():
+            return {"chat_id": chat_id, "dup": True}
+        label = "📞 Пропущенный звонок" + (" (отклонён)" if status == "reject" else "")
+        conn.execute("INSERT INTO inbox_messages (chat_id, wa_id, direction, author, kind, text, status, at, rev) VALUES (?, ?, 'in', '', 'call', ?, 'read', ?, ?)",
+                     (chat_id, key, label, now, _bump(conn)))
+        _touch_chat(conn, chat_id, now, "in", "call", label, None, 1)
+        recent = conn.execute("SELECT 1 FROM inbox_messages WHERE chat_id = ? AND direction = 'out' AND author = 'Автоответ' AND at >= ? LIMIT 1",
+                              (chat_id, (datetime.now() - timedelta(hours=2)).isoformat(timespec="seconds"))).fetchone()
+    out = {"chat_id": chat_id, "replied": False}
+    if crm.get_setting("missed_call_reply", "1") != "1" or recent:
+        return out
+    chat = get_chat(chat_id)
+    lang = guest_language(chat or {"phone": phone_of_jid(jid)})
+    text = crm.get_setting("missed_call_en", "") if lang == "en" else crm.get_setting("missed_call_ru", "")
+    text = (text or (MISSED_CALL_EN if lang == "en" else MISSED_CALL_RU)).strip()
+    try:
+        send(chat_id, "Автоответ", text)
+        out.update(replied=True, lang=lang)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("missed-call reply failed for %s: %s", jid, exc)
+    return out
+
+
 EDITABLE = {"wa": "WhatsApp", "tg": "Telegram", "tgbot": "Telegram-бот"}
 
 

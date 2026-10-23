@@ -286,6 +286,22 @@ async function connect() {
     }
   });
 
+  // missed calls: WhatsApp reports the call's end; "timeout" = nobody answered, "reject" = declined on the phone
+  const seenCalls = new Map();
+  me.ev.on("call", (calls) => {
+    for (const c of calls || []) {
+      try {
+        if (!c || !c.id || !["timeout", "reject"].includes(c.status) || c.isGroup) continue;
+        if (seenCalls.has(c.id)) continue;
+        seenCalls.set(c.id, Date.now());
+        if (seenCalls.size > 500) for (const [k, t] of seenCalls) { if (Date.now() - t > 3600000) seenCalls.delete(k); }
+        const from = c.from || c.chatId;
+        if (!from) continue;
+        post({ event: "call", jid: jidNormalizedUser(from), id: c.id, status: c.status, video: !!c.isVideo, at: (c.date instanceof Date ? c.date : new Date()).toISOString() });
+      } catch (e) { log("call event", e.message); }
+    }
+  });
+
   me.ev.on("messages.upsert", async ({ messages, type }) => {
     for (const m of messages) {
       try {

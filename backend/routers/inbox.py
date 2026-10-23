@@ -534,6 +534,8 @@ async def hook(request: Request, x_inbox_secret: str = Header(default="")):  # n
         await run_in_threadpool(inbox.store_contacts, data.get("contacts") or [])
     elif ev == "edit":
         await run_in_threadpool(inbox.edit_message, str(data.get("id") or ""), data.get("text") or "")
+    elif ev == "call":
+        await run_in_threadpool(inbox.on_missed_call, data.get("jid") or "", str(data.get("id") or ""), data.get("status") or "", data.get("at") or "")
     elif ev == "ack":
         await run_in_threadpool(inbox.store_ack, data.get("id") or "", data.get("status") or "")
     elif ev == "status":
