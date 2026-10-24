@@ -1,13 +1,10 @@
 """Business logic: turns raw bookings into the aggregates the frontend needs."""
 from datetime import date, datetime, timedelta
 
-from . import config, database
+from . import config, database, util
 
-RU_MONTHS = [
-    "", "января", "февраля", "марта", "апреля", "мая", "июня",
-    "июля", "августа", "сентября", "октября", "ноября", "декабря",
-]
-RU_WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+RU_MONTHS = [""] + util.RU_MONTHS_GEN  # 1-based here
+RU_WEEKDAYS = util.RU_WEEKDAYS
 
 
 def _iso(d: date) -> str:
@@ -389,8 +386,15 @@ def build_tomorrow_schedule_text(target: date) -> str:
     if d["checkins"]:
         lines.append("")
         lines.append("🔑 Заезды:")
-        for b in sorted(d["checkins"], key=lambda x: x.get("arrival_time") or "99"):
-            t = b.get("arrival_time") or "время —"
+        try:
+            from . import crm as _crm
+            etas = _crm.eta_map(force=True)
+        except Exception:  # noqa: BLE001
+            etas = {}
+        tm = lambda b: ((etas.get(b["id"]) or {}).get("eta") or b.get("arrival_time") or "")[:5]  # noqa: E731
+        for b in sorted(d["checkins"], key=lambda x: tm(x) or "99"):
+            e = etas.get(b["id"]) or {}
+            t = (e["eta"] + (f" ({e['note']})" if e.get("note") else "")) if e.get("eta") else (b.get("arrival_time") or "время —")
             lines.append(f"  • {b['apartment']} — {b.get('client_name') or 'Гость'}, {t}")
     if d["cleanings"]:
         lines.append("")

@@ -1,0 +1,1419 @@
+"""Nova Home CRM API (see backend/crm.py). Cookie session; admin-only routes
+for users, pipelines, fields and integrations."""
+import asyncio
+import hmac
+import re
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel
+
+from .. import booking_ext, config, crm, crm_amo, crm_ext, database, docs, inbox, meta_api, rc_push, rc_rates, rc_sync, tg_channels, wazzup
+
+logger = logging.getLogger("nova.crm.api")
+router = APIRouter(prefix="/crm", tags=["crm"])
+
+
+def current_user(request: Request) -> dict:
+    u = crm.user_from_token(request.cookies.get(crm.COOKIE, ""))
+    if not u:
+        raise HTTPException(status_code=401, detail="Войдите в систему")
+    return u
+
+
+def admin_user(user: dict = Depends(current_user)) -> dict:  # noqa: B008
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Только для администратора")
+    return user
+
+
+def _bad(exc: Exception):
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _set_cookie(resp: Response, user: dict, request: Request | None = None) -> None:
+    https = config.WEBAPP_URL.startswith("https")
+    if request is not None:  # behind Cloudflare/Caddy the app sees http; the forwarded scheme tells the truth
+        https = https or request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+    resp.set_cookie(crm.COOKIE, crm.make_token(user), max_age=crm.SESSION_DAYS * 86400, httponly=True,
+                    samesite="lax", secure=https, path="/")
+
+
+def client_ip(request: Request) -> str:
+    """The visitor's address even behind Cloudflare / Caddy / the tunnel."""
+    for h in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+        v = request.headers.get(h)
+        if v:
+            return v.split(",")[0].strip()[:64]
+    return request.client.host if request.client else "?"
+
+
+# ---- auth ---------------------------------------------------------------------
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class SetupIn(BaseModel):
+    name: str = "Администратор"
+    email: str
+    password: str
+    token: str = ""
+
+
+def _setup_token() -> str:
+    """First-run protection: creating the admin needs the code from
+    data/setup_token.txt (written at start-up and logged) unless the request
+    comes from the machine itself. A fresh install on a public address must not
+    hand the admin account to the first visitor."""
+    path = config.BASE_DIR / "data" / "setup_token.txt"
+    try:
+        tok = path.read_text(encoding="utf-8").strip()
+        if len(tok) >= 12:
+            return tok
+    except OSError:
+        pass
+    import secrets
+    tok = secrets.token_hex(6).upper()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(tok, encoding="utf-8")
+    except OSError:
+        pass
+    logger.warning("CRM first run: setup code %s (also in data/setup_token.txt)", tok)
+    return tok
+
+
+@router.get("/session")
+def session(request: Request):
+    u = crm.user_from_token(request.cookies.get(crm.COOKIE, ""))
+    need = not crm.has_users()
+    local = request.client and request.client.host in ("127.0.0.1", "::1")
+    if need and not local:
+        _setup_token()  # make sure the code exists and is logged
+    return {"user": u, "setup_needed": need, "setup_code_required": bool(need and not local),
+            "version": config.APP_VERSION, "times": crm.default_times()}
+
+
+@router.post("/setup")
+def setup(payload: SetupIn, request: Request, response: Response):
+    if crm.has_users():
+        raise HTTPException(status_code=403, detail="Администратор уже создан")
+    local = request.client and request.client.host in ("127.0.0.1", "::1")
+    if not local and not hmac.compare_digest((payload.token or "").strip().upper(), _setup_token()):
+        raise HTTPException(status_code=403, detail="Неверный код первого запуска: он лежит в файле data/setup_token.txt на сервере и в логе")
+    try:
+        u = crm.create_user(payload.name, payload.email, payload.password, "admin")
+    except ValueError as exc:
+        _bad(exc)
+    _set_cookie(response, u, request)
+    return {"user": u}
+
+
+_fails: dict[str, list[float]] = {}  # ip -> timestamps of failed logins
+
+
+@router.post("/login")
+def login(payload: LoginIn, request: Request, response: Response):
+    import time
+    now = time.time()
+    for k in [k for k, v in _fails.items() if not v or now - v[-1] > 600]:  # forget old entries
+        _fails.pop(k, None)
+    keys = (f"ip:{client_ip(request)}", f"email:{(payload.email or '').strip().lower()[:120]}")
+    for k in keys:
+        if len([t for t in _fails.get(k, []) if now - t < 600]) >= 10:
+            raise HTTPException(status_code=429, detail="Слишком много попыток — подождите 10 минут")
+    u = crm.login(payload.email, payload.password)
+    if not u:
+        for k in keys:
+            _fails[k] = [t for t in _fails.get(k, []) if now - t < 600] + [now]
+        raise HTTPException(status_code=401, detail="Неверный email или пароль")
+    for k in keys:
+        _fails.pop(k, None)
+    _set_cookie(response, u, request)
+    return {"user": u}
+
+
+@router.post("/logout")
+def logout(request: Request, response: Response):
+    u = crm.user_from_token(request.cookies.get(crm.COOKIE, ""))
+    if u:
+        crm.bump_tver(u["id"])  # «Выйти» invalidates the cookie on every device, not just this one
+    response.delete_cookie(crm.COOKIE, path="/")
+    return {"ok": True}
+
+
+# ---- users --------------------------------------------------------------------
+class UserIn(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    password: str | None = None
+    role: str | None = None
+    active: bool | None = None
+
+
+@router.get("/users")
+def users(user: dict = Depends(current_user)):  # noqa: B008
+    return crm.list_users()
+
+
+@router.post("/users")
+def add_user(payload: UserIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm.create_user(payload.name or "", payload.email or "", payload.password or "", payload.role or "manager")
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.patch("/users/{uid}")
+def edit_user(uid: int, payload: UserIn, user: dict = Depends(admin_user)):  # noqa: B008
+    if uid == user["id"] and (payload.active is False or (payload.role and payload.role != "admin")):
+        raise HTTPException(status_code=400, detail="Нельзя заблокировать или понизить себя")
+    try:
+        return crm.update_user(uid, payload.name, payload.email, payload.password, payload.role, payload.active)
+    except ValueError as exc:
+        _bad(exc)
+
+
+class PasswordIn(BaseModel):
+    password: str
+    current: str = ""
+
+
+@router.get("/me/telegram")
+def me_telegram(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import alerts
+    return alerts.status(user["id"])
+
+
+@router.post("/me/telegram/prefs")
+def me_telegram_prefs(data: dict, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import alerts
+    return {"prefs": alerts.set_prefs(user["id"], data)}
+
+
+@router.post("/me/telegram/code")
+def me_telegram_code(user: dict = Depends(current_user)):  # noqa: B008
+    return {"code": crm.link_code(user["id"])}
+
+
+@router.post("/me/telegram/unlink")
+def me_telegram_unlink(user: dict = Depends(current_user)):  # noqa: B008
+    crm.unlink_telegram(user["id"])
+    return {"ok": True}
+
+
+# ---- apartment photos (sent by the assistant and from the booking card) ---------------
+@router.get("/apartments/photos")
+def apartment_photos(user: dict = Depends(current_user)):  # noqa: B008
+    return crm.apartment_photos()
+
+
+@router.post("/apartments/{apartment}/photos")
+async def apartment_photo_add(apartment: str, request: Request, user: dict = Depends(admin_user)):  # noqa: B008
+    """Raw image body (Content-Type image/*), like the chat file upload."""
+    body = await request.body()
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip()
+    if not body or len(body) > 8_000_000:
+        raise HTTPException(status_code=400, detail="Пустой файл или больше 8 МБ")
+    if mime not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail="Нужно фото JPG, PNG или WebP")
+    return crm.add_apartment_photo(apartment.strip().upper()[:40], body, mime)
+
+
+@router.delete("/apartments/photos/{photo_id}")
+def apartment_photo_del(photo_id: int, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.delete_apartment_photo(photo_id)
+    return {"ok": True}
+
+
+# ---- RealtyCalendar prices ------------------------------------------------------------
+@router.get("/rc/rates")
+def rc_rates_status(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import rc_rates
+    return rc_rates.status()
+
+
+@router.post("/rc/rates/sync")
+def rc_rates_sync(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import rc_rates
+    r = rc_rates.sync(force=True)
+    r["status"] = rc_rates.status()
+    return r
+
+
+@router.get("/rc/rates/quote")
+def rc_rates_quote(checkin: str, checkout: str, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import ai
+    return ai.availability(_date(checkin), _date(checkout))
+
+
+# ---- AI assistant settings ----------------------------------------------------------
+@router.get("/ai/settings")
+def ai_settings(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    return ai.settings()
+
+
+@router.post("/ai/settings")
+def ai_settings_save(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    return ai.save_settings(payload or {})
+
+
+@router.get("/ai/stats")
+def ai_stats(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import ai
+    return ai.stats()
+
+
+@router.post("/ai/examples/import")
+def ai_examples_import(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    return {"imported": ai.import_examples()}
+
+
+@router.post("/ai/learn")
+def ai_learn(user: dict = Depends(admin_user)):  # noqa: B008
+    """«Изучить переписки»: example pairs from history + a style memo written by the model."""
+    from .. import ai
+    if not ai.enabled():
+        raise HTTPException(status_code=400, detail="Ключ API не задан")
+    imported = ai.import_examples()
+    try:
+        r = ai.learn_style()
+        f = ai.learn_facts()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+    r["imported"] = imported
+    r["facts"] = f
+    return r
+
+
+@router.get("/ai/lessons")
+def ai_lessons(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import ai
+    return ai.lessons_list(200, all_rows=True)
+
+
+@router.post("/ai/lessons")
+def ai_lesson_add(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    lid = ai.add_lesson(str(payload.get("text") or ""), "manual")
+    if not lid:
+        raise HTTPException(status_code=400, detail="Пустой урок")
+    return {"id": lid}
+
+
+@router.post("/ai/lessons/{lesson_id}")
+def ai_lesson_set(lesson_id: int, payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    ai.set_lesson(lesson_id, active=payload.get("active"), text=payload.get("text"), delete=bool(payload.get("delete")))
+    return {"ok": True}
+
+
+@router.post("/ai/test")
+def ai_test(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import ai
+    if not ai.enabled():
+        raise HTTPException(status_code=400, detail="Ключ API не задан")
+    try:
+        return ai.test_call()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+
+
+@router.get("/apartments/info")
+def apartments_info(user: dict = Depends(current_user)):  # noqa: B008
+    return {"items": crm.apartment_info(), "review_url": crm.get_setting("review_url", ""), "vars": list(crm.APT_VARS)}
+
+
+@router.post("/apartments/info")
+def apartments_info_save(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    if "review_url" in payload:
+        crm.set_setting("review_url", str(payload.get("review_url") or "").strip()[:300])
+    return {"items": crm.save_apartment_info(payload.get("items") or []), "review_url": crm.get_setting("review_url", "")}
+
+
+@router.post("/me/password")
+def my_password(payload: PasswordIn, request: Request, response: Response, user: dict = Depends(current_user)):  # noqa: B008
+    if not crm.login(user["email"], payload.current or ""):
+        raise HTTPException(status_code=400, detail="Текущий пароль неверный")
+    try:
+        u = crm.update_user(user["id"], password=payload.password)
+    except ValueError as exc:
+        _bad(exc)
+    _set_cookie(response, u, request)  # the token version changed
+    return {"ok": True}
+
+
+# ---- home ---------------------------------------------------------------------
+@router.get("/home")
+def home(user: dict = Depends(current_user)):  # noqa: B008
+    d = crm_amo.home(user["id"])
+    d["wa"] = inbox.bridge_status().get("status")
+    return d
+
+
+def _date(value, default: str | None = None) -> str:
+    """A ?date= / ?start= parameter as YYYY-MM-DD, or 400 (garbage used to
+    reach SQL string comparisons and quietly return nothing)."""
+    v = str(value or "").strip()[:10]
+    if not v and default:
+        return default
+    try:
+        return crm.date.fromisoformat(v).isoformat()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Дата в формате ГГГГ-ММ-ДД") from None
+
+
+@router.get("/report/arrivals")
+def report_arrivals(date: str | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    return crm.arrivals_report(_date(date, crm.date.today().isoformat()))
+
+
+@router.post("/report/arrivals/send")
+def report_arrivals_send(payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.send_arrivals_report(_date((payload or {}).get("date"), crm.date.today().isoformat()), user["name"])
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/bookings/{bid}/eta")
+def booking_eta(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return {"ok": True, "eta": crm.set_eta(bid, str(payload.get("eta") or ""), str(payload.get("note") or ""), user["name"])}
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.get("/badges")
+async def badges(rev: int = 0, wait: float = 0, user: dict = Depends(current_user)):  # noqa: B008
+    """Sidebar counters + the latest incoming message (sound / popup in the shell).
+    With rev+wait the request is held until the inbox changes (long-poll)."""
+    from starlette.concurrency import run_in_threadpool
+    if wait > 0:
+        await inbox.wait_for_change(rev, wait)
+    return await run_in_threadpool(_badges, user)
+
+
+def _badges(user: dict) -> dict:
+    with database.get_conn() as conn:
+        # one metric everywhere: chats waiting for an answer (not a sum of messages)
+        unread = conn.execute("SELECT COUNT(*) FROM inbox_chats WHERE unread > 0").fetchone()[0]
+        mine = conn.execute(f"SELECT COUNT(*) FROM crm_tasks WHERE status = 'open' AND {crm.MANUAL_ONLY} AND assignee_uid = ? AND (due IS NULL OR due <= ?)",
+                            (user["id"], crm._view_until("today"))).fetchone()[0]  # noqa: SLF001
+        last = conn.execute(
+            "SELECT m.id, m.chat_id, m.kind, m.text, m.at, c.name, c.push_name, c.phone, c.channel FROM inbox_messages m "
+            "JOIN inbox_chats c ON c.id = m.chat_id WHERE m.direction = 'in' ORDER BY m.id DESC LIMIT 1").fetchone()
+    latest = None
+    if last:
+        latest = {"id": last["id"], "chat_id": last["chat_id"], "at": last["at"], "channel": inbox.CHANNELS.get(last["channel"] or "wa", "WhatsApp"),
+                  "title": last["name"] or last["push_name"] or (("+" + last["phone"]) if last["phone"] else "Гость"),
+                  "text": inbox._preview(last["kind"], last["text"])}  # noqa: SLF001
+    return {"unread": unread, "my_open_tasks": mine, "latest": latest, "rev": inbox.rev_hint()}
+
+
+# ---- pipelines & fields -------------------------------------------------------
+class PipelineIn(BaseModel):
+    name: str
+    stages: list[dict]
+
+
+@router.get("/pipelines")
+def get_pipelines(user: dict = Depends(current_user)):  # noqa: B008
+    return crm.pipelines()
+
+
+@router.post("/deals/backfill")
+async def deals_backfill(user: dict = Depends(admin_user)):  # noqa: B008
+    """«Создать сделки из чатов» + move booking deals along the stay."""
+    loop = asyncio.get_event_loop()
+    n = await loop.run_in_executor(None, crm_amo.backfill_deals)
+    await loop.run_in_executor(None, crm_ext.ensure_flow_stages)
+    m = await loop.run_in_executor(None, crm_ext.booking_flow)
+    return {"created": n, "moved": m}
+
+
+@router.post("/pipelines")
+def add_pipeline(payload: PipelineIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm.save_pipeline(None, payload.name, payload.stages)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.put("/pipelines/{pid}")
+def put_pipeline(pid: int, payload: PipelineIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm.save_pipeline(pid, payload.name, payload.stages)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/pipelines/{pid}")
+def del_pipeline(pid: int, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        crm.delete_pipeline(pid)
+    except ValueError as exc:
+        _bad(exc)
+    return {"ok": True}
+
+
+class FieldIn(BaseModel):
+    name: str
+    type: str = "text"
+    options: list[str] = []
+    entity: str = "client"
+
+
+@router.get("/fields")
+def get_fields(entity: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return crm.fields(entity or None)
+
+
+@router.post("/fields")
+def add_field(payload: FieldIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm.save_field(None, payload.name, payload.type, payload.options, payload.entity)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.put("/fields/{fid}")
+def put_field(fid: int, payload: FieldIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm.save_field(fid, payload.name, payload.type, payload.options, payload.entity)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/fields/{fid}")
+def del_field(fid: int, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.delete_field(fid)
+    return {"ok": True}
+
+
+class OrderIn(BaseModel):
+    ids: list[int]
+
+
+@router.post("/fields/order")
+def order_fields(payload: OrderIn, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.reorder("crm_fields", payload.ids)
+    return {"ok": True}
+
+
+# ---- clients ------------------------------------------------------------------
+@router.get("/clients")
+def get_clients(q: str = "", history: int = 0, status: str | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    rows = crm_ext.clients_with_history(q) if history else crm.clients(q)
+    if status is not None:
+        rows = [c for c in rows if (c.get("status") or "") == status]
+    return rows
+
+
+@router.get("/clients/statuses")
+def get_client_statuses(user: dict = Depends(current_user)):  # noqa: B008
+    with database.get_conn() as conn:
+        counts = {r[0] or "": r[1] for r in conn.execute("SELECT status, COUNT(*) FROM crm_clients GROUP BY status").fetchall()}
+    items = crm.client_statuses()
+    for it in items:
+        it["n"] = counts.get(it["name"], 0)
+    return {"items": items, "text": crm.get_setting("client_statuses", crm.DEFAULT_CLIENT_STATUSES),
+            "default": crm.DEFAULT_CLIENT_STATUSES, "none": counts.get("", 0)}
+
+
+class StatusesIn(BaseModel):
+    text: str
+
+
+@router.post("/clients/statuses")
+def set_client_statuses(payload: StatusesIn, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.set_setting("client_statuses", payload.text.strip())
+    return {"ok": True, "items": crm.client_statuses()}
+
+
+@router.post("/clients/{cid}/status")
+def set_client_status(cid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    if not crm.get_client(cid):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    crm.set_client_status(cid, payload.get("status") or "")
+    return {"ok": True}
+
+
+@router.get("/clients/export.xlsx")
+def export_clients(user: dict = Depends(current_user)):  # noqa: B008
+    from fastapi.responses import Response as RawResponse
+    data = crm_ext.export_clients_xlsx()
+    name = f"nova-clients-{crm._now()[:10]}.xlsx"
+    return RawResponse(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.post("/clients")
+def add_client(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.save_client(None, payload)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/clients/import")
+def import_clients(user: dict = Depends(admin_user)):  # noqa: B008
+    return {"added": crm.import_clients()}
+
+
+@router.get("/clients/{cid}")
+def get_client(cid: int, user: dict = Depends(current_user)):  # noqa: B008
+    c = crm.get_client(cid)
+    if not c:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return c
+
+
+def _push_client_bg(cid: int, who: str, only_booking: int | None = None) -> None:
+    import threading
+
+    def go():
+        try:
+            r = rc_push.push_client(cid, who, only_booking)
+            if r.get("errors"):
+                logger.warning("client %s → RC: %s", cid, r["errors"])
+        except Exception:  # noqa: BLE001
+            logger.exception("client → RC push failed")
+    if not config.DEMO_MODE:
+        from .. import bg
+        bg.run(go)
+
+
+@router.put("/clients/{cid}")
+def put_client(cid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        c = crm.save_client(cid, payload)
+    except ValueError as exc:
+        _bad(exc)
+    _push_client_bg(cid, user["name"], payload.get("booking_id"))
+    c["rc_push"] = not config.DEMO_MODE and crm.get_setting("rc_sync_clients", "1") == "1"
+    return c
+
+
+@router.post("/clients/{cid}/push")
+def push_client_now(cid: int, user: dict = Depends(current_user)):  # noqa: B008
+    """«В календарь»: send the guest card to RealtyCalendar right now and report."""
+    try:
+        return rc_push.push_client(cid, user["name"])
+    except rc_push.RCError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+
+@router.delete("/clients/{cid}")
+def del_client(cid: int, user: dict = Depends(admin_user)):  # noqa: B008
+    crm.delete_client(cid)
+    return {"ok": True}
+
+
+@router.post("/clients/{cid}/chat")
+def client_chat(cid: int, payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    """Open (or start) a chat with the client in WhatsApp (default) or Telegram ({"channel": "tg"})."""
+    channel = (payload or {}).get("channel") or "wa"
+    group = ("tg", "wztg") if channel == "tg" else inbox.WA_LIKE
+    c = crm.get_client(cid)
+    if not c:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    for ch in crm.client_chats(cid):  # an existing conversation in that messenger
+        if ch["channel"] in group:
+            return {"chat_id": ch["id"]}
+    if not c.get("phone"):
+        raise HTTPException(status_code=400, detail="У клиента нет телефона")
+    try:
+        chat = inbox.start_chat(c["phone"], c.get("name") or "", channel)  # QR bridge / Wazzup / Telegram account
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=f"Не удалось открыть чат: {exc}") from exc
+    with database.get_conn() as conn:
+        conn.execute("UPDATE crm_clients SET chat_id = COALESCE(chat_id, ?) WHERE id = ?", (chat["id"], cid))
+    return {"chat_id": chat["id"]}
+
+
+# ---- push notifications (phones & computers) ----------------------------------------
+@router.get("/push")
+def push_status(user: dict = Depends(current_user)):  # noqa: B008
+    return docs_push_status(user)
+
+
+def docs_push_status(user: dict) -> dict:
+    from .. import webpush
+    st = webpush.status(user["id"])
+    st.update({"delay": crm.get_setting("notify_delay", "2"), "escalate": crm.get_setting("notify_escalate", "10"),
+               "push": crm.get_setting("notify_push", "1") == "1", "telegram": crm.get_setting("notify_telegram", "1") == "1"})
+    return st
+
+
+@router.post("/push/subscribe")
+def push_subscribe(payload: dict, request: Request, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import webpush
+    try:
+        n = webpush.subscribe(user["id"], payload.get("subscription") or payload, request.headers.get("user-agent", ""))
+    except ValueError as exc:
+        _bad(exc)
+    return {"ok": True, "mine": n}
+
+
+@router.post("/push/unsubscribe")
+def push_unsubscribe(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    from .. import webpush
+    webpush.unsubscribe(user["id"], payload.get("endpoint") or "")
+    return {"ok": True}
+
+
+@router.post("/push/test")
+def push_test(user: dict = Depends(current_user)):  # noqa: B008
+    from .. import webpush
+    n = webpush.send_to([user["id"]], "Nova Home CRM", "Уведомления на этом устройстве работают", "/crm/#messages", "nh-test")
+    return {"sent": n}
+
+
+class NotifyIn(BaseModel):
+    delay: int | None = None
+    escalate: int | None = None
+    push: bool | None = None
+    telegram: bool | None = None
+
+
+@router.post("/push/settings")
+def push_settings(payload: NotifyIn, user: dict = Depends(admin_user)):  # noqa: B008
+    if payload.delay is not None:
+        crm.set_setting("notify_delay", str(max(0, min(payload.delay, 120))))
+    if payload.escalate is not None:
+        crm.set_setting("notify_escalate", str(max(0, min(payload.escalate, 240))))
+    if payload.push is not None:
+        crm.set_setting("notify_push", "1" if payload.push else "0")
+    if payload.telegram is not None:
+        crm.set_setting("notify_telegram", "1" if payload.telegram else "0")
+    return {"ok": True}
+
+
+# ---- documents (PDF) & email ----------------------------------------------------
+class SelectorsIn(BaseModel):
+    text: str
+
+
+@router.post("/channels/booking_ext/catchup")
+def ext_catchup(payload: dict | None = None, user: dict = Depends(admin_user)):  # noqa: B008
+    """«Догрузить пропущенное»: re-read the extranet list for the last N days (default 7)."""
+    days = max(1, min(int((payload or {}).get("days") or 7), 60))
+    since = (crm.datetime.now() - crm.timedelta(days=days)).isoformat(timespec="seconds")
+    return booking_ext.start_catchup(since, f"вручную, {days} дн.")
+
+
+@router.post("/channels/booking_ext/import")
+def ext_import(payload: dict | None = None, user: dict = Depends(admin_user)):  # noqa: B008
+    """Start / stop the history import (the extension walks every thread while the PC is idle)."""
+    booking_ext.set_import(bool((payload or {}).get("on", True)))
+    return booking_ext.import_status()
+
+
+@router.post("/channels/booking_ext/selectors")
+def set_ext_selectors(payload: SelectorsIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return booking_ext.set_selectors(payload.text)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"JSON не разобран: {exc}") from exc
+
+
+@router.get("/company")
+def get_company(user: dict = Depends(current_user)):  # noqa: B008
+    return docs.company()
+
+
+@router.post("/company")
+def set_company(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    return docs.set_company(payload)
+
+
+@router.get("/bookings/{bid}/documents")
+def booking_documents(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    return docs.documents(booking_id=bid)
+
+
+@router.post("/bookings/{bid}/documents")
+def make_document(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return docs.create_document(bid, payload.get("kind") or "invoice", user["id"], payload.get("lang") or "ru", payload.get("amount"))
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.get("/documents/{did}.pdf")
+def document_pdf(did: int, user: dict = Depends(current_user)):  # noqa: B008
+    d = docs.get_document(did)
+    if not d:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    try:
+        pdf = docs.render_pdf(d)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"PDF не собрался: {exc}") from exc
+    from fastapi.responses import Response as RawResponse
+    return RawResponse(pdf, media_type="application/pdf",
+                       headers={"Content-Disposition": f"inline; filename=\"{d['number']}.pdf\""})
+
+
+@router.delete("/documents/{did}")
+def del_document(did: int, user: dict = Depends(current_user)):  # noqa: B008
+    docs.delete_document(did)
+    return {"ok": True}
+
+
+class EmailIn(BaseModel):
+    to: str
+    subject: str = ""
+    text: str = ""
+    doc_id: int | None = None
+    booking_id: int | None = None
+    client_id: int | None = None
+
+
+@router.get("/email")
+def email_status(user: dict = Depends(current_user)):  # noqa: B008
+    return docs.email_status()
+
+
+@router.post("/email")
+def email_send(payload: EmailIn, user: dict = Depends(current_user)):  # noqa: B008
+    import email.utils as _eu
+    to = (_eu.parseaddr(payload.to or "")[1] or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to):
+        raise HTTPException(status_code=400, detail="Некорректный адрес получателя")
+    if user["role"] != "admin":
+        # a manager sends only to addresses the CRM already knows for this guest/booking
+        known = set()
+        with database.get_conn() as conn:
+            if payload.client_id:
+                r = conn.execute("SELECT email FROM crm_clients WHERE id = ?", (payload.client_id,)).fetchone()
+                known.add((r["email"] or "").lower() if r else "")
+            if payload.booking_id:
+                r = conn.execute("SELECT client_email FROM bookings WHERE id = ?", (payload.booking_id,)).fetchone()
+                known.add((r["client_email"] or "").lower() if r else "")
+        if to not in known:
+            raise HTTPException(status_code=403, detail="Менеджер может писать только на email гостя из карточки или брони")
+    payload.to = to
+    att = []
+    if payload.doc_id:
+        d = docs.get_document(payload.doc_id)
+        if not d:
+            raise HTTPException(status_code=404, detail="Документ не найден")
+        att.append((f"{d['number']}.pdf", docs.render_pdf(d), "application/pdf"))
+    try:
+        return docs.send_email(payload.to, payload.subject, payload.text, att, user["name"],
+                               payload.booking_id, payload.client_id, payload.doc_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+
+# ---- deals --------------------------------------------------------------------
+class LinkIn(BaseModel):
+    chat_id: int
+
+
+@router.get("/deals")
+def get_deals(pipeline: int | None = None, q: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return crm.deals(pipeline, q=q)
+
+
+@router.get("/kanban")
+def kanban(pipeline: int, q: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return crm_amo.kanban(pipeline, q)
+
+
+@router.post("/deals")
+def add_deal(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        d = crm.save_deal(None, payload, user["id"])
+    except ValueError as exc:
+        _bad(exc)
+    crm_amo.autolink(d["id"])
+    return d
+
+
+@router.get("/deals/{did}")
+def get_deal(did: int, user: dict = Depends(current_user)):  # noqa: B008
+    d = crm.get_deal(did)
+    if not d:
+        raise HTTPException(status_code=404, detail="Сделка не найдена")
+    d["chats"] = crm_amo.deal_chats(did)
+    with database.get_conn() as conn:
+        d["log"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM crm_auto_log WHERE dedupe LIKE ? ORDER BY id DESC LIMIT 10", (f"stage:%:d{did}:%",)).fetchall()]
+    return d
+
+
+class NoteIn(BaseModel):
+    text: str
+
+
+@router.post("/deals/{did}/notes")
+def deal_note(did: int, payload: NoteIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm_amo.add_note(payload.text, user["name"], deal_id=did)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/notes/{nid}")
+def del_note(nid: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.delete_note(nid)
+    return {"ok": True}
+
+
+@router.post("/clients/{cid}/notes")
+def client_note(cid: int, payload: NoteIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm_amo.add_note(payload.text, user["name"], client_id=cid)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/deals/{did}/chats")
+def deal_link_chat(did: int, payload: LinkIn, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.link_chat(did, payload.chat_id)
+    return {"ok": True}
+
+
+@router.delete("/deals/{did}/chats/{chat_id}")
+def deal_unlink_chat(did: int, chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.unlink_chat(did, chat_id)
+    return {"ok": True}
+
+
+class DealSendIn(BaseModel):
+    chat_id: int
+    text: str
+
+
+@router.post("/deals/{did}/send")
+def deal_send(did: int, payload: DealSendIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        m = inbox.send(payload.chat_id, user["name"], payload.text[:4000])
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+    crm_amo.link_chat(did, payload.chat_id)
+    return m
+
+
+@router.get("/unsorted")
+def get_unsorted(user: dict = Depends(current_user)):  # noqa: B008
+    return crm_amo.unsorted()
+
+
+class AcceptIn(BaseModel):
+    pipeline_id: int | None = None
+
+
+@router.post("/unsorted/{chat_id}/accept")
+def accept_unsorted(chat_id: int, payload: AcceptIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm_amo.accept(chat_id, user["id"], payload.pipeline_id)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/unsorted/{chat_id}/reject")
+def reject_unsorted(chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_amo.reject(chat_id)
+    return {"ok": True}
+
+
+@router.get("/chats/{chat_id}/deal")
+def chat_deal(chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    return {"deal_id": crm_amo.deal_for_chat(chat_id)}
+
+
+@router.patch("/deals/{did}")
+def patch_deal(did: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.save_deal(did, payload, user["id"])
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/deals/{did}")
+def del_deal(did: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm.delete_deal(did)
+    return {"ok": True}
+
+
+@router.post("/bookings/{bid}/deal")
+def booking_deal(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        d = crm.deal_for_booking(bid, user["id"])
+    except ValueError as exc:
+        _bad(exc)
+    crm_amo.autolink(d["id"])
+    return d
+
+
+# ---- tasks --------------------------------------------------------------------
+@router.get("/tasks")
+def get_tasks(mine: int = 0, status: str = "open", booking: int = 0, group: str = "", view: str = "", limit: int = 500, offset: int = 0,
+              user: dict = Depends(current_user)):  # noqa: B008
+    """view = today | week | all (open tasks due by tonight / within 7 days / every one)."""
+    if group == "booking":
+        return crm.tasks_by_booking(user["id"] if mine else None, status)
+    return crm.tasks(user["id"] if mine else None, status if status != "all" else None, booking_id=booking or None,
+                     view=view if view in ("today", "week") else None, limit=limit, offset=offset)
+
+
+@router.post("/tasks")
+def add_task(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.save_task(None, payload, user["id"])
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.patch("/tasks/{tid}")
+def patch_task(tid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.save_task(tid, payload, user["id"])
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.post("/tasks/{tid}/send")
+def send_task_message(tid: int, user: dict = Depends(current_user)):  # noqa: B008
+    """A checklist message task: send it to the guest now and close the task."""
+    try:
+        return crm_ext.send_task_message(tid, user["name"], force=True)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/tasks/{tid}")
+def del_task(tid: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm.delete_task(tid)
+    return {"ok": True}
+
+
+# ---- bookings -----------------------------------------------------------------
+@router.get("/bookings/{bid}/card")
+def booking_card(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    b = crm_ext.booking_card(bid)
+    if not b:
+        raise HTTPException(status_code=404, detail="Бронь не найдена")
+    return b
+
+
+@router.get("/bookings/{bid}/tasks")
+def booking_tasks(bid: int, user: dict = Depends(current_user)):  # noqa: B008
+    return crm.tasks(booking_id=bid)
+
+
+@router.post("/bookings/{bid}/checklist")
+def booking_checklist(bid: int, payload: dict | None = None, user: dict = Depends(current_user)):  # noqa: B008
+    """Create the checklist tasks for a booking from the template (Интеграции → Чек-лист брони)."""
+    payload = payload or {}
+    try:
+        return crm.create_checklist(bid, user["id"], payload.get("assignee_uid") or None, force=True)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.get("/checklist")
+def checklist_settings(user: dict = Depends(current_user)):  # noqa: B008
+    return {"steps": crm.steps(), "default": crm.DEFAULT_STEPS, "auto": crm.get_setting("auto_checklist", "1") == "1",
+            "bilingual": crm.get_setting("auto_bilingual", "1") == "1",
+            "vars": ["имя", "объект", "блок", "заезд время", "выезд время", "время заезда", "время выезда", "дата заезда", "дата выезда", "ночей", "сумма", "долг", "оплачено", "телефон", "адрес", "телефон компании",
+                     "код домофона", "ключи", "ключи при выезде", "wifi", "заметка квартиры", "ссылка на отзыв"]}
+
+
+class ChecklistIn(BaseModel):
+    steps: list | None = None
+    auto: bool | None = None
+    reset: bool | None = None
+    bilingual: bool | None = None
+
+
+@router.post("/checklist")
+def set_checklist(payload: ChecklistIn, user: dict = Depends(admin_user)):  # noqa: B008
+    if payload.reset:
+        crm.set_setting("booking_steps", "")
+        crm.set_setting("booking_checklist", "")
+    elif payload.steps is not None:
+        crm.save_steps(payload.steps)
+    if payload.auto is not None:
+        crm.set_setting("auto_checklist", "1" if payload.auto else "0")
+    if payload.bilingual is not None:
+        crm.set_setting("auto_bilingual", "1" if payload.bilingual else "0")
+    return {"ok": True, "steps": crm.steps()}
+
+
+@router.post("/checklist/preview")
+def checklist_preview_text(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    """How a step's message reads for a real booking (the next check-in by default)."""
+    with database.get_conn() as conn:
+        bid = payload.get("booking_id")
+        r = conn.execute("SELECT * FROM bookings WHERE id = ?", (bid,)).fetchone() if bid else conn.execute(
+            "SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND begin_date >= ? ORDER BY begin_date LIMIT 1", (crm.date.today().isoformat(),)).fetchone()
+    b = crm._booking_out(dict(r)) if r else None  # noqa: SLF001
+    return {"text": crm_ext.fill(str(payload.get("text") or ""), b, None), "booking": b and {"id": b["id"], "apartment": b["apartment"], "guest": b["guest"]}}
+
+
+@router.patch("/bookings/{bid}")
+def edit_booking(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    """Edit a booking: the RC fields go to RealtyCalendar (and the booking is
+    re-read to confirm); everything else stays in the CRM."""
+    try:
+        return rc_push.update_booking(bid, payload, user["name"])
+    except rc_push.RCError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+
+@router.post("/bookings/{bid}/chats")
+def link_chat(bid: int, payload: LinkIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        crm_ext.link_chat(bid, payload.chat_id, user["name"])
+    except ValueError as exc:
+        _bad(exc)
+    return {"ok": True}
+
+
+@router.delete("/bookings/{bid}/chats/{chat_id}")
+def unlink_chat(bid: int, chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm_ext.unlink_chat(bid, chat_id)
+    return {"ok": True}
+
+
+@router.get("/chats/search")
+def chats_search(q: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    return [{k: c.get(k) for k in ("id", "title", "phone", "channel", "channel_name", "last_text", "last_at")}
+            for c in inbox.chat_list(q, "all", "", 30)]
+
+
+@router.get("/debts")
+def debts(user: dict = Depends(current_user)):  # noqa: B008
+    """Who owes money: unpaid / partly paid stays, current and recent."""
+    return crm_ext.debts()
+
+
+@router.get("/revenue")
+def revenue(month: str = "", user: dict = Depends(current_user)):  # noqa: B008
+    from datetime import date as _d
+    m = (month or "").strip()[:7]
+    if m and not re.match(r"^\d{4}-\d{2}$", m):
+        raise HTTPException(status_code=400, detail="Месяц в формате ГГГГ-ММ")
+    return crm_ext.revenue(m or _d.today().strftime("%Y-%m"))
+
+
+# ---- auto-message rules ---------------------------------------------------------
+@router.get("/auto")
+def get_rules(user: dict = Depends(current_user)):  # noqa: B008
+    return {"rules": crm_ext.rules(), "triggers": crm_ext.TRIGGERS, "log": crm_ext.auto_log(100)}
+
+
+@router.post("/auto")
+def add_rule(payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm_ext.save_rule(None, payload)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.put("/auto/{rid}")
+def put_rule(rid: int, payload: dict, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return crm_ext.save_rule(rid, payload)
+    except ValueError as exc:
+        _bad(exc)
+
+
+class ToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.patch("/auto/{rid}")
+def toggle_rule(rid: int, payload: ToggleIn, user: dict = Depends(admin_user)):  # noqa: B008
+    crm_ext.toggle_rule(rid, payload.enabled)
+    return {"ok": True}
+
+
+@router.delete("/auto/{rid}")
+def del_rule(rid: int, user: dict = Depends(admin_user)):  # noqa: B008
+    crm_ext.delete_rule(rid)
+    return {"ok": True}
+
+
+@router.post("/auto/preview")
+def preview_rules(user: dict = Depends(current_user)):  # noqa: B008
+    """What the enabled booking rules would send right now (nothing is sent)."""
+    return crm_ext.run_auto_rules(dry=True)
+
+
+@router.post("/auto/run")
+def run_rules(user: dict = Depends(admin_user)):  # noqa: B008
+    return crm_ext.run_auto_rules()
+
+
+@router.get("/bookings/day")
+def bookings_day(date: str, user: dict = Depends(current_user)):  # noqa: B008
+    return crm.bookings_day(_date(date))
+
+
+@router.get("/bookings/grid")
+def bookings_grid(start: str, days: int = 30, user: dict = Depends(current_user)):  # noqa: B008
+    return crm.bookings_grid(_date(start), max(7, min(days, 90)))
+
+
+# ---- quick commands -------------------------------------------------------------
+class CommandIn(BaseModel):
+    command: str = ""
+    title: str = ""
+    text: str
+
+
+@router.get("/commands")
+def get_commands(user: dict = Depends(current_user)):  # noqa: B008
+    return crm.commands()
+
+
+@router.post("/commands")
+def add_command(payload: CommandIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.save_command(None, payload.command, payload.title, payload.text)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.put("/commands/{tid}")
+def put_command(tid: int, payload: CommandIn, user: dict = Depends(current_user)):  # noqa: B008
+    try:
+        return crm.save_command(tid, payload.command, payload.title, payload.text)
+    except ValueError as exc:
+        _bad(exc)
+
+
+@router.delete("/commands/{tid}")
+def del_command(tid: int, user: dict = Depends(current_user)):  # noqa: B008
+    crm.delete_command(tid)
+    return {"ok": True}
+
+
+# ---- channels & integrations ------------------------------------------------------
+def _strip_secrets(d: dict, user: dict) -> dict:
+    """Managers see states, not keys: the ext token / Wazzup webhook path / raw
+    page dumps let anyone with them inject or read guest messages."""
+    if user["role"] == "admin":
+        return d
+    bk = d.get("booking_ext") or {}
+    for k in ("token", "debug", "hook_url", "selectors"):
+        bk.pop(k, None)
+    wz = d.get("wazzup") or {}
+    wz.pop("webhook_url", None)
+    wa = d.get("whatsapp") or {}
+    wa.pop("qr", None)
+    tg = d.get("telegram")
+    if isinstance(tg, dict):
+        for f in ("phone", "username"):
+            tg.pop(f, None)
+    return d
+
+
+@router.get("/channels")
+def channels(user: dict = Depends(current_user)):  # noqa: B008
+    st = inbox.bridge_status(fresh=True)  # the QR / connection page must not show a stale state
+    if user["role"] != "admin":
+        st.pop("qr", None)
+    with database.get_conn() as conn:
+        counts = {r[0] or "wa": r[1] for r in conn.execute(
+            "SELECT channel, COUNT(*) FROM inbox_chats GROUP BY channel").fetchall()}
+    def safe(name, fn):  # one broken channel must not take the whole page down (it used to be a bare 500)
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("channels: %s status failed", name)
+            return {"configured": True, "ok": False, "error": config.redact(f"{type(exc).__name__}: {exc}")[:300]}
+    return _strip_secrets({
+        "wazzup": safe("wazzup", wazzup.status),
+        "booking_ext": safe("booking_ext", booking_ext.status),
+        "whatsapp": {**st, "chats": counts.get("wa", 0)},
+        "whatsapp_cloud": {**safe("wa_cloud", meta_api.wa_status), "chats": counts.get("wac", 0)},
+        "instagram": {**safe("instagram", meta_api.ig_status), "chats": counts.get("ig", 0)},
+        "meta_webhook": {"url": meta_api.webhook_url(), "verify_token_set": bool(config.META_VERIFY_TOKEN),
+                         "app_secret_set": bool(config.META_APP_SECRET)},
+        "telegram": {**safe("telegram", tg_channels.user_status), "chats": counts.get("tg", 0)},
+        "telegram_guest_bot": {**safe("telegram_bot", tg_channels.bot_status), "chats": counts.get("tgbot", 0)},
+        "telegram_bot": {"configured": bool(config.BOT_TOKEN), "notify_targets": config.inbox_notify_targets()},
+    }, user)
+
+
+@router.post("/channels/wazzup/webhook")
+def wazzup_register(user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return wazzup.register_webhook()
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+
+class TgPhoneIn(BaseModel):
+    phone: str
+
+
+class TgCodeIn(BaseModel):
+    code: str = ""
+    password: str = ""
+
+
+@router.post("/channels/telegram/send_code")
+def tg_send_code(payload: TgPhoneIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return tg_channels.user_send_code(payload.phone)
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+
+@router.post("/channels/telegram/sign_in")
+def tg_sign_in(payload: TgCodeIn, user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        return tg_channels.user_sign_in(payload.code, payload.password)
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+
+@router.post("/channels/telegram/logout")
+def tg_logout(user: dict = Depends(admin_user)):  # noqa: B008
+    tg_channels.user_logout()
+    return {"ok": True}
+
+
+@router.post("/channels/whatsapp/logout")
+def wa_logout(user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        inbox.bridge_logout()
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.get("/integrations")
+def integrations(user: dict = Depends(current_user)):  # noqa: B008
+    with database.get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM bookings WHERE COALESCE(is_delete, 0) = 0").fetchone()[0]
+    return {
+        "realtycalendar": {"configured": bool(config.RC_TOKEN), "demo": config.DEMO_MODE, "last_sync": database.last_sync(),
+                           "bookings": n, "interval_min": config.SYNC_INTERVAL_MINUTES, "apartments": len(config.APARTMENTS),
+                           "push_log": rc_push.recent_log(10), "rates": rc_rates.status()},
+        "healthchecks": {"configured": bool(config.HEARTBEAT_URL_SERVER or config.HEARTBEAT_URL_BOT)},
+        "telegram": {"configured": bool(config.BOT_TOKEN), "webapp_url": config.WEBAPP_URL},
+        "settings": {"auto_tasks": crm.get_setting("auto_tasks", "0") == "1",
+                     "auto_deal": crm.get_setting("auto_deal", "1") == "1",
+                     "auto_all_channels": crm.get_setting("auto_all_channels", "1") == "1",
+                     "report_auto": crm.get_setting("report_auto", "1") == "1", "report_time": crm.get_setting("report_time", "09:00"),
+                     "report_chat_ids": crm.get_setting("report_chat_ids", ""), "report_targets_default": ", ".join(str(x) for x in config.notify_targets()),
+                     "booking_flow": crm.get_setting("booking_flow", "1") == "1",
+                     "rc_sync_clients": crm.get_setting("rc_sync_clients", "1") == "1",
+                     "checkin_time": crm.default_times()[0], "checkout_time": crm.default_times()[1],
+                     "auto_checklist": crm.get_setting("auto_checklist", "1") == "1",
+                     "auto_bilingual": crm.get_setting("auto_bilingual", "1") == "1",
+                     "auto_step_messages": crm.get_setting("auto_step_messages", "0") == "1",
+                     "missed_call_reply": crm.get_setting("missed_call_reply", "1") == "1",
+                     "missed_call_ru": crm.get_setting("missed_call_ru", "") or inbox.MISSED_CALL_RU,
+                     "missed_call_en": crm.get_setting("missed_call_en", "") or inbox.MISSED_CALL_EN,
+                     "steps": crm.steps()},
+    }
+
+
+class SettingsIn(BaseModel):
+    auto_tasks: bool | None = None
+    auto_checklist: bool | None = None
+    auto_step_messages: bool | None = None
+    missed_call_reply: bool | None = None
+    missed_call_ru: str | None = None
+    missed_call_en: str | None = None
+    auto_all_channels: bool | None = None
+    checklist: str | None = None
+    auto_deal: bool | None = None
+    booking_flow: bool | None = None
+    rc_sync_clients: bool | None = None
+    checkin_time: str | None = None
+    checkout_time: str | None = None
+    report_time: str | None = None
+    report_chat_ids: str | None = None
+    report_auto: bool | None = None
+
+
+@router.post("/integrations/settings")
+def set_settings(payload: SettingsIn, user: dict = Depends(admin_user)):  # noqa: B008
+    if payload.auto_tasks is not None:
+        crm.set_setting("auto_tasks", "1" if payload.auto_tasks else "0")
+    if payload.auto_checklist is not None:
+        crm.set_setting("auto_checklist", "1" if payload.auto_checklist else "0")
+    if payload.auto_step_messages is not None:
+        crm.set_setting("auto_step_messages", "1" if payload.auto_step_messages else "0")
+    if payload.missed_call_reply is not None:
+        crm.set_setting("missed_call_reply", "1" if payload.missed_call_reply else "0")
+    if payload.missed_call_ru is not None:
+        crm.set_setting("missed_call_ru", payload.missed_call_ru.strip()[:1000])
+    if payload.missed_call_en is not None:
+        crm.set_setting("missed_call_en", payload.missed_call_en.strip()[:1000])
+    if payload.auto_all_channels is not None:
+        crm.set_setting("auto_all_channels", "1" if payload.auto_all_channels else "0")
+    if payload.report_auto is not None:
+        crm.set_setting("report_auto", "1" if payload.report_auto else "0")
+    if payload.report_chat_ids is not None:
+        crm.set_setting("report_chat_ids", payload.report_chat_ids.strip())
+    if payload.report_time is not None and re.match(r"^\d{1,2}:\d{2}$", payload.report_time.strip()):
+        crm.set_setting("report_time", crm._hm(payload.report_time, "09:00"))  # noqa: SLF001
+    if payload.auto_deal is not None:
+        crm.set_setting("auto_deal", "1" if payload.auto_deal else "0")
+    if payload.booking_flow is not None:
+        crm.set_setting("booking_flow", "1" if payload.booking_flow else "0")
+    if payload.rc_sync_clients is not None:
+        crm.set_setting("rc_sync_clients", "1" if payload.rc_sync_clients else "0")
+    import re as _re
+    for key, val in (("checkin_time", payload.checkin_time), ("checkout_time", payload.checkout_time)):
+        if val is not None:
+            if not _re.match(r"^\d{1,2}:\d{2}$", val.strip()):
+                raise HTTPException(status_code=400, detail="Время в формате 14:00")
+            crm.set_setting(key, crm._hm(val, "14:00" if key == "checkin_time" else "11:00"))  # noqa: SLF001
+    if payload.checklist is not None:
+        crm.set_setting("booking_checklist", payload.checklist.strip())
+    return {"ok": True, "items": crm.parse_checklist(crm.get_setting("booking_checklist", crm.DEFAULT_CHECKLIST))}
+
+
+_last_manual_sync = {"at": 0.0}
+
+
+@router.post("/leads/backfill")
+async def leads_backfill(user: dict = Depends(admin_user)):  # noqa: B008
+    """«Собрать контакты из переписок»: phones and @handles for every existing chat."""
+    from .. import tg_channels
+
+    def run():
+        out = crm.backfill_leads()
+        try:
+            out["telegram"] = tg_channels.backfill_profiles()
+        except Exception as exc:  # noqa: BLE001
+            out["telegram"] = {"ok": False, "error": config.redact(str(exc))[:200]}
+        crm.set_setting("leads_backfilled", crm._now())  # noqa: SLF001
+        return out
+    return await asyncio.get_event_loop().run_in_executor(None, run)
+
+
+@router.post("/integrations/sync")
+async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
+    import time
+    if time.time() - _last_manual_sync["at"] < 60 and user["role"] != "admin":
+        raise HTTPException(status_code=429, detail="Синхронизация уже запускалась меньше минуты назад")
+    _last_manual_sync["at"] = time.time()
+    try:
+        n = await asyncio.get_event_loop().run_in_executor(None, rc_sync.sync_to_db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("manual sync failed: %s", exc)
+        raise HTTPException(status_code=424, detail="Синхронизация не удалась: " + config.redact(str(exc))[:200]) from exc
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, crm.auto_tasks)
+        await asyncio.get_event_loop().run_in_executor(None, crm.auto_checklists)
+        await asyncio.get_event_loop().run_in_executor(None, crm_ext.sync_deals_from_bookings)
+    except Exception:  # noqa: BLE001
+        logger.exception("post-sync CRM refresh failed")
+    return {"bookings": n, "last_sync": database.last_sync()}

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+  <title>Оплаты · Nova Home</title>
+  <link rel="stylesheet" href="cash.css?v=101" />
+  <script>/* Telegram Mini App bridge: not needed inside the CRM (embed=1), and it must not block the page */
+    if (!/[?&]embed=1/.test(location.search)) document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\/script>');</script>
+</head>
+<body>
+  <div id="cash" class="cash">
+    <header class="cash__head">
+      <div class="cash__title"><h1>Оплаты</h1><span class="muted small" id="me-name"></span></div>
+      <nav class="tabs" id="tabs">
+        <button class="is-on" data-tab="new">Записать</button>
+        <button data-tab="today">Сегодня <b class="pill hidden" id="today-n"></b></button>
+        <button data-tab="stats" class="owner-only hidden">Итоги <b class="pill warn hidden" id="review-n"></b></button>
+      </nav>
+    </header>
+    <main class="cash__main" id="main"><div class="empty">Загрузка…</div></main>
+    <div class="sheet hidden" id="sheet"><div class="sheet__back" data-close></div><div class="sheet__card" id="sheet-card"></div></div>
+    <div class="done hidden" id="done"></div>
+    <div id="toast" class="toast hidden"></div>
+    <div id="denied" class="denied hidden">
+      <div class="denied__card">
+        <h2>Нет доступа</h2>
+        <p id="denied-text">Откройте оплаты по своей ссылке: напишите боту команду <b>/оплата</b>.</p>
+      </div>
+    </div>
+  </div>
+  <script src="/js/common.js?v=101"></script>
+  <script src="/js/keyboard.js?v=101"></script>
+  <script src="cash.js?v=101"></script>
+</body>
+</html>

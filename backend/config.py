@@ -122,6 +122,13 @@ SOURCE_NAMES = {None: "Прямое", 0: "Прямое", 2: "Booking.com", 3: "A
 # Telegram
 # ---------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+# a second bot for CRM notifications (chats waiting for a reply, tasks, bookings, payments) so they do not
+# mix with the dashboard bot; empty = the dashboard bot sends them (as before)
+CRM_BOT_TOKEN = os.environ.get("CRM_BOT_TOKEN", "").strip()
+
+
+def crm_bot_token() -> str:
+    return CRM_BOT_TOKEN or BOT_TOKEN
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "").strip()
 
 
@@ -169,14 +176,80 @@ PAY_VIEWERS = [t for t in os.environ.get("PAY_VIEWERS", "").replace(",", " ").sp
 # the Оплаты block on clients that pass no initData (macOS Telegram).
 PAY_KEY = os.environ.get("PAY_KEY", "").strip()
 
-# Staff access key: the API accepts requests only from people who opened the
-# dashboard through the bot (valid Telegram initData, or this key that the bot
-# appends to the URL for everyone else — desktop clients pass no initData).
-# Derived from the bot token when not set, so no .env change is needed.
-STAFF_KEY = os.environ.get("STAFF_KEY", "").strip()
-if not STAFF_KEY and BOT_TOKEN:
-    import hashlib as _hashlib
-    STAFF_KEY = _hashlib.sha256(("staff:" + BOT_TOKEN).encode()).hexdigest()[:24]
+# Staff access: every employee gets a PERSONAL key from the bot (stored hashed in
+# the database, revocable with /staff_del). The old shared STAFF_KEY is gone:
+# one key for everyone could not be revoked and sat in every chat history.
+# DEV_MODE=1 (plus a loopback client) is the only way to use the dashboard API
+# without a configured bot — a half-configured .env must never open the data
+# to the internet.
+DEV_MODE = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
+
+# Independent random secrets, generated once into data/secrets.json (see secrets_store.py).
+from . import secrets_store as _secrets_store  # noqa: E402
+_SECRETS = _secrets_store.load(BASE_DIR / "data")
+APP_SECRET = os.environ.get("APP_SECRET", "").strip() or _SECRETS["app_secret"]
+
+
+# ---------------------------------------------------------------------------
+# «Чаты» — shared WhatsApp inbox (our own Wazzup). The WhatsApp connection
+# lives in wa-bridge/ (Node.js, QR login); the server stores the chats and
+# serves the inbox page at /inbox/.
+# ---------------------------------------------------------------------------
+WA_BRIDGE_URL = (os.environ.get("WA_BRIDGE_URL", "").strip()
+                 or f"http://127.0.0.1:{_int_env('WA_BRIDGE_PORT', 8100)}").rstrip("/")
+# Shared secret between the bridge and the server: INBOX_SECRET from .env, else
+# the random one in data/secrets.json (wa-bridge/bridge.mjs reads the same file).
+INBOX_SECRET = os.environ.get("INBOX_SECRET", "").strip() or _SECRETS["inbox_secret"]
+# AI assistant for guest chats (Claude): the key is set on the CRM page «ИИ-ассистент» (stored in secrets.json) or in .env
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip() or str(_SECRETS.get("ai_api_key") or "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip() or str(_SECRETS.get("openai_api_key") or "")  # voice transcription
+INBOX_MEDIA_DIR = Path(os.environ.get("INBOX_MEDIA_DIR", "").strip() or BASE_DIR / "data" / "inbox_media")
+# Who may work in the inbox besides the owners: Telegram ids / @usernames.
+# Empty = every active employee registered in the bot (/staff).
+INBOX_USERS = [t for t in os.environ.get("INBOX_USERS", "").replace(",", " ").split() if t]
+# Where "new WhatsApp message" alerts go (a reply to the alert in Telegram is
+# sent back to the guest). Empty = the owners' private chats; "0" = off.
+INBOX_NOTIFY_CHAT_IDS = _parse_chat_ids(os.environ.get("INBOX_NOTIFY_CHAT_IDS", ""))
+INBOX_NOTIFY_OFF = os.environ.get("INBOX_NOTIFY_CHAT_IDS", "").strip() == "0"
+
+
+# ---- Wazzup (wazzup24.ru) — the paid WhatsApp connection: Интеграция с CRM → Ключ API
+WAZZUP_API_KEY = os.environ.get("WAZZUP_API_KEY", "").strip()
+WAZZUP_CHANNEL_ID = os.environ.get("WAZZUP_CHANNEL_ID", "").strip()  # optional: which Wazzup channel sends WhatsApp (default: first active)
+
+# ---- Official channels through Meta (WhatsApp Cloud API + Instagram Direct)
+# One webhook for both: {WEBAPP_URL}/api/inbox/meta/webhook, verify token below.
+META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "").strip()
+META_APP_SECRET = os.environ.get("META_APP_SECRET", "").strip()      # signature check of webhooks
+META_GRAPH = os.environ.get("META_GRAPH_URL", "https://graph.facebook.com/v21.0").rstrip("/")  # overridable for tests
+WA_CLOUD_TOKEN = os.environ.get("WA_CLOUD_TOKEN", "").strip()        # system user / permanent token
+WA_CLOUD_PHONE_ID = os.environ.get("WA_CLOUD_PHONE_ID", "").strip()  # Phone number ID
+IG_PAGE_TOKEN = os.environ.get("IG_PAGE_TOKEN", "").strip()          # Page access token (pages_messaging + instagram_manage_messages)
+IG_ACCOUNT_ID = os.environ.get("IG_ACCOUNT_ID", "").strip()          # Instagram professional account id (optional, for the status page)
+
+# ---- Telegram as a guest channel
+TG_API_ID = _int_env("TG_API_ID", 0)                                  # my.telegram.org → API development tools
+TG_API_HASH = os.environ.get("TG_API_HASH", "").strip()
+TG_GUEST_BOT_TOKEN = os.environ.get("TG_GUEST_BOT_TOKEN", "").strip() # a second bot guests write to (optional)
+DATA_DIR = BASE_DIR / "data"
+
+# CRM (/crm/): the first administrator can be set here; otherwise the setup
+# page in the browser asks for one on first open.
+CRM_ADMIN_EMAIL = os.environ.get("CRM_ADMIN_EMAIL", "").strip().lower()
+# ---- email from the CRM (invoices, confirmations): any SMTP, Gmail app password works
+SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
+SMTP_PORT = _int_env("SMTP_PORT", 587)
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+SMTP_FROM = os.environ.get("SMTP_FROM", "").strip()
+SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "Nova Home").strip()
+CRM_ADMIN_PASSWORD = os.environ.get("CRM_ADMIN_PASSWORD", "").strip()
+
+
+def inbox_notify_targets() -> list[int]:
+    if INBOX_NOTIFY_OFF:
+        return []
+    return [i for i in INBOX_NOTIFY_CHAT_IDS if i] or list(OWNER_TELEGRAM_IDS)
 
 
 def notify_targets() -> list[int]:
@@ -302,4 +375,24 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "34"
+APP_VERSION = "101"
+
+
+def features() -> dict:
+    """What the UI may offer: buttons for unconfigured services are hidden."""
+    return {
+        "smtp": bool(SMTP_HOST and SMTP_USER),
+        "bot": bool(BOT_TOKEN and notify_targets()),
+        "wa_cloud": bool(WA_CLOUD_TOKEN),
+    }
+
+
+def redact(text: str) -> str:
+    """Strip every secret we know from a string before it reaches a log line or
+    an error shown in the UI (bot tokens travel inside Bot API URLs)."""
+    out = str(text or "")
+    for sec in (BOT_TOKEN, TG_GUEST_BOT_TOKEN, WAZZUP_API_KEY, INBOX_SECRET, APP_SECRET, RC_TOKEN, OWNER_KEY, PAY_KEY,
+                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY, OPENAI_API_KEY):
+        if sec and len(sec) >= 8:
+            out = out.replace(sec, "***")
+    return out

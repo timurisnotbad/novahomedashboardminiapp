@@ -6,11 +6,15 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, database, logsetup, rc_sync, reminders, scheduler
+from . import ai, auth, cash, config, crm, crm_bot, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
+from .routers import crm as crm_router
+from .routers import inbox as inbox_router
+from .routers import cash as cash_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logsetup.setup("server")  # everything also goes to logs/server.log
@@ -29,20 +33,59 @@ async def _initial_sync() -> None:
         logger.info("Initial sync: %s bookings (demo=%s)", count, config.DEMO_MODE)
         # seed the booking baseline so we don't announce the whole calendar
         await loop.run_in_executor(None, reminders.check_booking_changes)
+        await loop.run_in_executor(None, crm.auto_tasks)  # today's check-in/out tasks in the CRM
     except Exception as exc:  # noqa: BLE001
         logger.warning("Initial sync failed: %s", exc)
+    try:
+        if not crm.get_setting("leads_backfilled", ""):  # v92: once, every existing chat gets its contact card filled
+            def _leads():
+                from . import tg_channels
+                out = crm.backfill_leads()
+                try:
+                    out["telegram"] = tg_channels.backfill_profiles()
+                except Exception as exc:  # noqa: BLE001
+                    out["telegram"] = str(exc)[:100]
+                crm.set_setting("leads_backfilled", crm._now())  # noqa: SLF001
+                logger.info("leads backfill: %s", out)
+            await asyncio.sleep(90)  # after the channels have connected
+            await loop.run_in_executor(None, _leads)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("leads backfill failed: %s", exc)
+    try:
+        from . import rc_rates
+        await loop.run_in_executor(None, rc_rates.sync)  # nightly prices for the assistant
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Initial rates sync failed: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
+    inbox.init_db()
+    crm.init_db()
+    crm_ext.init_db()
+    crm_amo.init_db()
+    rc_push.init_db()
+    docs.init_db()
+    webpush.init_db()
+    booking_ext.init_db()
+    ai.init_db()
+    cash.init_db()
     scheduler.start()
+    if (config.WA_CLOUD_TOKEN or config.IG_PAGE_TOKEN) and not config.META_APP_SECRET:
+        logger.error("META_APP_SECRET is empty: the Meta webhook stays CLOSED (404) until it is set in .env")
+    if not config.BOT_TOKEN and not config.DEV_MODE:
+        logger.warning("BOT_TOKEN is empty and DEV_MODE is off: the Telegram dashboard API answers 403 (the CRM login works as usual)")
+    wazzup.start()              # Wazzup: check the key, register the webhook (background)
+    await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
+    tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
+    crm_bot.start()             # CRM notification bot (if CRM_BOT_TOKEN is set)
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
     scheduler.shutdown()
 
 
-app = FastAPI(title="Nova Home Dashboard", version="1.0", lifespan=lifespan)
+app = FastAPI(title="Nova Home Dashboard", version="1.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 # Telegram WebApp is served from t.me / opens with an opaque origin ("null").
 app.add_middleware(
@@ -54,6 +97,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=1500)  # chat lists / bookings grids shrink 5-10x over the tunnel
+
 # API routers — every data endpoint requires a legitimate dashboard user
 # (see auth.access_guard); owner-only routers add their own stricter guard.
 for r in (dashboard.router, bookings.router, cleaning.router,
@@ -63,13 +108,32 @@ for r in (dashboard.router, bookings.router, cleaning.router,
     app.include_router(r, prefix=config.API_PREFIX, dependencies=[Depends(auth.access_guard)])
 
 
+# «Чаты» (shared WhatsApp inbox): its own guard — personal links from /chats
+# work in any browser and sign replies with the operator's name; the bridge
+# hook and signed media links carry no user headers.
+app.include_router(inbox_router.router, prefix=config.API_PREFIX)
+app.include_router(inbox_router.public, prefix=config.API_PREFIX)
+# Nova Home CRM (/crm/): cookie session, its own guards inside the router
+app.include_router(crm_router.router, prefix=config.API_PREFIX)
+# «Оплаты»: same access as the chats page (cookie / personal key / Telegram signature)
+app.include_router(cash_router.router, prefix=config.API_PREFIX)
+
+
 @app.middleware("http")
-async def no_cache_frontend(request, call_next):
-    """Always revalidate the app shell so updates load without a hard refresh."""
+async def cache_frontend(request, call_next):
+    """The app shell (HTML) is always revalidated so updates load without a hard
+    refresh; scripts and styles carry ?v=<version> in the shell, so a versioned
+    file never changes and is cached for a year (over the tunnel every 304
+    round-trip used to cost as much as a page); icons and fonts for a day."""
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.endswith((".html", ".js", ".css")):
+    if path.endswith(("/", ".html")):  # directory indexes (/crm/, /inbox/) too
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path.endswith((".js", ".css")):
+        versioned = request.query_params.get("v") == config.APP_VERSION
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "no-cache, must-revalidate"
+    elif path.endswith((".svg", ".png", ".ico", ".woff", ".woff2", ".webmanifest")):
+        response.headers["Cache-Control"] = "public, max-age=86400"
     return response
 
 
@@ -94,6 +158,27 @@ def me(request: Request):
     }
 
 
-# Serve the Mini App frontend (single-origin deploy: one URL for ngrok/nginx).
+# The app shells carry «?v=NN» on every script/style tag so browsers pick up a
+# new build; the number used to be edited by hand in 25 places. The HTML is
+# served through this route, which stamps the current APP_VERSION into the
+# tags and exposes it as window.NH_VERSION (api.js and the chats iframe use it).
+_HTML_PAGES = {"/": "index.html", "/index.html": "index.html", "/crm/": "crm/index.html", "/crm/index.html": "crm/index.html",
+               "/inbox/": "inbox/index.html", "/inbox/index.html": "inbox/index.html",
+               "/cash/": "cash/index.html", "/cash/index.html": "cash/index.html"}
+
+
+def _stamped_html(rel: str) -> str:
+    import re as _re
+    text = (FRONTEND_DIR / rel).read_text(encoding="utf-8")
+    text = _re.sub(r"\?v=\d+", f"?v={config.APP_VERSION}", text)
+    tag = f'<script>window.NH_VERSION="{config.APP_VERSION}";</script>'
+    return text.replace("<head>", "<head>" + tag, 1) if "<head>" in text else tag + text
+
+
 if FRONTEND_DIR.exists():
+    from fastapi.responses import HTMLResponse
+
+    for _path, _rel in _HTML_PAGES.items():
+        if (FRONTEND_DIR / _rel).exists():
+            app.add_api_route(_path, (lambda rel: (lambda: HTMLResponse(_stamped_html(rel))))(_rel), methods=["GET"], include_in_schema=False)
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
