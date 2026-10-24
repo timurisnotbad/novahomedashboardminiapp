@@ -40,13 +40,13 @@ def split_text(text: str, limit: int = _LIMIT) -> list[str]:
     return parts or [""]
 
 
-def _call(method: str, payload: dict):
+def _call(method: str, payload: dict, token: str | None = None):
     """One Bot API call with up to 3 attempts; honours Telegram's retry_after.
     Returns the `result` object on success, None on failure (the description is
     logged; `_last_error` carries it for callers that need to branch)."""
     global _last_error
     _last_error = ""
-    url = _API.format(token=config.BOT_TOKEN, method=method)
+    url = _API.format(token=token or config.BOT_TOKEN, method=method)
     for attempt in range(3):
         try:
             resp = requests.post(url, json=payload, timeout=10)
@@ -89,7 +89,7 @@ def _thread_for(chat_id: int, topic: str | None):
         return None
 
 
-def _deliver(chat_id: int, chunks: list[str], thread) -> int | None:
+def _deliver(chat_id: int, chunks: list[str], thread, token: str | None = None) -> int | None:
     """Send the chunks to one chat; returns the first message id (or None)."""
     first = None
     for chunk in chunks:
@@ -102,7 +102,7 @@ def _deliver(chat_id: int, chunks: list[str], thread) -> int | None:
         }
         if thread:
             payload["message_thread_id"] = thread
-        res = _call("sendMessage", payload)
+        res = _call("sendMessage", payload, token)
         if res is None:
             break  # don't spray the remaining chunks at a dead chat
         if first is None and isinstance(res, dict):
@@ -110,11 +110,11 @@ def _deliver(chat_id: int, chunks: list[str], thread) -> int | None:
     return first
 
 
-def send(text: str, targets=None, topic: str | None = None) -> None:
+def send(text: str, targets=None, topic: str | None = None, token: str | None = None) -> None:
     """Send `text` to targets. `topic` names the message kind (cleaning /
     attendance / general); in forum groups it selects the thread bound via
-    /topic, private chats ignore it."""
-    token = config.BOT_TOKEN
+    /topic, private chats ignore it. `token`: another bot (the CRM one)."""
+    token = token or config.BOT_TOKEN
     ids = targets if targets is not None else config.notify_targets()
     if not token or not ids or not text:
         return
@@ -122,7 +122,7 @@ def send(text: str, targets=None, topic: str | None = None) -> None:
 
     def _run():
         for chat_id in ids:
-            _deliver(chat_id, chunks, _thread_for(chat_id, topic))
+            _deliver(chat_id, chunks, _thread_for(chat_id, topic), token)
 
     from . import bg
     bg.run(_run)

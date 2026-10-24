@@ -60,12 +60,15 @@ def targets(kind: str, uids=None) -> list[int]:
 
 
 def broadcast(kind: str, text: str, base=None, uids=None, topic: str | None = None) -> None:
-    """Send to the usual targets (base: the owner's chats by default) plus the users who chose this kind."""
+    """The usual targets (base: the owner's chats by default) get it from the dashboard bot; the users who
+    chose this kind get it from the CRM bot — one copy per person."""
     from . import notify
-    base_list = list(base) if base is not None else list(config.notify_targets())
-    ids = list(dict.fromkeys(base_list + targets(kind, uids)))
-    if ids:
-        notify.send(text, targets=ids, topic=topic)
+    personal = list(dict.fromkeys(targets(kind, uids)))
+    base_list = [t for t in dict.fromkeys(list(base) if base is not None else list(config.notify_targets())) if t not in personal]
+    if base_list:
+        notify.send(text, targets=base_list, topic=topic)
+    if personal:
+        notify.send(text, targets=personal, token=config.crm_bot_token())
 
 
 def task_reminders() -> int:
@@ -92,7 +95,7 @@ def task_reminders() -> int:
             ids = targets("tasks", [t["assignee_uid"]] if t.get("assignee_uid") else None)
             if ids:
                 from . import notify
-                notify.send(text, targets=ids)
+                notify.send(text, targets=ids, token=config.crm_bot_token())
             with database.get_conn() as conn:
                 conn.execute("INSERT OR REPLACE INTO crm_task_alerts (task_id, at) VALUES (?, ?)", (t["id"], now.isoformat(timespec="seconds")))
             n += bool(ids)
@@ -102,7 +105,8 @@ def task_reminders() -> int:
 
 
 def status(uid: int) -> dict:
-    from . import crm
+    from . import crm, crm_bot
     u = crm.get_user(uid) or {}
-    return {"linked": bool(u.get("tg_id")), "bot": getattr(config, "BOT_USERNAME", "") or "", "configured": bool(config.BOT_TOKEN),
+    return {"linked": bool(u.get("tg_id")), "bot": crm_bot.username() or getattr(config, "BOT_USERNAME", "") or "",
+            "configured": bool(config.crm_bot_token()), "separate": crm_bot.configured(), "bot_error": crm_bot.error(),
             "prefs": prefs(uid), "kinds": [{"key": k, "name": n, "hint": h, "admin": a} for k, n, h, a in KINDS], "admin": u.get("role") == "admin"}

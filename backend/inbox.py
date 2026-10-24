@@ -1408,7 +1408,7 @@ def agents() -> list[str]:
 # ---------------------------------------------------------------------------
 # Telegram alerts; a reply to an alert goes back to the guest (see bot.py)
 # ---------------------------------------------------------------------------
-def _tg_send_all(targets, text: str) -> list[tuple[int, int]]:
+def _tg_send_all(targets, text: str, token: str | None = None) -> list[tuple[int, int]]:
     from . import notify
     sent = []
     for chat in targets:
@@ -1417,7 +1417,7 @@ def _tg_send_all(targets, text: str) -> list[tuple[int, int]]:
         thread = notify._thread_for(chat, "inbox")  # noqa: SLF001 — a «Чаты» topic via /topic чаты
         if thread:
             payload["message_thread_id"] = thread
-        res = notify._call("sendMessage", payload)  # noqa: SLF001 — shared low-level sender
+        res = notify._call("sendMessage", payload, token)  # noqa: SLF001 — shared low-level sender
         if isinstance(res, dict) and res.get("message_id"):
             sent.append((chat, res["message_id"]))
     return sent
@@ -1426,8 +1426,9 @@ def _tg_send_all(targets, text: str) -> list[tuple[int, int]]:
 def _alert(chat_id: int, m: dict, extra_targets=None) -> None:
     """Telegram alert about a guest message: to the work chats (INBOX_NOTIFY_CHAT_IDS)
     and to the personal Telegram of the users who linked it (/link in the bot)."""
-    targets = list(dict.fromkeys(list(config.inbox_notify_targets()) + list(extra_targets or [])))
-    if not targets or not config.BOT_TOKEN:
+    personal = list(dict.fromkeys(extra_targets or []))  # linked CRM users: the CRM bot (or the dashboard bot when it is the same)
+    base = [t for t in dict.fromkeys(config.inbox_notify_targets()) if t not in personal]  # work chats: the dashboard bot
+    if not (base or personal) or not config.BOT_TOKEN:
         return
 
     def run():
@@ -1444,7 +1445,8 @@ def _alert(chat_id: int, m: dict, extra_targets=None) -> None:
             body = _preview(m.get("kind") or "text", m.get("text") or "")
             link = f"\n🔗 {config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat_id}" if config.WEBAPP_URL else ""
             text = f"💬 {c.get('channel_name') or 'WhatsApp'} · {who}\n\n{body}\n\n↩️ Ответьте на это сообщение — ответ уйдёт гостю.{link}"
-            for tg_chat, tg_msg in _tg_send_all(targets, text):
+            pairs = _tg_send_all(base, text) + _tg_send_all(personal, text, config.crm_bot_token())
+            for tg_chat, tg_msg in pairs:
                 with database.get_conn() as conn:
                     conn.execute("INSERT OR REPLACE INTO inbox_tg_map VALUES (?, ?, ?, ?)",
                                  (tg_chat, tg_msg, chat_id, _now()))

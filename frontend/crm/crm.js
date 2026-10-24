@@ -122,14 +122,14 @@
   // personal Telegram for guest-message alerts: a code → «/link КОД» to the work bot
   async function telegramLink() {
     let st; try { st = await get("/me/telegram"); } catch (err) { toast(err.message); return; }
-    if (!st.configured) { modal(`<h2>Telegram-уведомления</h2><p class="muted">Рабочий Telegram-бот не настроен (BOT_TOKEN в .env). Без него уведомления в Telegram невозможны; включите push-уведомления на телефоне — ссылка «Уведомления на этом устройстве».</p><div class="row-actions"><button class="btn primary" data-close>Понятно</button></div>`); return; }
+    if (!st.configured) { modal(`<h2>Telegram-уведомления</h2><p class="muted">Telegram-бот не настроен (BOT_TOKEN или CRM_BOT_TOKEN в .env). Без него уведомления в Telegram невозможны; включите push-уведомления на телефоне — ссылка «Уведомления на этом устройстве».</p><div class="row-actions"><button class="btn primary" data-close>Понятно</button></div>`); return; }
     const render = (code) => modal(`<h2>Telegram-уведомления</h2>
-      ${st.linked ? `<p>✅ Telegram подключён: уведомления CRM приходят вам в личку от рабочего бота${st.bot ? ` <b>@${esc(st.bot)}</b>` : ""} — это замена уведомлений приложения на телефоне. Ответ на уведомление о сообщении уходит гостю.</p>
+      ${st.linked ? `<p>✅ Telegram подключён: уведомления CRM приходят вам в личку от ${st.separate ? "бота уведомлений CRM" : "рабочего бота"}${st.bot ? ` <b>@${esc(st.bot)}</b>` : ""} — это замена уведомлений приложения на телефоне. Ответ на уведомление о сообщении уходит гостю.</p>${st.bot_error ? `<p class="small" style="color:var(--red)">Бот уведомлений не отвечает: ${esc(st.bot_error)}</p>` : ""}
         <div class="small muted" style="margin:10px 0 4px">Что присылать:</div>
         <div id="tg-prefs" style="display:flex;flex-direction:column;gap:6px">${(st.kinds || []).filter((k) => !k.admin || st.admin).map((k) => `<label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" data-pref="${esc(k.key)}" ${st.prefs && st.prefs[k.key] ? "checked" : ""} /><span><b>${esc(k.name)}</b> <span class="muted small">— ${esc(k.hint)}</span></span></label>`).join("")}</div>
         <div class="row-actions" style="margin-top:12px"><button class="btn" id="tg-unlink">Отключить</button><button class="btn primary" data-close>Закрыть</button></div>` :
       `<p>Чтобы получать уведомления CRM в Telegram (сообщения гостей, задачи, брони — даже когда CRM закрыта):</p>
-        <ol style="margin:6px 0 10px 18px"><li>Откройте рабочего бота${st.bot ? ` <b>@${esc(st.bot)}</b>` : ""} в Telegram и нажмите /start.</li><li>Отправьте ему команду:</li></ol>
+        <ol style="margin:6px 0 10px 18px"><li>Откройте ${st.separate ? "бота уведомлений CRM" : "рабочего бота"}${st.bot ? ` <b>@${esc(st.bot)}</b>` : ""} в Telegram и нажмите /start.</li><li>Отправьте ему команду:</li></ol>
         <div class="mono" style="font-size:20px;text-align:center;padding:10px;background:var(--fill);border-radius:10px;user-select:all">/link ${esc(code)}</div>
         <p class="muted small" style="margin-top:8px">Код действует 30 минут. После этого уведомления о чатах без ответа будут приходить вам лично; ответ на уведомление в Telegram уходит гостю.</p>
         <div class="row-actions"><button class="btn" id="tg-copy">Скопировать команду</button><button class="btn primary" data-close>Готово</button></div>`}`);

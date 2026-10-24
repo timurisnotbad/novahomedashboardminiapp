@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, auth, cash, config, crm, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
+from . import ai, auth, cash, config, crm, crm_bot, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
 from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
@@ -79,6 +79,7 @@ async def lifespan(app: FastAPI):
     wazzup.start()              # Wazzup: check the key, register the webhook (background)
     await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
     tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
+    crm_bot.start()             # CRM notification bot (if CRM_BOT_TOKEN is set)
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
     scheduler.shutdown()

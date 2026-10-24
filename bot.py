@@ -634,6 +634,11 @@ async def link_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/link CODE — tie this Telegram account to a CRM user (code from CRM → «Telegram-уведомления»)."""
     user = update.effective_user
     parts = (update.effective_message.text or "").split()
+    if config.CRM_BOT_TOKEN and config.CRM_BOT_TOKEN != config.BOT_TOKEN:
+        from backend import crm_bot
+        who = f"@{crm_bot.username()}" if crm_bot.username() else "бот уведомлений CRM"
+        await update.effective_message.reply_text(f"Уведомления CRM приходят от отдельного бота: откройте {who}, нажмите Start и отправьте /link КОД там.")
+        return
     if not user or len(parts) < 2:
         await update.effective_message.reply_text("Использование: /link КОД — код показывает CRM (меню → Telegram-уведомления).")
         return

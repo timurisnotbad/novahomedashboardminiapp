@@ -122,6 +122,13 @@ SOURCE_NAMES = {None: "Прямое", 0: "Прямое", 2: "Booking.com", 3: "A
 # Telegram
 # ---------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+# a second bot for CRM notifications (chats waiting for a reply, tasks, bookings, payments) so they do not
+# mix with the dashboard bot; empty = the dashboard bot sends them (as before)
+CRM_BOT_TOKEN = os.environ.get("CRM_BOT_TOKEN", "").strip()
+
+
+def crm_bot_token() -> str:
+    return CRM_BOT_TOKEN or BOT_TOKEN
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "").strip()
 
 
@@ -368,7 +375,7 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "99"
+APP_VERSION = "100"
 
 
 def features() -> dict:
