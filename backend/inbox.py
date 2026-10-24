@@ -366,6 +366,61 @@ def _bookings_by_phone() -> dict[str, list[dict]]:
     return m
 
 
+GENERIC_NAMES = {"гость", "guest", "клиент", "client", "booking", "whatsapp", "telegram"}
+_name_cache: dict = {"at": 0.0, "map": {}}
+
+
+def name_key(name: str) -> str:
+    """«Nabeel  Arshad» / «arshad nabeel» / «Nabeel Arshad (2 чел)» → «arshad nabeel»: the first two real words,
+    letters only, sorted; '' for generic or one-word names."""
+    words = [w for w in re.findall(r"[^\W\d_]+", (name or "").lower()) if len(w) > 1 and w not in GENERIC_NAMES and w != "чел"]
+    if len(words) < 2:
+        return ""
+    return " ".join(sorted(words[:2]))
+
+
+def _bookings_by_name() -> dict[str, list[dict]]:
+    """name_key → bookings around today (a Booking.com guest has no phone in RC, but the WhatsApp name matches)."""
+    if time.time() - _name_cache["at"] < 60:
+        return _name_cache["map"]
+    m: dict[str, list[dict]] = {}
+    try:
+        lo = (date.today() - timedelta(days=7)).isoformat()
+        hi = (date.today() + timedelta(days=90)).isoformat()
+        with database.get_conn() as conn:
+            rows = conn.execute("SELECT * FROM bookings WHERE COALESCE(is_delete, 0) = 0 AND end_date >= ? AND begin_date <= ? AND client_name IS NOT NULL",
+                                (lo, hi)).fetchall()
+        for r in rows:
+            k = name_key(r["client_name"])
+            if k:
+                m.setdefault(k, []).append(dict(r))
+    except Exception:  # noqa: BLE001
+        logger.exception("booking name index failed")
+    _name_cache.update(at=time.time(), map=m)
+    return m
+
+
+def booking_by_name(chat: dict) -> dict | None:
+    """The guest's current/next booking found by the chat's name when the number gave nothing."""
+    rows = []
+    for nm in (chat.get("name"), chat.get("push_name")):
+        k = name_key(nm or "")
+        if k:
+            rows = _bookings_by_name().get(k) or []
+            if rows:
+                break
+    if not rows:
+        return None
+    today = date.today().isoformat()
+    cur = [r for r in rows if r["begin_date"] <= today < r["end_date"] or r["end_date"] == today]
+    nxt = sorted((r for r in rows if r["begin_date"] > today), key=lambda r: r["begin_date"])
+    past = sorted((r for r in rows if r["end_date"] < today), key=lambda r: r["end_date"], reverse=True)
+    b = dict((cur or nxt or past)[0])
+    b["when"] = "now" if cur else "next" if nxt else "past"
+    b["by"] = "name"
+    return b
+
+
 def booking_for(phone: str) -> dict | None:
     """The guest's current booking, else the next one, else the latest past."""
     d = digits(phone)
@@ -416,9 +471,9 @@ def _chat_out(r) -> dict:
     c["channel_name"] = CHANNELS.get(c["channel"], c["channel"])
     c["title"] = c.get("name") or c.get("push_name") or (("+" + c["phone"]) if c.get("phone") else c["channel_name"])
     pb = _pinned_booking(c["id"])
-    b = pb or booking_for(c.get("phone") or "")
+    b = pb or booking_for(c.get("phone") or "") or booking_by_name(c)
     c["booking"] = ({"id": b["id"], "apartment": b["apartment_name"], "begin": b["begin_date"], "end": b["end_date"],
-                     "guest": b["client_name"], "when": b["when"], "pinned": bool(pb),
+                     "guest": b["client_name"], "when": b["when"], "pinned": bool(pb), "by": "pinned" if pb else b.get("by") or "phone",
                      "arrival_time": (b.get("arrival_time") or "")[:5], "departure_time": (b.get("departure_time") or "")[:5], "default_times": _default_times(),
                      "nights": b.get("days_count"), "amount": b.get("amount")} if b else None)
     if c["booking"]:
@@ -496,6 +551,13 @@ def _stays_for_chat(chat_id: int, phone: str) -> list[dict]:
     if len(d) >= 7:
         for r in _bookings_by_phone().get(d[-9:]) or []:
             rows.setdefault(r["id"], r)
+    if not rows:
+        with database.get_conn() as conn:
+            c = conn.execute("SELECT name, push_name FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
+        for nm in ((c["name"], c["push_name"]) if c else ()):
+            k = name_key(nm or "")
+            for r in (_bookings_by_name().get(k) if k else None) or []:
+                rows.setdefault(r["id"], r)
     if not rows:
         return []
     today = date.today().isoformat()

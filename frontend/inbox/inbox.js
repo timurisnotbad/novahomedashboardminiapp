@@ -104,7 +104,7 @@
     if (!b) return "";
     const when = b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "был";
     return long
-      ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : ' <span class="ib-muted">· по номеру</span>'}`
+      ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : b.by === "name" ? ' <span class="ib-muted">· по имени</span>' : ' <span class="ib-muted">· по номеру</span>'}`
       : `${esc(b.apartment)}`;
   }
   // chat list: every apartment the guest holds, with the stay dates — same dates are grouped («B-008, B-110 · 22–27.10»)

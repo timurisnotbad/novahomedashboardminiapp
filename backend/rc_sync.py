@@ -127,25 +127,30 @@ def fetch_raw_event(bid: int) -> dict | None:
     return None
 
 
+KNOWN_STATUSES = ["booked", "paid", "confirmed", "prepaid", "not_confirmed"]
+# statuses that mean «no booking»; everything else (checked-in, checked-out, whatever RC adds) is a booking
+CANCELLED_STATUSES = {"cancelled", "canceled", "declined", "rejected", "deleted", "removed", "canceled_by_guest", "no_show"}
+_status_seen: dict = {}
+
+
 def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = None) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 
     Dates are sent as DD.MM.YYYY and apartment_ids as a comma-separated string,
-    exactly as the RC API expects.
-    """
+    exactly as the RC API expects. No status filter: a booking whose status RC
+    changed (guest checked in / out, a new status) must not vanish from the CRM;
+    only cancelled ones are dropped. If RC refuses the unfiltered call, the old
+    five-status list is used."""
     apt_ids = ",".join(str(i) for i in (apartment_ids or config.APARTMENTS.keys()))
     params = {
         "apartment_ids": apt_ids,
         "begin_date": date_from.strftime("%d.%m.%Y"),
         "end_date": date_to.strftime("%d.%m.%Y"),
-        "statuses[]": ["booked", "paid", "confirmed", "prepaid", "not_confirmed"],
     }
-    resp = requests.get(
-        f"{config.RC_BASE_URL}/v2/event_calendars",
-        params=params,
-        headers=_headers(),
-        timeout=30,
-    )
+    resp = requests.get(f"{config.RC_BASE_URL}/v2/event_calendars", params=params, headers=_headers(), timeout=30)
+    if resp.status_code in (400, 422):
+        resp = requests.get(f"{config.RC_BASE_URL}/v2/event_calendars", params={**params, "statuses[]": KNOWN_STATUSES},
+                            headers=_headers(), timeout=30)
     resp.raise_for_status()
 
     data = resp.json()
@@ -160,6 +165,12 @@ def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = 
         for event in item.get("events") or []:
             if not isinstance(event, dict) or event.get("is_delete"):
                 continue
+            st = str(event.get("status") or "").lower()
+            _status_seen[st] = _status_seen.get(st, 0) + 1
+            if st in CANCELLED_STATUSES:
+                continue
+            if st and st not in KNOWN_STATUSES and _status_seen[st] == 1:
+                logger.info("RC status «%s» seen for the first time (booking %s) — kept as a booking", st, event.get("id"))
             if not event.get("begin_date") or not event.get("end_date"):
                 logger.warning("RC event %s without dates skipped", event.get("id"))
                 continue
@@ -214,6 +225,7 @@ def sync_to_db() -> int:
         try:
             from . import inbox
             inbox._phone_cache["at"] = 0.0  # noqa: SLF001 — phone → booking index follows the calendar at once
+            inbox._name_cache["at"] = 0.0  # noqa: SLF001
         except Exception:  # noqa: BLE001
             pass
         if stats["removed"] or stats["missing"]:

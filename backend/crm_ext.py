@@ -130,6 +130,17 @@ def booking_card(bid: int) -> dict | None:
                     if c:
                         c["pinned"] = False
                         chats.append(c)
+        else:  # no phone in RC (Booking.com guests): chats whose name matches the guest's name
+            k = inbox.name_key(b.get("guest") or "")
+            if k:
+                for r in conn.execute("SELECT id, name, push_name FROM inbox_chats ORDER BY last_at DESC LIMIT 3000").fetchall():
+                    if r["id"] in pinned or k not in (inbox.name_key(r["name"] or ""), inbox.name_key(r["push_name"] or "")):
+                        continue
+                    c = inbox.get_chat(r["id"])
+                    if c:
+                        c["pinned"] = False
+                        c["by"] = "name"
+                        chats.append(c)
         deal = conn.execute("SELECT id, title, stage_id FROM crm_deals WHERE booking_id = ?", (bid,)).fetchone()
         auto = [dict(r) for r in conn.execute(
             "SELECT * FROM crm_auto_log WHERE booking_id = ? ORDER BY id DESC LIMIT 20", (bid,)).fetchall()]
@@ -1036,7 +1047,7 @@ def on_incoming(chat_id: int, is_first: bool) -> None:
         if not chat:
             return
         now = datetime.now()
-        b = pinned_booking_for_chat(chat_id) or (inbox.booking_for(chat["phone"]) if chat.get("phone") else None)
+        b = pinned_booking_for_chat(chat_id) or (inbox.booking_for(chat["phone"]) if chat.get("phone") else None) or inbox.booking_by_name(chat)
         bo = crm._booking_out(b) if b else None
         for rule in active:
             if rule["channel"] != "auto" and chat["channel"] != rule["channel"] and not (rule["channel"] in ("wa", "wac") and chat["channel"] in ("wa", "wac")):
