@@ -4,12 +4,13 @@ Uses the standard-library ``sqlite3`` module with a thin helper API. Access is
 synchronous; FastAPI runs sync path operations in a threadpool, which is more
 than enough for a single-property operations dashboard.
 """
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterable
 
-from . import config
+from . import config, util
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bookings (
@@ -62,6 +63,33 @@ CREATE TABLE IF NOT EXISTS sync_log (
     synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     bookings_count INTEGER,
     success BOOLEAN
+);
+
+-- bookings the calendar stopped returning inside the sync window: a booking
+-- is removed only after it has been missing from two consecutive fetches, so
+-- a half-empty answer from the calendar never cancels deals in the CRM
+-- nightly prices mirrored from the RealtyCalendar chessmate (rc_rates.py)
+CREATE TABLE IF NOT EXISTS rc_rates (
+    apartment_id INTEGER NOT NULL,
+    apartment_name TEXT,
+    day TEXT NOT NULL,
+    price REAL,
+    min_nights INTEGER,
+    updated_at TEXT,
+    PRIMARY KEY (apartment_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS bookings_missing (
+    id INTEGER PRIMARY KEY,
+    since TIMESTAMP,
+    misses INTEGER DEFAULT 1
+);
+
+-- the last copy of a booking removed from the calendar (for the deal history)
+CREATE TABLE IF NOT EXISTS bookings_cancelled (
+    id INTEGER PRIMARY KEY,
+    data TEXT,
+    cancelled_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -123,6 +151,12 @@ CREATE TABLE IF NOT EXISTS staff_registry (
     username TEXT,
     first_seen TIMESTAMP,
     active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS access_keys (
+    uid INTEGER PRIMARY KEY,
+    key_hash TEXT NOT NULL,
+    created_at TEXT,
+    revoked INTEGER DEFAULT 0
 );
 
 -- forum topics in the team group: which thread each kind of message goes to
@@ -235,6 +269,8 @@ def get_conn():
     # timeout lets the bot and the server share the DB without "database is locked"
     conn = sqlite3.connect(config.DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
+    # per-connection setting (journal_mode=WAL is stored in the file once, in init_db)
+    conn.execute("PRAGMA synchronous=NORMAL")
     try:
         yield conn
         conn.commit()
@@ -245,8 +281,9 @@ def get_conn():
 def init_db() -> None:
     with get_conn() as conn:
         # WAL + relaxed sync = snappier concurrent reads for the dashboard.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if str(mode).lower() != "wal":  # network drive / exotic FS: say so instead of pretending
+            logging.getLogger("nova.db").warning("SQLite journal_mode is %s, not WAL — concurrent reads will block on writes", mode)
         conn.executescript(SCHEMA)
         # Migrations. The server and the bot start at the same moment and both
         # run this; the loser of the race gets "duplicate column name" — harmless.
@@ -263,6 +300,12 @@ def init_db() -> None:
                 raise
 
         _add_column("tasks", "deadline_time", "TEXT")
+        _add_column("bookings", "client_email", "TEXT")
+        _add_column("bookings", "client_phone2", "TEXT")
+        # when *we* first saw the booking (the calendar's created_at is not
+        # reliable); drives the "new booking" rule and the checklist anchors
+        if _add_column("bookings", "first_seen", "TEXT"):
+            conn.execute("UPDATE bookings SET first_seen = COALESCE(created_at, synced_at) WHERE first_seen IS NULL")
         # items the bot pulled out of the «Поломки» topic: who wrote it, and
         # the chat-line id so an edited message is not recorded twice
         _add_column("tasks", "created_by", "TEXT")
@@ -281,7 +324,8 @@ BOOKING_COLUMNS = [
     "id", "apartment_id", "apartment_name", "begin_date", "end_date", "status",
     "days_count", "amount", "debt", "prepayment", "prepayment_progress",
     "is_external", "source_id", "client_name", "client_phone", "arrival_time",
-    "departure_time", "short_notes", "is_delete", "created_at", "synced_at",
+    "departure_time", "short_notes", "is_delete", "created_at", "synced_at", "client_email", "client_phone2",
+    "first_seen",
 ]
 
 
@@ -312,20 +356,26 @@ def _booking_rows(bookings: Iterable[dict]) -> list[tuple]:
             1 if b.get("is_delete") else 0,
             b.get("created_at"),
             now,
+            b.get("client_email") or client.get("email"),
+            b.get("client_phone2") or client.get("additional_phone") or client.get("phone2") or client.get("second_phone"),
+            now,
         ))
     return rows
 
 
 def _insert_sql() -> str:
+    """Upsert that keeps `first_seen` of an existing row (INSERT OR REPLACE
+    would reset it on every sync and make every booking look brand new)."""
     placeholders = ",".join(["?"] * len(BOOKING_COLUMNS))
+    updates = ", ".join(f"{c}=excluded.{c}" for c in BOOKING_COLUMNS if c not in ("id", "first_seen"))
     return (
-        f"INSERT OR REPLACE INTO bookings ({','.join(BOOKING_COLUMNS)}) "
-        f"VALUES ({placeholders})"
+        f"INSERT INTO bookings ({','.join(BOOKING_COLUMNS)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}"
     )
 
 
 def upsert_bookings(bookings: Iterable[dict]) -> int:
-    """Insert or replace bookings by primary key. Returns the count written."""
+    """Insert or update bookings by primary key. Returns the count written."""
     rows = _booking_rows(bookings)
     with get_conn() as conn:
         conn.executemany(_insert_sql(), rows)
@@ -333,25 +383,65 @@ def upsert_bookings(bookings: Iterable[dict]) -> int:
 
 
 def _num(value):
-    if value is None:
-        return 0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0
+    return util.num(value, 0)
 
 
 def replace_all_bookings(bookings: list[dict]) -> int:
     """Full refresh: clear the table then insert, in a single transaction.
-
-    Used on every sync so the table stays an exact mirror of the source and
-    never mixes stale rows (e.g. demo data) with a fresh fetch.
-    """
+    Kept for tests / demo resets; the regular sync uses the window variant."""
     rows = _booking_rows(bookings)
     with get_conn() as conn:
         conn.execute("DELETE FROM bookings")
+        conn.execute("DELETE FROM bookings_missing")
         conn.executemany(_insert_sql(), rows)
     return len(rows)
+
+
+MISSES_TO_CANCEL = 2
+
+
+def replace_window_bookings(bookings: list[dict], d0: str, d1: str) -> dict:
+    """Mirror the calendar for the fetched window [d0, d1] without touching
+    bookings outside it (history stays), and without a DELETE-all gap.
+
+    A booking that overlaps the window but is absent from the fetch is counted
+    as "missing"; it is removed (and archived in bookings_cancelled) only after
+    MISSES_TO_CANCEL consecutive misses — one truncated answer from the
+    calendar therefore cannot cancel deals. Returns counters for the log.
+    """
+    rows = _booking_rows(bookings)
+    ids = {r[0] for r in rows}
+    now = datetime.now().isoformat(timespec="seconds")
+    removed = 0
+    with get_conn() as conn:
+        conn.executemany(_insert_sql(), rows)
+        if ids:
+            conn.executemany("DELETE FROM bookings_missing WHERE id = ?", [(i,) for i in ids])
+        present = conn.execute(
+            "SELECT * FROM bookings WHERE begin_date <= ? AND end_date >= ? AND is_delete = 0",
+            (d1, d0),
+        ).fetchall()
+        for r in present:
+            if r["id"] in ids:
+                continue
+            m = conn.execute("SELECT misses FROM bookings_missing WHERE id = ?", (r["id"],)).fetchone()
+            misses = (m["misses"] if m else 0) + 1
+            if misses >= MISSES_TO_CANCEL:
+                conn.execute(
+                    "INSERT OR REPLACE INTO bookings_cancelled (id, data, cancelled_at) VALUES (?, ?, ?)",
+                    (r["id"], json.dumps(dict(r), ensure_ascii=False, default=str), now),
+                )
+                conn.execute("DELETE FROM bookings WHERE id = ?", (r["id"],))
+                conn.execute("DELETE FROM bookings_missing WHERE id = ?", (r["id"],))
+                removed += 1
+            else:
+                conn.execute(
+                    "INSERT INTO bookings_missing (id, since, misses) VALUES (?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET misses = excluded.misses",
+                    (r["id"], now, misses),
+                )
+        missing = conn.execute("SELECT COUNT(*) FROM bookings_missing").fetchone()[0]
+    return {"written": len(rows), "removed": removed, "missing": missing}
 
 
 def get_bookings(
@@ -705,25 +795,9 @@ def get_topic(chat_id: int, role: str):
     return None
 
 
-def topic_binding(chat_id: int, role: str):
-    """The binding row for exactly this role (no fallback to 'general'), or
-    None when the chat has no such binding."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM chat_topics WHERE chat_id = ? AND role = ?", (chat_id, role)
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-
 def chat_topics(chat_id: int) -> list[dict]:
     with get_conn() as conn:
         cur = conn.execute("SELECT * FROM chat_topics WHERE chat_id = ? ORDER BY role", (chat_id,))
-        return [dict(r) for r in cur.fetchall()]
-
-
-def all_topics() -> list[dict]:
-    with get_conn() as conn:
-        cur = conn.execute("SELECT * FROM chat_topics ORDER BY chat_id, role")
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -761,18 +835,69 @@ def distinct_apartments() -> list[str]:
         return [r[0] for r in cur.fetchall()]
 
 
-def upsert_staff(staff_id: int, name: str, username: str) -> None:
-    """Auto-register a staff member on any bot interaction; refresh name and
-    reactivate (a returning person starts being tracked again)."""
+def upsert_staff(staff_id: int, name: str, username: str) -> bool:
+    """Register a person who talks to the bot. New people start INACTIVE
+    (pending): an owner confirms them with /staff_ok. A known person only gets
+    the name refreshed — never reactivated by talking to the bot again.
+    Returns True when the row was created (so the owner can be told)."""
     from datetime import datetime
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO staff_registry (staff_id, name, username, first_seen, active) "
-            "VALUES (?, ?, ?, ?, 1) "
-            "ON CONFLICT(staff_id) DO UPDATE SET name=excluded.name, "
-            "username=excluded.username, active=1",
-            (staff_id, name or "", username or "", datetime.now().isoformat(timespec="seconds")),
-        )
+        known = conn.execute("SELECT 1 FROM staff_registry WHERE staff_id = ?", (staff_id,)).fetchone()
+        if known:
+            conn.execute("UPDATE staff_registry SET name = ?, username = ? WHERE staff_id = ?", (name or "", username or "", staff_id))
+            return False
+        conn.execute("INSERT INTO staff_registry (staff_id, name, username, first_seen, active) VALUES (?, ?, ?, ?, 0)",
+                     (staff_id, name or "", username or "", datetime.now().isoformat(timespec="seconds")))
+        return True
+
+
+def is_active_staff(staff_id: int) -> bool:
+    with get_conn() as conn:
+        r = conn.execute("SELECT active FROM staff_registry WHERE staff_id = ?", (staff_id,)).fetchone()
+        return bool(r and r["active"])
+
+
+def staff_known(staff_id: int) -> bool:
+    with get_conn() as conn:
+        return conn.execute("SELECT 1 FROM staff_registry WHERE staff_id = ?", (staff_id,)).fetchone() is not None
+
+
+# ---- personal dashboard keys (replace the shared STAFF_KEY) -----------------
+def issue_access_key(uid: int) -> str:
+    """A fresh personal key for the WebApp link; only its hash is stored."""
+    import hashlib
+    import secrets as _secrets
+    from datetime import datetime
+    key = f"{uid}.{_secrets.token_urlsafe(24)}"
+    with get_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS access_keys (uid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created_at TEXT, revoked INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO access_keys (uid, key_hash, created_at, revoked) VALUES (?, ?, ?, 0) "
+                     "ON CONFLICT(uid) DO UPDATE SET key_hash = excluded.key_hash, created_at = excluded.created_at, revoked = 0",
+                     (uid, hashlib.sha256(key.encode()).hexdigest(), datetime.now().isoformat(timespec="seconds")))
+    return key
+
+
+def access_key_uid(key: str) -> int | None:
+    """uid behind a personal key, or None (unknown, revoked, malformed)."""
+    import hashlib
+    import hmac as _hmac
+    uid, _, rest = (key or "").partition(".")
+    if not uid.isdigit() or not rest:
+        return None
+    with get_conn() as conn:
+        try:
+            r = conn.execute("SELECT key_hash, revoked FROM access_keys WHERE uid = ?", (int(uid),)).fetchone()
+        except Exception:  # noqa: BLE001 — table not there yet
+            return None
+    if not r or r["revoked"] or not _hmac.compare_digest(r["key_hash"], hashlib.sha256(key.encode()).hexdigest()):
+        return None
+    return int(uid)
+
+
+def revoke_access_key(uid: int) -> None:
+    with get_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS access_keys (uid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created_at TEXT, revoked INTEGER DEFAULT 0)")
+        conn.execute("UPDATE access_keys SET revoked = 1 WHERE uid = ?", (uid,))
 
 
 def all_staff(active_only: bool = True) -> list[dict]:

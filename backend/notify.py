@@ -12,7 +12,6 @@ collecting a "🔄 График изменился" message every 15 minutes.
 """
 import hashlib
 import logging
-import threading
 import time
 from datetime import datetime, timedelta
 
@@ -125,7 +124,8 @@ def send(text: str, targets=None, topic: str | None = None) -> None:
         for chat_id in ids:
             _deliver(chat_id, chunks, _thread_for(chat_id, topic))
 
-    threading.Thread(target=_run, daemon=True).start()
+    from . import bg
+    bg.run(_run)
 
 
 def _hash(text: str) -> str:
@@ -190,4 +190,5 @@ def send_replacing(key: str, text: str, targets=None, topic: str | None = None,
         except Exception:  # noqa: BLE001
             pass
 
-    threading.Thread(target=_run, daemon=True).start()
+    from . import bg
+    bg.run(_run)
