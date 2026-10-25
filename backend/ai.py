@@ -872,7 +872,10 @@ def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
             state["lead"] = deal["id"]
             try:
                 from . import alerts
-                alerts.broadcast("ai", f"🤖 Новая заявка из чата ({chat.get('channel_name')}): {summary}\n{config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat['id']}" if config.WEBAPP_URL else f"🤖 Новая заявка из чата: {summary}")
+                link = f"\n🔗 {config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat['id']}" if config.WEBAPP_URL else ""
+                # personal only (never the work group), the guest's own words instead of the assistant's digest
+                alerts.broadcast("ai", f"🤖 Заявка · {chat.get('channel_name')} · {inp.get('name') or chat.get('title')}: {inp.get('checkin')}–{inp.get('checkout')}, "
+                                       f"гостей {inp.get('guests') or '?'}{_guest_quote(chat['id'])}{link}", base=[])
             except Exception:  # noqa: BLE001
                 pass
             return json.dumps({"ok": True, "deal_id": deal["id"]}, ensure_ascii=False)
@@ -902,8 +905,7 @@ def _do_handover(chat_id: int, info: dict, mode: str) -> None:
         c = inbox.get_chat(chat_id)
         link = f"\n🔗 {config.WEBAPP_URL.rstrip('/')}/crm/#messages/{chat_id}" if config.WEBAPP_URL else ""
         from . import alerts
-        alerts.broadcast("ai", f"🙋 Чат {c['title'] if c else chat_id} ({c.get('channel_name') if c else ''}): нужен человек.\n{info.get('reason') or ''}\n{info.get('summary') or ''}{link}",
-                         base=list(config.inbox_notify_targets()))
+        alerts.broadcast("ai", f"🙋 {c.get('channel_name') if c else 'Чат'} · {c['title'] if c else chat_id}: ассистент передал чат человеку{_guest_quote(chat_id)}{link}", base=[])
     except Exception:  # noqa: BLE001
         logger.exception("handover notify failed")
 
@@ -1048,6 +1050,19 @@ def _status(chat_id: int, text: str) -> None:
 
 def mark_thinking(chat_id: int) -> None:
     _status(chat_id, "думает…")
+
+
+def _guest_quote(chat_id: int, limit: int = 300) -> str:
+    """The guest's last message, quoted — what a person wants to read instead of a digest."""
+    try:
+        with database.get_conn() as conn:
+            r = conn.execute("SELECT kind, text FROM inbox_messages WHERE chat_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 1", (chat_id,)).fetchone()
+        if not r:
+            return ""
+        t = (r["text"] or "").strip() or {"image": "📷 фото", "audio": "🎤 голосовое", "video": "🎬 видео", "document": "📄 файл"}.get(r["kind"] or "", "")
+        return f"\n«{t[:limit]}{'…' if len(t) > limit else ''}»" if t else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: bool = False, _retry: bool = False) -> dict:
