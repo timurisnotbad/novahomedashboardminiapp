@@ -1108,7 +1108,11 @@ def revenue(month: str = "", user: dict = Depends(current_user)):  # noqa: B008
 # ---- auto-message rules ---------------------------------------------------------
 @router.get("/auto")
 def get_rules(user: dict = Depends(current_user)):  # noqa: B008
-    return {"rules": crm_ext.rules(), "triggers": crm_ext.TRIGGERS, "log": crm_ext.auto_log(100)}
+    return {"rules": crm_ext.rules(), "triggers": crm_ext.TRIGGERS, "log": crm_ext.auto_log(100), "steps": crm.steps(),
+            "settings": {"auto_step_messages": crm.get_setting("auto_step_messages", "0") == "1", "auto_require_confirmed": crm.get_setting("auto_require_confirmed", "1") == "1",
+                         "auto_bilingual": crm.get_setting("auto_bilingual", "1") == "1", "auto_checklist": crm.get_setting("auto_checklist", "1") == "1",
+                         "auto_all_channels": crm.get_setting("auto_all_channels", "1") == "1", "review_url": crm.get_setting("review_url", "")},
+            "upcoming": crm_ext.upcoming_messages(48), "recent": crm_ext.recent_messages(50)}
 
 
 @router.post("/auto")

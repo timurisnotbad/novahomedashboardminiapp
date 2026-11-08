@@ -695,6 +695,45 @@ def delete_rule(rid: int) -> None:
         conn.execute("DELETE FROM crm_auto_rules WHERE id = ?", (rid,))
 
 
+def upcoming_messages(hours: int = 48) -> list[dict]:
+    """Step messages that are due within `hours`: for the «Автосообщения» page («что отправится»)."""
+    now = datetime.now()
+    hi = (now + timedelta(hours=hours)).isoformat(timespec="minutes")
+    lo = (now - timedelta(hours=24)).isoformat(timespec="minutes")  # older ones are left to people (run_task_messages does the same)
+    out = []
+    with database.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT t.*, b.apartment_name, b.client_name FROM crm_tasks t LEFT JOIN bookings b ON b.id = t.booking_id "
+            "WHERE t.status = 'open' AND t.auto_text IS NOT NULL AND t.auto_text != '' AND t.due IS NOT NULL AND t.due <= ? AND t.due >= ? ORDER BY t.due LIMIT 60", (hi, lo)).fetchall()]
+        for t in rows:
+            b = _booking(conn, t["booking_id"]) if t.get("booking_id") else None
+            chat, why = (None, "у задачи нет брони")
+            if b:
+                chat, why = _chat_for_booking(b, {"channel": "auto", "only_if_chat": True})
+            out.append({"task_id": t["id"], "title": t["title"], "due": t["due"], "apartment": t.get("apartment_name"), "guest": t.get("client_name"),
+                        "booking_id": t.get("booking_id"), "chat": chat and chat.get("title"), "chat_id": chat and chat.get("id"), "channel": chat and chat.get("channel_name"),
+                        "note": "" if chat else why, "late": t["due"] < now.isoformat(timespec="minutes"), "status": (t.get("auto_status") or "")[:160],
+                        "text": fill(t["auto_text"], b, chat)[:400]})
+    return out
+
+
+def recent_messages(limit: int = 50) -> list[dict]:
+    """What the CRM sent (or tried to) lately: step messages and reply rules, newest first."""
+    out = []
+    with database.get_conn() as conn:
+        for t in conn.execute("SELECT t.id, t.title, t.done_at, t.auto_at, t.auto_status, t.auto_text, t.booking_id, b.apartment_name, b.client_name FROM crm_tasks t "
+                              "LEFT JOIN bookings b ON b.id = t.booking_id WHERE t.auto_status IS NOT NULL ORDER BY COALESCE(t.done_at, t.auto_at) DESC LIMIT ?", (limit,)).fetchall():
+            st = (t["auto_status"] or "")
+            out.append({"at": t["done_at"] or t["auto_at"], "what": t["title"], "to": " · ".join(x for x in (t["client_name"], t["apartment_name"]) if x), "booking_id": t["booking_id"],
+                        "status": "sent" if st.startswith("sent") else "failed" if st.startswith("failed") else "skipped", "note": st.split(":", 1)[1] if ":" in st else "", "text": (t["auto_text"] or "")[:160]})
+        for l in conn.execute("SELECT * FROM crm_auto_log WHERE kind IS NULL OR kind != 'task' ORDER BY id DESC LIMIT ?", (limit,)).fetchall() if "kind" in [c[1] for c in conn.execute("PRAGMA table_info(crm_auto_log)").fetchall()] else conn.execute("SELECT * FROM crm_auto_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall():
+            d = dict(l)
+            out.append({"at": d.get("at"), "what": d.get("rule_name"), "to": d.get("chat_title") or "", "chat_id": d.get("chat_id"), "booking_id": d.get("booking_id"),
+                        "status": d.get("status"), "note": d.get("error") or "", "text": (d.get("text") or "")[:160]})
+    out.sort(key=lambda x: x.get("at") or "", reverse=True)
+    return out[:limit]
+
+
 def auto_log(limit: int = 100) -> list[dict]:
     with database.get_conn() as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM crm_auto_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]

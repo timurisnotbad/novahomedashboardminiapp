@@ -875,19 +875,10 @@
         <div style="margin-top:8px"><button class="btn" id="i-mc-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить тексты</button></div></div>
       <div class="card"><h3>Автосообщения во все каналы гостя</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-allch" ${d.settings.auto_all_channels ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Шаблоны этапов и автосообщения уходят во все чаты гостя сразу: WhatsApp, Telegram, Instagram, Booking — все, что привязаны к брони, к его сделке или найдены по его номеру. Выключено — только в один, основной чат</label></div>
       <div class="card"><h3>Сделки из сообщений</h3><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="i-deal" ${d.settings.auto_deal ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Входящее сообщение от нового контакта создаёт сделку в первом этапе воронки; сообщение по существующей сделке поднимает её наверх</label></div>
-      <div class="card" id="steps-card"><h3>Этапы заезда гостя</h3>
-        <div class="muted small">Сценарий по каждой брони: что сделать и что написать гостю на каждом этапе. Шаги с текстом CRM отправляет гостю сама в назначенное время (в чат WhatsApp / Telegram / Booking, привязанный к брони или найденный по номеру) и закрывает задачу; шаги без текста — задачи менеджеру. Переменные: <span class="mono">{имя} {объект} {блок} {заезд время} {выезд время} {время заезда} {выезд время} {ночей} {сумма} {долг} {телефон компании} {адрес}</span>, а также из таблицы «Квартиры» ниже: <span class="mono">{код домофона} {ключи} {ключи при выезде} {wifi} {заметка квартиры} {ссылка на отзыв}</span>. Сообщение с незаполненной переменной или текстом в [квадратных скобках] CRM не отправит — задача останется менеджеру с пометкой.</div>
-        <label style="display:flex;gap:8px;align-items:center;margin-top:10px;padding:10px 12px;border:1px solid var(--sep);border-radius:10px;background:${d.settings.auto_step_messages ? "var(--blue-soft)" : "#F9FAFB"}"><input type="checkbox" id="i-auto-msg" ${d.settings.auto_step_messages ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> <span><b>Отправлять сообщения этапов гостям автоматически</b><br><span class="muted small">Выключено — CRM ничего не пишет гостям сама: этапы с текстом остаются задачами менеджеру, отправить можно вручную кнопкой в карточке брони</span></span></label>
-        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="i-confirm" ${d.settings.auto_require_confirmed ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> <span><b>Автосообщения только по подтверждённой брони.</b> <span class="muted small">Бронь к чату CRM подбирает сама (по номеру, по имени), но пока человек не нажал «Подтвердить» или не привязал бронь вручную, автоматические сообщения по ней гостю не уходят — задача ждёт менеджера с пометкой</span></span></label>
-        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="i-bilingual" ${d.settings.auto_bilingual ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Отправлять на двух языках: русский текст, затем английский — одним сообщением каждому гостю. Выключено — язык по карточке гостя (RU/UZ → русский, остальные → английский)</label>
-        <div id="steps-list" style="margin-top:10px"></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap"><button class="btn" id="steps-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить этапы</button><button class="btn sm" id="steps-add" ${S.me.role !== "admin" ? "disabled" : ""}>＋ Добавить этап</button><button class="btn link" id="steps-reset" ${S.me.role !== "admin" ? "disabled" : ""}>Вернуть стандартные</button>
-          <label style="display:flex;gap:8px;align-items:center;margin-left:auto"><input type="checkbox" id="i-auto-cl" ${d.settings.auto_checklist ? "checked" : ""} ${S.me.role !== "admin" ? "disabled" : ""} /> Создавать этапы автоматически для каждой новой брони (заезд в ближайшие 30 дней)</label></div></div>
-      </div>
-      <div class="card" id="apt-card"><h3>Квартиры: описание, код домофона, ключи, Wi-Fi</h3>
-        <div class="muted small">Подставляется в сообщения вместо <span class="mono">{код домофона} {ключи} {ключи при выезде} {wifi} {заметка квартиры}</span>. Строка «Все квартиры» — общее значение, «Блок A» / «Блок B» — для блока, строка квартиры — только для неё (что заполнено точнее, то и берётся).</div>
-        <div style="margin-top:8px"><label class="lbl">Ссылка на отзыв <span class="muted">— {ссылка на отзыв}</span></label><input class="field" id="apt-review" placeholder="https://g.page/r/…" ${S.me.role !== "admin" ? "disabled" : ""} /></div>
-        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Фото</th><th>Описание для гостей <span class="muted">(ИИ)</span></th><th>Код домофона</th><th>Ключи (где получить)</th><th>Ключи при выезде</th><th>Wi-Fi</th><th>Заметка</th></tr></thead><tbody><tr><td class="muted" colspan="7">Загрузка…</td></tr></tbody></table></div>
+      <div class="card" id="steps-card"><h3>Сообщения и этапы по брони</h3><div class="muted small">Что CRM пишет гостю и какие задачи ставит менеджеру на каждом этапе — настраивается в разделе <a href="#auto">Автосообщения</a>.</div></div>
+      <div class="card" id="apt-card"><h3>Квартиры для ассистента: фото и описание</h3>
+        <div class="muted small">Ассистент отправляет гостю фото квартиры и описывает её по этому описанию.</div>
+        <div class="table-wrap" style="margin-top:8px"><table class="table apt-table" id="apt-table"><thead><tr><th>Квартира</th><th>Фото</th><th>Описание для гостей</th></tr></thead><tbody><tr><td class="muted" colspan="7">Загрузка…</td></tr></tbody></table></div>
         <div style="margin-top:8px"><button class="btn" id="apt-save" ${S.me.role !== "admin" ? "disabled" : ""}>Сохранить квартиры</button></div></div>
       </div>
       <div class="itab" data-tab="notif" hidden>
@@ -934,19 +925,14 @@
     $("i-mc-save").addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/integrations/settings", { missed_call_ru: $("i-mc-ru").value, missed_call_en: $("i-mc-en").value }); toast("Сохранено"); }));
     $("i-allch").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_all_channels: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     $("i-deal").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_deal: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
-    $("i-confirm").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_require_confirmed: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
-    $("i-auto-msg").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_step_messages: e.target.checked }); toast(e.target.checked ? "Автосообщения этапов включены" : "Автосообщения этапов выключены"); e.target.closest("label").style.background = e.target.checked ? "var(--blue-soft)" : "#F9FAFB"; } catch (err) { toast(err.message); } });
-    $("i-auto-cl").addEventListener("change", async (e) => { try { await post("/integrations/settings", { auto_checklist: e.target.checked }); toast("Сохранено"); } catch (err) { toast(err.message); } });
     renderAiTab();
-    $("i-bilingual").addEventListener("change", async (e) => { try { await post("/checklist", { bilingual: e.target.checked }); toast(e.target.checked ? "Сообщения уходят на двух языках" : "Язык — по карточке гостя"); } catch (err) { toast(err.message); } });
     // apartments table: door codes, keys, Wi-Fi
     (async () => {
       let ai, photos = []; try { [ai, photos] = await Promise.all([get("/apartments/info"), get("/apartments/photos").catch(() => [])]); } catch (err) { if ($("apt-table")) $("apt-table").querySelector("tbody").innerHTML = `<tr><td colspan="8" class="bad">${esc(err.message)}</td></tr>`; return; }
       if (!$("apt-table")) return;
       const nPhotos = (a) => photos.filter((p) => p.apartment === a).length;
-      $("apt-review").value = ai.review_url || "";
       const ro = S.me.role !== "admin";
-      const F = ["descr", "door_code", "keys_in", "keys_out", "wifi", "note"];
+      const F = ["descr"];
       const label = (r) => r.kind === "all" ? "<b>Все квартиры</b>" : r.kind === "block" ? `<b>Блок ${esc(r.apartment)}</b>` : esc(r.apartment);
       $("apt-table").querySelector("tbody").innerHTML = ai.items.map((r) => `<tr data-apt="${esc(r.apartment)}"><td>${label(r)}</td><td><button class="btn sm" data-photos="${esc(r.apartment)}" title="Фото квартиры: ассистент отправляет их гостю вместе с предложением">📷 ${nPhotos(r.apartment) || "добавить"}</button></td>${F.map((f) => `<td><input class="field sm" data-f="${f}" value="${esc(r[f] || "")}" placeholder="${f === "descr" ? (r.kind === "apt" ? "студия, 2 гостя, 7 этаж, вид на парк" : "общее для блока") : r.kind === "apt" ? "как у блока" : r.kind === "block" ? "как у всех" : "—"}" ${ro ? "disabled" : ""} ${f === "descr" ? 'style="min-width:180px"' : ""} /></td>`).join("")}</tr>`).join("");
       $("apt-table").addEventListener("click", (e) => { const b = e.target.closest("[data-photos]"); if (b) photosModal(b.dataset.photos, b); });
@@ -975,10 +961,9 @@
       }
       $("apt-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
         const items = Array.from($("apt-table").querySelectorAll("tr[data-apt]")).map((tr) => { const o = { apartment: tr.dataset.apt }; F.forEach((f) => { o[f] = tr.querySelector(`[data-f="${f}"]`).value.trim(); }); return o; });
-        await post("/apartments/info", { items, review_url: $("apt-review").value.trim() }); toast("Квартиры сохранены — подставятся в следующие сообщения");
+        await post("/apartments/info", { items }); toast("Квартиры сохранены");
       }));
     })();
-    stepsEditor(d.settings.steps || []);
   };
 
   // ---- AI assistant: settings + stats (Integrations → ИИ-ассистент) ------------------------
@@ -1362,46 +1347,6 @@
     };
   }
 
-  // ---- Этапы заезда гостя: the step editor on the Integrations page -----------------
-  function stepsEditor(initial) {
-    const ro = S.me.role !== "admin";
-    let steps = initial.map((x) => Object.assign({}, x));
-    const ANCH = [["now", "сразу при создании"], ["checkin", "заезд"], ["checkout", "выезд"], ["today", "сегодня"]];
-    const when = (st) => st.anchor === "now" ? "сразу после создания брони" : `${st.anchor === "checkin" ? "заезд" : st.anchor === "checkout" ? "выезд" : "сегодня"}${st.offset ? (st.offset > 0 ? " +" : " ") + st.offset + " дн." : ""}${st.time ? " в " + st.time : st.anchor === "today" ? "" : " (время из брони)"}`;
-    const render = () => {
-      $("steps-list").innerHTML = steps.map((st, i) => `<div class="step ${st.enabled ? "" : "off"}" data-i="${i}">
-        <div class="step__head"><span class="step__n">${i + 1}</span><input class="field step__title" data-f="title" value="${esc(st.title)}" placeholder="Что сделать" ${ro ? "disabled" : ""} />
-          <span class="step__tools"><button class="btn sm" data-up="${i}" title="Выше" ${ro || !i ? "disabled" : ""}>↑</button><button class="btn sm" data-down="${i}" title="Ниже" ${ro || i === steps.length - 1 ? "disabled" : ""}>↓</button><label class="step__on" title="Включён"><input type="checkbox" data-f="enabled" ${st.enabled ? "checked" : ""} ${ro ? "disabled" : ""} /></label><button class="btn sm danger" data-del="${i}" title="Удалить" ${ro ? "disabled" : ""}>✕</button></span></div>
-        <div class="step__when"><span class="muted small">Когда:</span><select class="field" data-f="anchor" ${ro ? "disabled" : ""}>${ANCH.map((a) => `<option value="${a[0]}" ${a[0] === st.anchor ? "selected" : ""}>${a[1]}</option>`).join("")}</select>
-          <input class="field" data-f="offset" type="number" min="-30" max="30" value="${st.offset || 0}" title="Сдвиг в днях: −1 = за день до, +1 = через день" ${ro || st.anchor === "now" ? "disabled" : ""} /><span class="muted small">дн.</span>
-          <input class="field" data-f="time" type="time" value="${esc(st.time || "")}" title="Пусто — время заезда/выезда из брони" ${ro || st.anchor === "now" ? "disabled" : ""} /><span class="muted small step__hint">→ ${esc(when(st))}</span></div>
-        <div class="step__msgs"><div><label class="lbl">Сообщение гостю (RU) <span class="muted">— пусто: просто задача менеджеру</span></label><textarea class="field" data-f="message" rows="${st.message ? 4 : 2}" placeholder="Пусто — CRM ничего не отправляет, задача остаётся менеджеру" ${ro ? "disabled" : ""}>${esc(st.message || "")}</textarea></div>
-          <div><label class="lbl">English <span class="muted">— для гостей с другим языком</span></label><textarea class="field" data-f="message_en" rows="${st.message ? 4 : 2}" placeholder="Если пусто — уйдёт русский текст" ${ro ? "disabled" : ""}>${esc(st.message_en || "")}</textarea></div></div>
-        ${st.message ? `<div class="step__prev"><button class="btn link sm" data-prev="${i}">Как это прочитает гость →</button><span class="small muted" id="step-prev-${i}"></span></div>` : ""}
-      </div>`).join("") || '<p class="muted">Этапов нет — добавьте первый.</p>';
-    };
-    const read = () => {
-      $("steps-list").querySelectorAll(".step").forEach((el) => {
-        const st = steps[parseInt(el.dataset.i, 10)];
-        el.querySelectorAll("[data-f]").forEach((f) => { st[f.dataset.f] = f.type === "checkbox" ? f.checked : f.type === "number" ? parseInt(f.value || "0", 10) : f.value; });
-      });
-    };
-    render();
-    $("steps-list").addEventListener("change", (e) => { read(); if (e.target.dataset.f === "anchor" || e.target.dataset.f === "enabled" || e.target.dataset.f === "offset" || e.target.dataset.f === "time") render(); });
-    $("steps-list").addEventListener("click", async (e) => {
-      const up = e.target.closest("[data-up]"), dn = e.target.closest("[data-down]"), del = e.target.closest("[data-del]"), pv = e.target.closest("[data-prev]");
-      if (!up && !dn && !del && !pv) return;
-      read();
-      if (up) { const i = +up.dataset.up; [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; render(); }
-      if (dn) { const i = +dn.dataset.down; [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]]; render(); }
-      if (del) { if (confirm("Удалить этап «" + steps[+del.dataset.del].title + "»?")) { steps.splice(+del.dataset.del, 1); render(); } }
-      if (pv) { const i = +pv.dataset.prev; try { const r = await post("/checklist/preview", { text: steps[i].message }); $("step-prev-" + i).textContent = (r.booking ? `[${r.booking.apartment}, ${r.booking.guest}] ` : "") + r.text; } catch (err) { toast(err.message); } }
-    });
-    $("steps-add").addEventListener("click", () => { read(); steps.push({ title: "", anchor: "checkin", offset: 0, time: "", enabled: true, message: "", message_en: "" }); render(); $("steps-list").querySelector(".step:last-child .step__title").focus(); });
-    $("steps-save").addEventListener("click", async () => { read(); try { const r = await post("/checklist", { steps }); steps = r.steps; render(); toast(`Сохранено: ${r.steps.length} этапов`); } catch (err) { toast(err.message); } });
-    $("steps-reset").addEventListener("click", async () => { if (!confirm("Вернуть стандартные этапы Nova Home? Ваши правки будут потеряны.")) return; try { const r = await post("/checklist", { reset: true }); steps = r.steps; render(); toast("Стандартные этапы восстановлены"); } catch (err) { toast(err.message); } });
-  }
-
   // «Задачи по брони»: the island inside the booking card — checklist + own tasks
   function renderBookingTasks(b) {
     const box = $("bk-tasks"); if (!box) return;
@@ -1511,51 +1456,101 @@
     const d = await get("/auto");
     if (stale(seq)) return;
     const admin = S.me.role === "admin";
-    const when = (r) => r.trigger === "before_checkin" ? `за ${r.offset_days} дн. до заезда в ${r.at_time}` : r.trigger === "after_checkout" ? `через ${r.offset_days} дн. после выезда в ${r.at_time}` : r.trigger === "checkin_day" || r.trigger === "checkout_day" ? `${r.trigger_name.toLowerCase()} в ${r.at_time}` : r.trigger === "off_hours" ? `вне ${r.hours_from || "09:00"}–${r.hours_to || "22:00"}` : r.trigger_name.toLowerCase();
-    $("main").innerHTML = `<div class="page-head"><h1>Автосообщения</h1><div style="display:flex;gap:8px"><button class="btn" id="au-preview">Что отправится сейчас</button>${admin ? `<button class="btn primary" id="au-add">Новое правило</button>` : ""}</div></div>
-      <div class="page-sub">Правила проверяются каждые 5 минут. Каждое срабатывает один раз на бронь (или на чат). Канал «любой доступный»: закреплённый за бронью чат → чат по номеру телефона → новый WhatsApp-чат, если разрешено.</div>
-      <div class="list">${d.rules.map((r) => `<div class="rule"><div class="switch ${r.enabled ? "on" : ""}" data-toggle="${r.id}" data-on="${r.enabled ? 0 : 1}" title="${admin ? "Включить/выключить" : ""}"></div>
-        <div><b>${esc(r.name)} <span class="tag ${r.enabled ? "green" : ""}">${r.enabled ? "включено" : "выключено"}</span></b><small>${esc(when(r))} · канал: ${CHANNEL_NAMES[r.channel] || r.channel}${r.sources ? " · только " + esc(r.sources) : ""}${r.only_if_chat ? "" : " · может создать WhatsApp-чат"} · отправлено: ${r.sent}</small><div class="txt">${esc(r.text)}</div></div>
-        <div class="actions">${admin ? `<button data-edit="${r.id}">Изменить</button><button data-del="${r.id}" class="muted">Удалить</button>` : ""}</div></div>`).join("") || `<div class="empty">Правил нет</div>`}</div>
-      <div class="card" style="margin-top:16px"><div class="card__title">Журнал · последние 100</div>
-        ${d.log.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Когда</th><th>Правило</th><th>Кому</th><th>Статус</th><th>Текст</th></tr></thead><tbody>${d.log.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>${esc(l.rule_name)}</td><td>${l.chat_id ? `<a href="#messages/${l.chat_id}">${esc(l.chat_title || "чат")}</a>` : "—"}${l.booking_id ? ` <a href="#" data-bopen="${l.booking_id}" class="muted small">бронь</a>` : ""}</td><td class="${l.status === "sent" ? "ok" : l.status === "failed" ? "bad" : "muted"}">${l.status === "sent" ? "отправлено" : l.status === "failed" ? "ошибка" : "пропущено"}${l.error ? `<div class="muted small">${esc(l.error)}</div>` : ""}</td><td class="muted small" style="max-width:320px">${esc((l.text || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="muted">Пока ничего не отправлялось</div>`}</div>`;
+    const st = d.settings;
+    const steps = d.steps || [];
+    const whenStep = (x) => x.anchor === "now" ? "сразу после создания брони" : `${x.anchor === "checkin" ? (x.offset < 0 ? `за ${-x.offset} дн. до заезда` : x.offset > 0 ? `через ${x.offset} дн. после заезда` : "в день заезда") : x.anchor === "checkout" ? (x.offset < 0 ? `за ${-x.offset} дн. до выезда` : x.offset > 0 ? `через ${x.offset} дн. после выезда` : "в день выезда") : "сегодня"}${x.time ? ` в ${x.time}` : x.anchor === "now" ? "" : " · во время заезда/выезда"}`;
+    const order = (x) => (x.anchor === "now" ? -100 : x.anchor === "checkin" ? 0 : 1000) + (x.offset || 0) * 10 + (x.time ? parseInt(x.time, 10) / 24 : 0);
+    const msgSteps = steps.map((x, i) => ({ ...x, i })).filter((x) => x.message).sort((p, q) => order(p) - order(q));
+    const taskSteps = steps.map((x, i) => ({ ...x, i })).filter((x) => !x.message);
+    const replyRules = d.rules.filter((r) => r.trigger === "first_message" || r.trigger === "off_hours");
+    const oldRules = d.rules.filter((r) => r.trigger !== "first_message" && r.trigger !== "off_hours" && r.enabled);
+    const sw = (on, attrs) => `<div class="switch ${on ? "on" : ""}" ${attrs} ${admin ? "" : 'style="pointer-events:none;opacity:.6"'}></div>`;
+    const stepRow = (x) => `<div class="rule ${x.enabled ? "" : "off"}">${sw(x.enabled, `data-stepon="${x.i}" data-on="${x.enabled ? 0 : 1}"`)}
+        <div><b>${esc(x.title)}</b><small>${esc(whenStep(x))}${x.message_en ? " · RU + EN" : ""}</small><div class="txt">${esc(x.message.length > 220 ? x.message.slice(0, 220) + "…" : x.message)}</div></div>
+        <div class="actions">${admin ? `<button data-stepedit="${x.i}">Изменить</button>` : ""}</div></div>`;
+    const ruleRow = (r) => `<div class="rule ${r.enabled ? "" : "off"}">${sw(r.enabled, `data-toggle="${r.id}" data-on="${r.enabled ? 0 : 1}"`)}
+        <div><b>${esc(r.name)}</b><small>${r.trigger === "off_hours" ? `вне ${esc(r.hours_from || "09:00")}–${esc(r.hours_to || "22:00")}` : r.trigger === "first_message" ? "первое сообщение нового гостя" : esc(r.trigger_name || r.trigger)} · отправлено: ${r.sent}</small><div class="txt">${esc(r.text)}</div></div>
+        <div class="actions">${admin ? `<button data-edit="${r.id}">Изменить</button>` : ""}</div></div>`;
+    const up = d.upcoming || [];
+    const upcomingHtml = up.length ? up.map((x) => `<div class="au-up ${x.chat ? "" : "wait"}"><span class="au-up__when">${esc(dtShort(x.due))}${x.late ? " · просрочено" : ""}</span><b>${esc(x.title)}</b> <span class="muted">→ ${esc(x.guest || "гость")}${x.apartment ? " · " + esc(x.apartment) : ""}</span><div class="small ${x.chat ? "ok" : "warn"}">${x.chat ? `уйдёт в ${esc(x.channel || "чат")}: ${esc(x.chat)}` : esc(x.note || "нет чата")}${x.booking_id ? ` · <a href="#" data-bopen="${x.booking_id}">бронь</a>` : ""}${x.chat_id ? ` · <a href="#messages/${x.chat_id}">чат</a>` : ""}</div><div class="small muted" style="white-space:pre-wrap">${esc(x.text)}</div></div>`).join("") : `<div class="muted">В ближайшие 2 дня отправлять нечего.</div>`;
+    const recent = d.recent || [];
+    const ST = { sent: ["отправлено", "ok"], failed: ["ошибка", "bad"], skipped: ["пропущено", "muted"] };
+    $("main").innerHTML = `<div class="page-head"><h1>Автосообщения</h1>${admin ? `<button class="btn primary" id="st-add">＋ Добавить сообщение</button>` : ""}</div>
+      <div class="page-sub">Сообщения гостям, которые CRM отправляет сама — в чат WhatsApp / Telegram / Booking, привязанный к брони. Переменные: <span class="mono">{имя} {объект} {блок} {заезд время} {выезд время} {время заезда} {время выезда} {ночей} {сумма} {долг} {телефон компании} {ссылка на отзыв}</span>.</div>
+      <div class="card au-master ${st.auto_step_messages ? "on" : ""}">
+        <div class="au-master__row">${sw(st.auto_step_messages, 'id="au-on"')}<div><b>${st.auto_step_messages ? "Автоотправка включена" : "Автоотправка выключена"}</b><div class="muted small">${st.auto_step_messages ? "Сообщения ниже уходят гостям сами в назначенное время — только по брони, которую подтвердил человек." : "CRM ничего не пишет гостям сама. Сообщения ниже можно отправить вручную из карточки брони. Включите, когда тексты готовы."}</div></div></div>
+        <details class="au-more"><summary>Настройки</summary>
+          <label><input type="checkbox" id="au-confirm" ${st.auto_require_confirmed ? "checked" : ""} ${admin ? "" : "disabled"} /> <span>Только по подтверждённой брони <span class="muted small">— бронь, которую CRM подобрала сама (по номеру или имени), ждёт кнопки «Подтвердить» в чате</span></span></label>
+          <label><input type="checkbox" id="au-bi" ${st.auto_bilingual ? "checked" : ""} ${admin ? "" : "disabled"} /> <span>На двух языках: русский, затем английский <span class="muted small">— выключено: язык по карточке гостя (RU/UZ — русский, остальные — английский)</span></span></label>
+          <label><input type="checkbox" id="au-all" ${st.auto_all_channels ? "checked" : ""} ${admin ? "" : "disabled"} /> <span>Во все подтверждённые чаты гостя <span class="muted small">— выключено: только в основной</span></span></label>
+          <label><input type="checkbox" id="au-cl" ${st.auto_checklist ? "checked" : ""} ${admin ? "" : "disabled"} /> <span>Создавать этапы для каждой новой брони автоматически</span></label>
+          <div class="au-review"><label class="lbl">Ссылка на отзыв <span class="muted">— {ссылка на отзыв}</span></label><div class="row"><input class="field" id="au-review" value="${esc(st.review_url || "")}" placeholder="https://g.page/r/…" ${admin ? "" : "disabled"} />${admin ? `<button class="btn" id="au-review-save">Сохранить</button>` : ""}</div></div>
+        </details>
+      </div>
+      <div class="card" style="padding:0"><div class="au-h">Сообщения по брони <span class="muted small">· ${msgSteps.length}</span></div>
+        ${msgSteps.map(stepRow).join("") || `<div class="empty">Пока нет сообщений — нажмите «Добавить сообщение»</div>`}</div>
+      <div class="card" style="padding:0"><div class="au-h">Ответы на входящие <span class="muted small">· когда гость пишет сам</span></div>
+        ${replyRules.map(ruleRow).join("")}${["first_message", "off_hours"].filter((t) => !replyRules.some((r) => r.trigger === t)).map((t) => `<div class="rule off"><div class="switch" data-mkrule="${t}" ${admin ? "" : 'style="pointer-events:none;opacity:.6"'}></div><div><b>${t === "off_hours" ? "Ответ в нерабочее время" : "Приветствие новому гостю"}</b><small>не настроено</small></div><div class="actions">${admin ? `<button data-mkrule="${t}">Настроить</button>` : ""}</div></div>`).join("")}</div>
+      <div class="card"><details ${up.some((x) => x.chat) ? "open" : ""}><summary><b>Что отправится в ближайшие 2 дня</b> <span class="muted small">· ${up.length}${st.auto_step_messages ? "" : " · автоотправка выключена — уйдёт только после включения"}</span></summary><div style="margin-top:10px">${upcomingHtml}</div></details></div>
+      ${taskSteps.length ? `<div class="card"><details><summary><b>Задачи менеджеру по этапам</b> <span class="muted small">· ${taskSteps.length} без сообщения гостю</span></summary><div style="margin-top:8px">${taskSteps.map((x) => `<div class="au-task">${sw(x.enabled, `data-stepon="${x.i}" data-on="${x.enabled ? 0 : 1}"`)}<span>${esc(x.title)} <span class="muted small">· ${esc(whenStep(x))}</span></span>${admin ? `<button class="btn link sm" data-stepedit="${x.i}">Изменить</button>` : ""}</div>`).join("")}</div></details></div>` : ""}
+      ${oldRules.length ? `<div class="card"><details open><summary><b>Старые правила по броням</b> <span class="muted small">· ${oldRules.length} включено — лучше перенести в «Сообщения по брони» и выключить</span></summary>${oldRules.map(ruleRow).join("")}</details></div>` : ""}
+      <div class="card"><details><summary><b>Журнал</b> <span class="muted small">· последние ${recent.length}</span></summary>
+        ${recent.length ? `<div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th>Когда</th><th>Что</th><th>Кому</th><th>Статус</th></tr></thead><tbody>${recent.map((l) => `<tr><td class="muted small">${esc(dtShort(l.at))}</td><td>${esc(l.what || "")}<div class="muted small">${esc(l.text || "")}</div></td><td>${l.chat_id ? `<a href="#messages/${l.chat_id}">${esc(l.to || "чат")}</a>` : esc(l.to || "—")}${l.booking_id ? ` <a href="#" data-bopen="${l.booking_id}" class="muted small">бронь</a>` : ""}</td><td class="${(ST[l.status] || ST.skipped)[1]}">${(ST[l.status] || ST.skipped)[0]}${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<div class="muted" style="margin-top:8px">Пока ничего не отправлялось</div>`}</details></div>`;
+    const saveSteps = async (list) => { await post("/checklist", { steps: list }); };
+    const setting = async (body) => { try { await post("/integrations/settings", body); toast("Сохранено"); } catch (err) { toast(err.message); } };
+    $("au-confirm").addEventListener("change", (e) => setting({ auto_require_confirmed: e.target.checked }));
+    $("au-bi").addEventListener("change", (e) => setting({ auto_bilingual: e.target.checked }));
+    $("au-all").addEventListener("change", (e) => setting({ auto_all_channels: e.target.checked }));
+    $("au-cl").addEventListener("change", (e) => setting({ auto_checklist: e.target.checked }));
+    const rs = $("au-review-save"); if (rs) rs.addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/apartments/info", { review_url: $("au-review").value.trim() }); toast("Сохранено"); }));
     onMain(async (e) => {
-      const tg = e.target.closest("[data-toggle]"); if (tg && admin) { try { await patch(`/auto/${tg.dataset.toggle}`, { enabled: tg.dataset.on === "1" }); navigate(); } catch (err) { toast(err.message); } return; }
-      const ed = e.target.closest("[data-edit]"); if (ed) { ruleForm(d.rules.find((r) => r.id === parseInt(ed.dataset.edit, 10)), d.triggers); return; }
-      const dl = e.target.closest("[data-del]"); if (dl && confirm("Удалить правило? Журнал останется.")) { busy(dl, async () => { await del(`/auto/${dl.dataset.del}`); navigate(); }); return; }
       const bo = e.target.closest("[data-bopen]"); if (bo) { e.preventDefault(); openBooking(parseInt(bo.dataset.bopen, 10)); return; }
-      if (e.target.id === "au-add") { ruleForm(null, d.triggers); return; }
-      if (e.target.id === "au-preview") {
-        e.target.disabled = true;
-        try {
-          const list = await post("/auto/preview");
-          modal(`<h2>Что отправится сейчас</h2><p class="muted small">Проверка по включённым правилам и броням ±15 дней. Ничего не отправлено.</p>
-            ${list.length ? list.map((x) => `<div style="padding:8px 0;border-bottom:1px solid var(--sep)"><b>${esc(x.rule)}</b> → ${esc(x.guest || "гость")} · ${esc(x.apartment || "")} ${x.chat ? `· <span class="ok">${esc(x.channel)}: ${esc(x.chat)}</span>` : `· <span class="warn">${esc(x.note || "нет чата")}</span>`}<div class="small muted" style="white-space:pre-wrap">${esc(x.text)}</div></div>`).join("") : `<div class="muted">Сейчас отправлять нечего — все сроки прошли или уже отправлено.</div>`}
-            <div class="row-actions">${admin && list.length ? `<button class="btn" id="au-run">Отправить сейчас</button>` : ""}<button class="btn primary" data-close>Закрыть</button></div>`, true);
-          const run = $("au-run"); if (run) run.addEventListener("click", () => busy(run, async () => { const r = await post("/auto/run"); toast(`Отправлено: ${r.filter((x) => x.status === "sent").length}, пропущено: ${r.filter((x) => x.status !== "sent").length}`); closeModal(); navigate(); }));
-        } catch (err) { toast(err.message); } finally { e.target.disabled = false; }
-      }
+      if (!admin) return;
+      if (e.target.id === "au-on") { try { await post("/integrations/settings", { auto_step_messages: !st.auto_step_messages }); navigate(); } catch (err) { toast(err.message); } return; }
+      const so = e.target.closest("[data-stepon]"); if (so) { const list = steps.map((x) => Object.assign({}, x)); list[+so.dataset.stepon].enabled = so.dataset.on === "1"; try { await saveSteps(list); navigate(); } catch (err) { toast(err.message); } return; }
+      const se = e.target.closest("[data-stepedit]"); if (se) { stepForm(steps, +se.dataset.stepedit, saveSteps); return; }
+      if (e.target.id === "st-add") { stepForm(steps, -1, saveSteps); return; }
+      const tg = e.target.closest("[data-toggle]"); if (tg) { try { await patch(`/auto/${tg.dataset.toggle}`, { enabled: tg.dataset.on === "1" }); navigate(); } catch (err) { toast(err.message); } return; }
+      const ed = e.target.closest("[data-edit]"); if (ed) { replyRuleForm(d.rules.find((r) => r.id === parseInt(ed.dataset.edit, 10))); return; }
+      const mk = e.target.closest("[data-mkrule]"); if (mk) { replyRuleForm({ trigger: mk.dataset.mkrule, name: mk.dataset.mkrule === "off_hours" ? "Ответ в нерабочее время" : "Приветствие новому гостю", enabled: true, channel: "auto", only_if_chat: true, hours_from: "09:00", hours_to: "22:00", text: mk.dataset.mkrule === "off_hours" ? "Здравствуйте! Мы получили ваше сообщение и ответим с 09:00. Если вопрос срочный — позвоните по номеру в профиле." : "Здравствуйте! Это Nova Home Apartments (Nest One, Ташкент). Напишите даты и число гостей — подберём квартиру и пришлём фото и цену." }); }
     });
   };
-  function ruleForm(r, triggers) {
-    r = r || { name: "", enabled: false, trigger: "before_checkin", offset_days: 1, at_time: "10:00", hours_from: "09:00", hours_to: "22:00", channel: "auto", sources: "", only_if_chat: true, text: "" };
-    modal(`<h2>${r.id ? "Правило" : "Новое правило"}</h2>
-      <label class="lbl">Название</label><input class="field" id="r-name" value="${esc(r.name)}" />
-      <div class="form-row"><div><label class="lbl">Событие</label><select class="field" id="r-trig">${Object.entries(triggers).map(([k, v]) => `<option value="${k}" ${k === r.trigger ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
-        <div><label class="lbl">Канал</label><select class="field" id="r-ch">${Object.entries(CHANNEL_NAMES).map(([k, v]) => `<option value="${k}" ${k === r.channel ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
-      <div class="form-row c3" id="r-timing"><div><label class="lbl">Дней (до/после)</label><input class="field" id="r-off" type="number" min="0" value="${r.offset_days}" /></div><div><label class="lbl">Время отправки</label><input class="field" id="r-at" type="time" value="${esc(r.at_time || "10:00")}" /></div><div><label class="lbl">Только источники <span class="muted">(через запятую)</span></label><input class="field" id="r-src" value="${esc(r.sources || "")}" placeholder="Booking.com, Airbnb, Прямое" /></div></div>
-      <div class="form-row" id="r-hours"><div><label class="lbl">Рабочее время с</label><input class="field" id="r-from" type="time" value="${esc(r.hours_from || "09:00")}" /></div><div><label class="lbl">до</label><input class="field" id="r-to" type="time" value="${esc(r.hours_to || "22:00")}" /></div></div>
-      <label class="lbl">Текст <span class="muted">{имя} {объект} {заезд} {выезд} {ночей} {сумма} {долг}</span></label><textarea class="field" id="r-text" rows="5">${esc(r.text)}</textarea>
-      <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="r-only" ${r.only_if_chat ? "checked" : ""} /> Писать только в существующий чат (не создавать новый WhatsApp-чат по номеру)</label>
-      <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="r-on" ${r.enabled ? "checked" : ""} /> Включено</label>
-      <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="r-go">Сохранить</button></div>`, true);
-    const upd = () => { const t = $("r-trig").value; $("r-timing").classList.toggle("hidden", t === "first_message" || t === "off_hours"); $("r-hours").classList.toggle("hidden", t !== "off_hours"); $("r-off").disabled = !(t === "before_checkin" || t === "after_checkout"); };
-    $("r-trig").addEventListener("change", upd); upd();
+  // one step (a message to the guest, or a task for a manager when the text is empty) in a simple form
+  function stepForm(steps, idx, save) {
+    const x = idx >= 0 ? Object.assign({}, steps[idx]) : { title: "", anchor: "checkin", offset: 0, time: "10:00", enabled: true, message: "", message_en: "" };
+    const kind = x.anchor === "now" ? "now" : `${x.anchor === "checkout" ? "checkout" : "checkin"}:${x.offset < 0 ? "before" : x.offset > 0 ? "after" : "day"}`;
+    const KINDS = [["checkin:before", "за N дней до заезда"], ["checkin:day", "в день заезда"], ["checkin:after", "через N дней после заезда"], ["checkout:before", "за N дней до выезда"], ["checkout:day", "в день выезда"], ["checkout:after", "через N дней после выезда"], ["now", "сразу после создания брони"]];
+    modal(`<h2>${idx >= 0 ? "Сообщение" : "Новое сообщение"}</h2>
+      <label class="lbl">Название <span class="muted">— видно только вам</span></label><input class="field" id="sf-title" value="${esc(x.title)}" placeholder="Напомнить о выезде" />
+      <div class="form-row c3"><div><label class="lbl">Когда</label><select class="field" id="sf-kind">${KINDS.map(([k, v]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+        <div><label class="lbl">Дней</label><input class="field" id="sf-off" type="number" min="1" max="30" value="${Math.abs(x.offset || 1)}" /></div>
+        <div><label class="lbl">Время</label><input class="field" id="sf-time" type="time" value="${esc(x.time || "")}" /></div></div>
+      <label class="lbl">Текст гостю (RU) <span class="muted">— пусто: только задача менеджеру</span></label><textarea class="field" id="sf-ru" rows="5">${esc(x.message || "")}</textarea>
+      <details ${x.message_en ? "open" : ""}><summary class="muted small">English — для гостей с другим языком</summary><textarea class="field" id="sf-en" rows="5" style="margin-top:6px">${esc(x.message_en || "")}</textarea></details>
+      <div class="small" style="margin-top:8px"><button class="btn link sm" id="sf-prev">Как это прочитает гость →</button> <span class="muted" id="sf-prev-out"></span></div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="sf-on" ${x.enabled ? "checked" : ""} /> Включено</label>
+      <div class="row-actions">${idx >= 0 ? `<button class="btn danger" id="sf-del">Удалить</button>` : ""}<span style="flex:1"></span><button class="btn" data-close>Отмена</button><button class="btn primary" id="sf-go">Сохранить</button></div>`, true);
+    const upd = () => { const k = $("sf-kind").value; $("sf-off").disabled = !/before|after/.test(k); $("sf-time").disabled = k === "now"; };
+    $("sf-kind").addEventListener("change", upd); upd();
+    $("sf-prev").addEventListener("click", async () => { try { const r = await post("/checklist/preview", { text: $("sf-ru").value }); $("sf-prev-out").textContent = (r.booking ? `[${r.booking.apartment}, ${r.booking.guest}] ` : "") + r.text; } catch (err) { toast(err.message); } });
+    const read = () => { const k = $("sf-kind").value; const n = Math.max(1, parseInt($("sf-off").value || "1", 10)); const [anchor, rel] = k === "now" ? ["now", "day"] : k.split(":"); return { title: val("sf-title") || ($("sf-ru").value.trim().slice(0, 40) || "Сообщение"), anchor, offset: rel === "before" ? -n : rel === "after" ? n : 0, time: k === "now" ? "" : val("sf-time"), enabled: $("sf-on").checked, message: $("sf-ru").value.trim(), message_en: $("sf-en").value.trim() }; };
+    $("sf-go").addEventListener("click", (e) => busy(e.currentTarget, async () => { const list = steps.map((s) => Object.assign({}, s)); if (idx >= 0) list[idx] = read(); else list.push(read()); await save(list); closeModal(); navigate(); }));
+    const dl = $("sf-del"); if (dl) dl.addEventListener("click", (e) => busy(e.currentTarget, async () => { if (!confirm("Удалить это сообщение?")) return; const list = steps.filter((_, i) => i !== idx); await save(list); closeModal(); navigate(); }));
+  }
+  function replyRuleForm(r) {
+    const off = r.trigger === "off_hours";
+    modal(`<h2>${esc(r.name || (off ? "Ответ в нерабочее время" : "Приветствие новому гостю"))}</h2>
+      <p class="muted small">${off ? "Гость написал вне рабочего времени — ему сразу уходит этот текст, один раз в день на чат." : r.trigger === "first_message" ? "Первое сообщение от нового контакта — ему сразу уходит этот текст, один раз на чат." : esc(r.trigger_name || "")}</p>
+      ${off ? `<div class="form-row"><div><label class="lbl">Рабочее время с</label><input class="field" id="r-from" type="time" value="${esc(r.hours_from || "09:00")}" /></div><div><label class="lbl">до</label><input class="field" id="r-to" type="time" value="${esc(r.hours_to || "22:00")}" /></div></div>` : ""}
+      <label class="lbl">Текст <span class="muted">{имя}</span></label><textarea class="field" id="r-text" rows="4">${esc(r.text || "")}</textarea>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="r-on" ${r.enabled ? "checked" : ""} /> Включено</label>
+      <div class="row-actions">${r.id ? `<button class="btn danger" id="r-del">Удалить</button>` : ""}<span style="flex:1"></span><button class="btn" data-close>Отмена</button><button class="btn primary" id="r-go">Сохранить</button></div>`, true);
     $("r-go").addEventListener("click", (e) => busy(e.currentTarget, async () => {
-      const body = { name: val("r-name"), trigger: val("r-trig"), channel: val("r-ch"), offset_days: val("r-off"), at_time: val("r-at"), sources: val("r-src"), hours_from: val("r-from"), hours_to: val("r-to"), text: $("r-text").value.trim(), only_if_chat: $("r-only").checked, enabled: $("r-on").checked };
+      const body = { name: r.name, trigger: r.trigger, channel: r.channel || "auto", offset_days: r.offset_days || 0, at_time: r.at_time || "", sources: r.sources || "", hours_from: off ? val("r-from") : (r.hours_from || ""), hours_to: off ? val("r-to") : (r.hours_to || ""), text: $("r-text").value.trim(), only_if_chat: r.only_if_chat !== false, enabled: $("r-on").checked };
       if (r.id) await put(`/auto/${r.id}`, body); else await post("/auto", body);
       closeModal(); navigate();
     }));
+    const dl = $("r-del"); if (dl) dl.addEventListener("click", (e) => busy(e.currentTarget, async () => { if (!confirm("Удалить?")) return; await del(`/auto/${r.id}`); closeModal(); navigate(); }));
   }
 
   // ---- notifications: sound + popup + browser notification on new incoming -----------
@@ -1573,7 +1568,7 @@
     $("popup-text").textContent = m.text || "";
     $("popup-sub").textContent = "Нажмите, чтобы открыть чат";
     el.classList.remove("hidden");
-    el.onclick = () => { el.classList.add("hidden"); location.hash = `#messages/${m.chat_id}`; };
+    el.onclick = (ev) => { el.classList.add("hidden"); if (ev && ev.target && ev.target.id === "popup-x") return; location.hash = `#messages/${m.chat_id}`; };
     clearTimeout(showPopup.t);
     showPopup.t = setTimeout(() => el.classList.add("hidden"), 8000);
     if ("Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") {
