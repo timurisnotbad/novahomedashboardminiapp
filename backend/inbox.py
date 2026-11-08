@@ -421,6 +421,24 @@ def booking_by_name(chat: dict) -> dict | None:
     return b
 
 
+def booking_chats_auto(b: dict) -> list[dict]:
+    """Chats the CRM matches to this booking by itself: by the booking's phone, else by the guest's name.
+    [{id, title, by}] — never used for automatic sending until a person confirms (pins) one."""
+    out = []
+    with database.get_conn() as conn:
+        phone = digits(b.get("phone") or b.get("client_phone") or "")
+        if len(phone) >= 7:
+            for r in conn.execute("SELECT id, name, push_name, phone FROM inbox_chats WHERE phone LIKE ? ORDER BY last_at DESC", ("%" + phone[-9:],)).fetchall():
+                out.append({"id": r["id"], "title": r["name"] or r["push_name"] or ("+" + (r["phone"] or "")), "by": "phone"})
+        if not out:
+            k = name_key(b.get("guest") or b.get("client_name") or "")
+            if k:
+                for r in conn.execute("SELECT id, name, push_name, phone FROM inbox_chats ORDER BY last_at DESC LIMIT 3000").fetchall():
+                    if k in (name_key(r["name"] or ""), name_key(r["push_name"] or "")):
+                        out.append({"id": r["id"], "title": r["name"] or r["push_name"] or ("+" + (r["phone"] or "")), "by": "name"})
+    return out
+
+
 def booking_for(phone: str) -> dict | None:
     """The guest's current booking, else the next one, else the latest past."""
     d = digits(phone)

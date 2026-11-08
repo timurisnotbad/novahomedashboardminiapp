@@ -768,6 +768,16 @@ def _log(conn, rule, booking_id, chat, text, status, error, dedupe) -> bool:
     return cur.rowcount > 0
 
 
+UNCONFIRMED = "ждёт подтверждения брони"
+
+
+def require_confirmed() -> bool:
+    """Setting «auto_require_confirmed» (default on): a booking's automatic messages go only to a chat a person
+    pinned to that booking. A chat the CRM matched itself (by phone or by the guest's name) may be the wrong
+    guest, so it is never written to automatically until someone presses «Подтвердить»."""
+    return crm.get_setting("auto_require_confirmed", "1") == "1"
+
+
 def _chat_for_booking(b: dict, rule: dict) -> tuple[dict | None, str]:
     """Pinned chat first, then any chat with the guest's phone (preferring the
     rule's channel), else — if allowed — a fresh WhatsApp chat."""
@@ -777,6 +787,11 @@ def _chat_for_booking(b: dict, rule: dict) -> tuple[dict | None, str]:
         c = inbox.get_chat(cid)
         if c:
             cands.append(c)
+    if not cands and require_confirmed():
+        found = inbox.booking_chats_auto(b)
+        if found:
+            return None, f"{UNCONFIRMED}: чат {found[0].get('title')} найден автоматически ({'по имени' if found[0].get('by') == 'name' else 'по номеру'}) — нажмите «Подтвердить» в чате"
+        return None, "нет чата с гостем"
     if b.get("phone") and len(b["phone"]) >= 7:
         with database.get_conn() as conn:
             for r in conn.execute("SELECT id FROM inbox_chats WHERE phone LIKE ? ORDER BY last_at DESC", ("%" + b["phone"][-9:],)).fetchall():
@@ -838,6 +853,9 @@ def _send_everywhere(b: dict | None, first: dict, text_for: "callable", author: 
     """Send to the primary chat and, when «auto_all_channels» is on, to every other
     chat of the same guest. Returns (status, error, titles of the chats reached)."""
     chats = [first] if not b or crm.get_setting("auto_all_channels", "1") != "1" else guest_chats(b, first)
+    if b and require_confirmed():  # only chats a person pinned to this booking
+        pinned = set(chats_for_booking(b["id"]))
+        chats = [c for c in chats if c["id"] in pinned] or [first]
     sent, errors = [], []
     for c in chats:
         try:
@@ -992,8 +1010,9 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
             conn.execute("UPDATE crm_tasks SET status = 'done', done_at = ?, auto_status = ? WHERE id = ?",
                          (crm._now(), "sent:" + ", ".join(reached)[:280], tid))
         else:
-            conn.execute("UPDATE crm_tasks SET auto_status = ?, auto_tries = COALESCE(auto_tries, 0) + 1, auto_at = ? WHERE id = ?",
-                         (f"{status}:{error}"[:300], crm._now(), tid))
+            waiting = bool(error) and error.startswith(UNCONFIRMED)
+            conn.execute("UPDATE crm_tasks SET auto_status = ?, auto_tries = COALESCE(auto_tries, 0) + ?, auto_at = ? WHERE id = ?",
+                         (f"{status}:{error}"[:300], 0 if waiting else 1, crm._now(), tid))
     logger.info("task message %s → %s: %s %s", tid, chat and chat.get("title"), status, error or "")
     return {"status": status, "error": error, "chat": chat and chat.get("title"), "text": text}
 

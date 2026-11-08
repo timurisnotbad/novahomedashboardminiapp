@@ -104,7 +104,7 @@
     if (!b) return "";
     const when = b.when === "now" ? "живёт сейчас" : b.when === "next" ? "заезд" : "был";
     return long
-      ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : b.by === "name" ? ' <span class="ib-muted">· по имени</span>' : ' <span class="ib-muted">· по номеру</span>'}`
+      ? `🏠 <a href="#" data-bk-open="${b.id || ""}"><b>${esc(b.apartment)}</b> · ${esc(dm(b.begin))}–${esc(dm(b.end))}</a> · ${when}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : b.by === "name" ? ' <span class="ib-muted">· по имени, не подтверждено</span>' : ' <span class="ib-muted">· по номеру, не подтверждено</span>'}`
       : `${esc(b.apartment)}`;
   }
   // chat list: every apartment the guest holds, with the stay dates — same dates are grouped («B-008, B-110 · 22–27.10»)
@@ -256,7 +256,7 @@
     const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
     const d0 = new Date(); const today = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(d0.getDate()).padStart(2, "0")}`;
     const etaChip = c.booking && c.booking.begin >= today ? `<button class="ib-eta ${c.booking.eta ? "set" : ""}" id="bk-eta" title="Во сколько гость приедет — попадёт в утренний список для горничных">🕒 ${c.booking.eta ? "приедет в " + esc(c.booking.eta) + (c.booking.eta_note ? " · " + esc(c.booking.eta_note) : "") : "время приезда?"}</button>` : "";
-    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}${c.booking && !c.booking.pinned ? `<button class="ib-link attn" id="bk-confirm" data-bk="${c.booking.id}" title="Бронь подобрана автоматически; после подтверждения по ней пойдут автосообщения гостю">✅ Подтвердить</button>` : ""}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : c.booking ? "Другая" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
     $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
@@ -1038,6 +1038,13 @@
     });
     $("conv-booking").addEventListener("click", (e) => {
       if (e.target.id === "bk-pick") { openBookingPick(); return; }
+      if (e.target.id === "bk-confirm") {
+        const btn = e.target; btn.disabled = true;
+        req(`/chats/${S.open.id}/bookings`, { method: "POST", json: { booking_id: parseInt(btn.dataset.bk, 10) } })
+          .then((c) => { S.chats.set(c.id, c); if (S.open && S.open.id === c.id) S.open = c; renderHead(); renderList(); toast("Бронь подтверждена — автосообщения по ней разрешены"); })
+          .catch((err) => { btn.disabled = false; toast(err.message); });
+        return;
+      }
       if (e.target.id === "bk-info") { openBookingInfo(); return; }
       if (e.target.closest("#bk-eta")) { openEta(); return; }
       const a = e.target.closest("[data-bk-open]");

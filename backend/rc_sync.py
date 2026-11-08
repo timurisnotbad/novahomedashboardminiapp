@@ -211,7 +211,7 @@ def sync_to_db() -> int:
             bookings = generate_demo_bookings(today)
         else:
             refresh_apartments()  # pick up units newly added in RC
-            d0, d1 = today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD)
+            d0, d1 = today - timedelta(days=config.SYNC_DAYS_BACK), today + timedelta(days=config.SYNC_DAYS_AHEAD)
             bookings = fetch_bookings(d0, d1)
             # An expired session sometimes yields "200 OK, 0 items" rather than
             # an error. 18 units never have zero bookings for a month — treat
@@ -240,24 +240,37 @@ def sync_to_db() -> int:
 
 
 HISTORY_DAYS = 400
+HISTORY_CHUNK = 60
 
 
 def _sync_history(today: date) -> None:
     """Once a day pull the past year so the CRM keeps a guest's previous stays
-    (the regular sync only covers [yesterday, +60d]). Failures are logged and
-    never break the main sync."""
+    (the regular sync covers [-SYNC_DAYS_BACK, +SYNC_DAYS_AHEAD]). Fetched in
+    60-day chunks: one request for 400 days used to time out and the past never
+    arrived. A failed chunk is retried on the next sync; the day is marked done
+    only when every chunk came through."""
     from . import crm  # noqa: WPS433 - lazy, crm imports database
     key = "rc_history_synced"
-    try:
-        if (crm.get_setting(key) or "")[:10] == today.isoformat():
-            return
-        rows = fetch_bookings(today - timedelta(days=HISTORY_DAYS), today - timedelta(days=2))
-        if rows:
-            database.upsert_bookings(rows)
+    if (crm.get_setting(key) or "")[:10] == today.isoformat():
+        return
+    end = today - timedelta(days=config.SYNC_DAYS_BACK + 1)
+    start = today - timedelta(days=HISTORY_DAYS)
+    total, ok = 0, True
+    cur = start
+    while cur <= end:
+        nxt = min(cur + timedelta(days=HISTORY_CHUNK - 1), end)
+        try:
+            rows = fetch_bookings(cur, nxt)
+            if rows:
+                database.upsert_bookings(rows)
+            total += len(rows)
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            logger.warning("history sync %s..%s failed: %s", cur, nxt, exc)
+        cur = nxt + timedelta(days=1)
+    if ok:
         crm.set_setting(key, today.isoformat())
-        logger.info("history sync: %d past bookings", len(rows))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("history sync failed: %s", exc)
+        logger.info("history sync: %d past bookings", total)
 
 
 # ---------------------------------------------------------------------------

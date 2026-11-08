@@ -274,7 +274,8 @@ FINANCE_CACHE_TTL = _int_env("FINANCE_CACHE_TTL", 60)
 SYNC_INTERVAL_MINUTES = max(1, _int_env("SYNC_INTERVAL_MINUTES", 15))
 # how far ahead bookings are mirrored from RC (prepayments in the payments
 # channel often arrive 1–2 months before check-in and must find their booking)
-SYNC_DAYS_AHEAD = max(30, _int_env("SYNC_DAYS_AHEAD", 60))
+SYNC_DAYS_AHEAD = max(30, _int_env("SYNC_DAYS_AHEAD", 120))   # the calendar mirror: this far ahead…
+SYNC_DAYS_BACK = max(1, _int_env("SYNC_DAYS_BACK", 62))        # …and this far back (the chess board shows both)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +376,7 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "102"
+APP_VERSION = "103"
 
 
 def features() -> dict:
