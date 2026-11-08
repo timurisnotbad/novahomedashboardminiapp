@@ -1049,11 +1049,13 @@ def backfill_leads() -> dict:
 
 
 def import_clients() -> int:
-    """Create clients for every phone seen in bookings and chats."""
+    """Every guest from every booking in the mirror (three years back) and every chat has a client card:
+    by phone when there is one, else by e-mail (Booking.com guests); e-mail, second phone and a missing
+    name are filled in on cards that already exist. Runs with every sync; cheap, idempotent."""
     n = 0
     with database.get_conn() as conn:
-        bk = conn.execute("SELECT client_name, client_phone, source_id FROM bookings WHERE COALESCE(is_delete, 0) = 0 "
-                          "AND client_phone IS NOT NULL AND client_phone != '' ORDER BY begin_date DESC").fetchall()
+        bk = conn.execute("SELECT client_name, client_phone, client_phone2, client_email, source_id FROM bookings WHERE COALESCE(is_delete, 0) = 0 "
+                          "AND ((client_phone IS NOT NULL AND client_phone != '') OR (client_email IS NOT NULL AND client_email != '')) ORDER BY begin_date DESC").fetchall()
         ch = conn.execute("SELECT id, phone, name, push_name, channel FROM inbox_chats").fetchall()
         known = {}  # last 9 digits → (name, chat_id): skip the lookup for everyone already on file
         for r in conn.execute("SELECT phone, name, chat_id FROM crm_clients WHERE phone != ''").fetchall():
@@ -1072,10 +1074,30 @@ def import_clients() -> int:
             return True
         return bool(name and (not k[0] or k[0].startswith("+"))) or bool(chat_id and not k[1])
 
+    by_email = {}
+    with database.get_conn() as conn:
+        for r in conn.execute("SELECT id, email, phone FROM crm_clients WHERE email IS NOT NULL AND email != ''").fetchall():
+            by_email.setdefault(r["email"].strip().lower(), r["id"])
     for r in bk:
-        if needs(r["client_phone"], r["client_name"]):
-            ensure_client(r["client_phone"], r["client_name"] or "", config.SOURCE_NAMES.get(r["source_id"], "") or "")
-            known[digits(r["client_phone"])[-9:]] = (r["client_name"] or "", None)
+        src = config.SOURCE_NAMES.get(r["source_id"], "") or ""
+        email = (r["client_email"] or "").strip().lower()
+        if email and ("@guest.booking.com" in email or email.startswith("noreply")):
+            email_keep = email  # a relay address still identifies the guest within Booking
+        else:
+            email_keep = email
+        if digits(r["client_phone"] or "") and len(digits(r["client_phone"])) >= 7:
+            if needs(r["client_phone"], r["client_name"]):
+                ensure_client(r["client_phone"], r["client_name"] or "", src)
+                known[digits(r["client_phone"])[-9:]] = (r["client_name"] or "", None)
+            if email_keep or r["client_phone2"]:
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE crm_clients SET email = COALESCE(NULLIF(email, ''), ?), phone2 = COALESCE(NULLIF(phone2, ''), ?) WHERE phone LIKE ?",
+                                 (email_keep or None, digits(r["client_phone2"] or "") or None, "%" + digits(r["client_phone"])[-9:]))
+        elif email_keep and email_keep not in by_email:
+            with database.get_conn() as conn:
+                cid = conn.execute("INSERT INTO crm_clients (name, phone, email, source, fields, created_at, updated_at) VALUES (?, '', ?, ?, '{}', ?, ?)",
+                                   ((r["client_name"] or "").strip() or email_keep, email_keep, src, _now(), _now())).lastrowid
+            by_email[email_keep] = cid
     for r in ch:
         src = {"ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram"}.get(r["channel"] or "wa", "WhatsApp")
         if r["phone"]:

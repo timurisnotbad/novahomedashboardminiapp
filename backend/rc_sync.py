@@ -239,7 +239,7 @@ def sync_to_db() -> int:
         raise
 
 
-HISTORY_DAYS = 400
+HISTORY_DAYS = 1100   # three years: every past guest becomes a client card
 HISTORY_CHUNK = 60
 
 
@@ -271,6 +271,12 @@ def _sync_history(today: date) -> None:
     if ok:
         crm.set_setting(key, today.isoformat())
         logger.info("history sync: %d past bookings", total)
+        try:
+            n = crm.import_clients()  # the past guests just fetched → client cards
+            if n:
+                logger.info("clients from history: +%d", n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("client import after history failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
