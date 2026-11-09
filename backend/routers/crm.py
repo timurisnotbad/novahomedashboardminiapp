@@ -1407,6 +1407,18 @@ async def leads_backfill(user: dict = Depends(admin_user)):  # noqa: B008
     return await asyncio.get_event_loop().run_in_executor(None, run)
 
 
+@router.post("/integrations/rc_probe")
+async def rc_probe(user: dict = Depends(admin_user)):  # noqa: B008
+    """Which booking statuses RealtyCalendar answers to (and with how many events for the past 45 days)."""
+    try:
+        rep = await asyncio.get_event_loop().run_in_executor(None, rc_sync.probe_statuses)
+        n = await asyncio.get_event_loop().run_in_executor(None, rc_sync.sync_to_db)
+        rep["synced"] = n
+        return rep
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+
+
 @router.post("/integrations/sync")
 async def sync_now(user: dict = Depends(current_user)):  # noqa: B008
     import time

@@ -3,6 +3,7 @@
 In DEMO_MODE (no RC token configured) a realistic dataset is generated relative
 to today's date so the dashboard is fully populated for development and demos.
 """
+import json
 import logging
 import random
 import re
@@ -128,6 +129,81 @@ def fetch_raw_event(bid: int) -> dict | None:
 
 
 KNOWN_STATUSES = ["booked", "paid", "confirmed", "prepaid", "not_confirmed"]
+# status values RC might use for a guest who checked in / out; the probe keeps the ones that return events
+CANDIDATE_STATUSES = KNOWN_STATUSES + ["check_in", "checked_in", "checkin", "arrived", "in_house", "living", "settled", "check_out", "checked_out", "checkout",
+                                       "departed", "completed", "finished", "closed", "done", "archived", "expired", "pending", "request", "reserved", "blocked",
+                                       "cancelled", "canceled", "declined", "rejected", "no_show"]
+
+
+def statuses_to_request() -> list[str] | None:
+    """The explicit status list for RC: the known five plus whatever the probe discovered; None = probe never ran."""
+    from . import crm
+    raw = crm.get_setting("rc_statuses", "")
+    if not raw:
+        return None
+    try:
+        extra = [s for s in json.loads(raw) if isinstance(s, str)]
+    except ValueError:
+        extra = []
+    return list(dict.fromkeys(KNOWN_STATUSES + extra))
+
+
+def _get_events(params: dict, timeout: int = 30):
+    resp = requests.get(f"{config.RC_BASE_URL}/v2/event_calendars", params=params, headers=_headers(), timeout=timeout)
+    return resp
+
+
+def _count_events(data) -> tuple[int, dict]:
+    n, seen = 0, {}
+    for item in (data.get("items") or []) if isinstance(data, dict) else []:
+        for ev in item.get("events") or []:
+            if isinstance(ev, dict) and not ev.get("is_delete"):
+                n += 1
+                st = str(ev.get("status") or "").lower()
+                seen[st] = seen.get(st, 0) + 1
+    return n, seen
+
+
+def probe_statuses(days_back: int = 45) -> dict:
+    """Ask RC for the last `days_back` days once per candidate status (and once without a filter); remember the
+    statuses that return events so the regular sync requests them explicitly. Returns a report for the UI."""
+    from . import crm
+    today = date.today()
+    base = {"apartment_ids": ",".join(str(i) for i in config.APARTMENTS.keys()),
+            "begin_date": (today - timedelta(days=days_back)).strftime("%d.%m.%Y"), "end_date": (today - timedelta(days=1)).strftime("%d.%m.%Y")}
+    report = {"from": (today - timedelta(days=days_back)).isoformat(), "to": (today - timedelta(days=1)).isoformat(), "rows": [], "discovered": [], "seen": {}}
+    try:
+        r = _get_events(base, timeout=40)
+        n, seen = _count_events(r.json() if r.status_code == 200 else {})
+        report["rows"].append({"status": "(без фильтра)", "http": r.status_code, "events": n, "seen": seen})
+        for k, v in seen.items():
+            report["seen"][k] = report["seen"].get(k, 0) + v
+    except Exception as exc:  # noqa: BLE001
+        report["rows"].append({"status": "(без фильтра)", "http": 0, "events": 0, "error": str(exc)[:120]})
+    for st in CANDIDATE_STATUSES:
+        try:
+            r = _get_events({**base, "statuses[]": [st]}, timeout=25)
+            n, seen = _count_events(r.json() if r.status_code == 200 else {})
+            row = {"status": st, "http": r.status_code, "events": n, "seen": seen}
+            if r.status_code == 200 and n and st not in ("cancelled", "canceled", "declined", "rejected", "no_show"):
+                # the answer must really be about this status (RC may ignore an unknown value and return everything)
+                if seen.get(st, 0) > 0 or (len(seen) == 1 and st in KNOWN_STATUSES):
+                    report["discovered"].append(st)
+            report["rows"].append(row)
+            for k, v in seen.items():
+                report["seen"][k] = report["seen"].get(k, 0) + v
+        except Exception as exc:  # noqa: BLE001
+            report["rows"].append({"status": st, "http": 0, "events": 0, "error": str(exc)[:120]})
+    # every status value RC itself showed in any answer is worth requesting too
+    for k in report["seen"]:
+        if k and k not in report["discovered"] and k not in ("cancelled", "canceled", "declined", "rejected", "no_show"):
+            report["discovered"].append(k)
+    extra = [s for s in report["discovered"] if s not in KNOWN_STATUSES]
+    crm.set_setting("rc_statuses", json.dumps(extra))
+    crm.set_setting("rc_statuses_probed", today.isoformat())
+    report["request"] = statuses_to_request()
+    logger.info("RC status probe: seen %s, extra statuses %s", report["seen"], extra)
+    return report
 # statuses that mean «no booking»; everything else (checked-in, checked-out, whatever RC adds) is a booking
 CANCELLED_STATUSES = {"cancelled", "canceled", "declined", "rejected", "deleted", "removed", "canceled_by_guest", "no_show"}
 _status_seen: dict = {}
@@ -147,10 +223,13 @@ def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = 
         "begin_date": date_from.strftime("%d.%m.%Y"),
         "end_date": date_to.strftime("%d.%m.%Y"),
     }
-    resp = requests.get(f"{config.RC_BASE_URL}/v2/event_calendars", params=params, headers=_headers(), timeout=30)
-    if resp.status_code in (400, 422):
-        resp = requests.get(f"{config.RC_BASE_URL}/v2/event_calendars", params={**params, "statuses[]": KNOWN_STATUSES},
-                            headers=_headers(), timeout=30)
+    wanted = statuses_to_request()
+    if wanted:
+        resp = _get_events({**params, "statuses[]": wanted})
+    else:
+        resp = _get_events(params)
+        if resp.status_code in (400, 422):
+            resp = _get_events({**params, "statuses[]": KNOWN_STATUSES})
     resp.raise_for_status()
 
     data = resp.json()
@@ -256,6 +335,13 @@ def _sync_history(today: date) -> None:
     arrived. A failed chunk is retried on the next sync; the day is marked done
     only when every chunk came through."""
     from . import crm  # noqa: WPS433 - lazy, crm imports database
+    if (crm.get_setting("rc_statuses_probed") or "")[:10] != today.isoformat():
+        try:
+            rep = probe_statuses()
+            if rep.get("discovered"):
+                crm.set_setting("rc_history_synced", "")  # new statuses → pull the history again with them
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RC status probe failed: %s", exc)
     key = "rc_history_synced"
     if (crm.get_setting(key) or "")[:10] == today.isoformat():
         return
