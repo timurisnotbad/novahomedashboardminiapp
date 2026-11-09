@@ -1683,7 +1683,7 @@
     $("me-name").textContent = S.me.name;
     $("me-mail").textContent = S.me.email;
     S.users = await get("/users").catch(() => []);
-    try { const ss = await get("/session"); if (ss && ss.times) S.times = ss.times; } catch (e) { /* defaults stay */ }
+    try { const ss = await get("/session"); if (ss && ss.times) S.times = ss.times; if (ss && ss.version) $("me-mail").textContent = `${S.me.email} · v${ss.version}`; } catch (e) { /* defaults stay */ }
     pushState();
     pushBar();
     navigate();
