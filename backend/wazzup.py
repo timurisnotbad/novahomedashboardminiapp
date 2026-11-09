@@ -294,8 +294,6 @@ def send(payload: dict) -> dict:
         if not base.startswith("https://"):
             raise inbox.BridgeError("Для отправки файлов через Wazzup нужен публичный https-адрес (WEBAPP_URL)")
         body["contentUri"] = f"{base}{config.API_PREFIX}/inbox/media/{payload['media']}?s={inbox.media_sig(payload['media'])}"
-        if payload.get("text"):
-            body["text"] = payload["text"]  # caption, where the transport supports it
     else:
         body["text"] = payload.get("text") or ""
     q = payload.get("quoted_id") or ""
@@ -303,6 +301,12 @@ def send(payload: dict) -> dict:
         body["refMessageId"] = q[3:]
     data = _api("POST", "/message", timeout=30, json=body)
     mid = (data or {}).get("messageId") or uuid.uuid4().hex
+    if payload.get("media") and (payload.get("text") or "").strip():
+        # Wazzup takes either a file or a text in one message: the caption follows as a second message
+        try:
+            _api("POST", "/message", timeout=30, json={"channelId": channel_id, "chatType": chat_type, "chatId": ext, "text": payload["text"].strip()})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wazzup caption after file failed: %s", exc)
     if chat and not wz:
         _remember(chat["id"], {"channel_id": channel_id, "chat_type": chat_type, "ext_chat_id": ext})
     return {"id": "wz:" + mid}

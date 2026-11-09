@@ -1,4 +1,4 @@
-import sys, os; sys.path.insert(0, "/home/user/novahomedashboardminiapp")
+import sys, os, re; sys.path.insert(0, "/home/user/novahomedashboardminiapp")
 from datetime import date, timedelta
 from backend import database, crm, crm_ext, inbox, docs, config
 database.init_db(); inbox.init_db(); crm.init_db(); crm_ext.init_db(); docs.init_db()
@@ -16,7 +16,7 @@ inbox.send = lambda chat_id, author, text="", media=None, mime=None, file_name=N
 inbox._phone_cache.update(at=0); inbox._pin_cache.update(at=0)
 r = docs.send_to_chat(770001, cid, ["receipt", "confirmation"], 1, "Тимур")
 assert len(r["sent"]) == 2 and not r["errors"] and r["lang"] == "en", r
-assert SENT[0][3].startswith("doc") and SENT[0][3].endswith(".pdf") and SENT[0][4] == "application/pdf" and SENT[0][5].endswith(".pdf"), SENT[0]
+assert re.fullmatch(r"[A-Za-z0-9]+\.pdf", SENT[0][3]) and SENT[0][4] == "application/pdf" and SENT[0][5].endswith(".pdf"), SENT[0]
 assert SENT[0][2].startswith("Payment receipt No.") and SENT[1][2].startswith("Reservation confirmation No. 770001"), [s[2] for s in SENT]
 assert (config.INBOX_MEDIA_DIR / SENT[0][3]).exists() and (config.INBOX_MEDIA_DIR / SENT[0][3]).read_bytes()[:4] == b"%PDF"
 assert cid in crm_ext.chats_for_booking(770001)  # pinned by the send

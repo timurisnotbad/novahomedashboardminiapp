@@ -7,6 +7,7 @@ through plain SMTP (SMTP_* in .env, Gmail app password works) and is logged in
 crm_emails. Company details for the header live in crm_settings «company».
 """
 import json
+import re
 import logging
 import smtplib
 from datetime import date, datetime
@@ -423,7 +424,7 @@ def send_to_chat(bid: int, chat_id: int, kinds: list[str], uid: int, author: str
         try:
             d = create_document(bid, kind, uid, lang)
             pdf = render_pdf(d)
-            name = f"doc{d['id']}.pdf"
+            name = (re.sub(r"[^A-Za-z0-9]", "", d["number"]) or f"doc{d['id']}") + ".pdf"  # what the guest sees as the file name
             (config.INBOX_MEDIA_DIR / name).write_bytes(pdf)
             caption = CAPTIONS[lang][kind].format(n=d["number"])
             m = inbox.send(chat_id, author, caption, media=name, mime="application/pdf", file_name=f"{d['number']}.pdf")
