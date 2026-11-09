@@ -223,6 +223,12 @@ def sync_to_db() -> int:
         # missing twice in a row before it is treated as cancelled.
         stats = database.replace_window_bookings(bookings, d0.isoformat(), d1.isoformat())
         try:
+            restored = database.restore_started_cancelled()
+            if restored:
+                logger.info("sync: %d started stays restored from the cancelled archive", restored)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore of archived stays failed: %s", exc)
+        try:
             from . import inbox
             inbox._phone_cache["at"] = 0.0  # noqa: SLF001 — phone → booking index follows the calendar at once
             inbox._name_cache["at"] = 0.0  # noqa: SLF001

@@ -7,7 +7,7 @@ than enough for a single-property operations dashboard.
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterable
 
 from . import config, util
@@ -421,8 +421,13 @@ def replace_window_bookings(bookings: list[dict], d0: str, d1: str) -> dict:
             "SELECT * FROM bookings WHERE begin_date <= ? AND end_date >= ? AND is_delete = 0",
             (d1, d0),
         ).fetchall()
+        today = date.today().isoformat()
         for r in present:
             if r["id"] in ids:
+                continue
+            if r["begin_date"] <= today:
+                # a stay that has started or ended is never «cancelled» because the calendar stopped returning it
+                # (a status the API filters out, a truncated answer): it stays as history
                 continue
             m = conn.execute("SELECT misses FROM bookings_missing WHERE id = ?", (r["id"],)).fetchone()
             misses = (m["misses"] if m else 0) + 1
@@ -442,6 +447,36 @@ def replace_window_bookings(bookings: list[dict], d0: str, d1: str) -> dict:
                 )
         missing = conn.execute("SELECT COUNT(*) FROM bookings_missing").fetchone()[0]
     return {"written": len(rows), "removed": removed, "missing": missing}
+
+
+def restore_started_cancelled() -> int:
+    """One-off repair: bookings archived as «cancelled» while the stay had already begun were almost always
+    victims of the old status filter (RC stopped returning a checked-in guest). Put them back as history,
+    once; a booking RC really cancelled after check-in is rare and can be deleted in RC again."""
+    with get_conn() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bookings_cancelled'").fetchone() is None:
+            return 0
+        done = conn.execute("SELECT 1 FROM crm_settings WHERE key = 'cancelled_restored'").fetchone() if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'crm_settings'").fetchone() else None
+        if done:
+            return 0
+        rows = conn.execute("SELECT id, data, cancelled_at FROM bookings_cancelled").fetchall()
+        back = []
+        for r in rows:
+            try:
+                b = json.loads(r["data"])
+            except (TypeError, ValueError):
+                continue
+            if (b.get("begin_date") or "") <= (r["cancelled_at"] or "")[:10] and not conn.execute("SELECT 1 FROM bookings WHERE id = ?", (r["id"],)).fetchone():
+                back.append(b)
+        if back:
+            conn.executemany(_insert_sql(), _booking_rows(back))
+            conn.executemany("DELETE FROM bookings_cancelled WHERE id = ?", [(b["id"],) for b in back])
+        try:
+            conn.execute("INSERT OR REPLACE INTO crm_settings (key, value) VALUES ('cancelled_restored', ?)", (datetime.now().isoformat(timespec="seconds"),))
+        except Exception:  # noqa: BLE001
+            pass
+        return len(back)
 
 
 def get_bookings(
