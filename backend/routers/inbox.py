@@ -361,6 +361,24 @@ async def send_file(chat_id: int, request: Request, user: dict = Depends(inbox_u
         _fail(exc)
 
 
+@router.post("/chats/{chat_id}/documents")
+async def chat_documents(chat_id: int, data: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    """Send the booking's documents (PDF) into this chat; the booking is the pinned/matched one or `booking_id`."""
+    from .. import docs
+    c = await asyncio.to_thread(inbox.get_chat, chat_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Чат не найден")
+    bid = int(data.get("booking_id") or ((c.get("booking") or {}).get("id") or 0))
+    if not bid:
+        raise HTTPException(status_code=400, detail="Сначала привяжите бронь к чату")
+    try:
+        return await asyncio.to_thread(docs.send_to_chat, bid, chat_id, data.get("kinds") or [], abs(int(user.get("uid") or 0)), user["name"], data.get("lang"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+
+
 @router.patch("/messages/{message_id}")
 async def edit_message(message_id: int, data: dict, user: dict = Depends(inbox_user)):  # noqa: B008
     try:

@@ -178,6 +178,18 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-modal__back { position:absolute; inset:0; background:rgba(0,0,0,.35); }
 .ib-modal__card { position:relative; background:var(--card); border-radius:18px; padding:20px; width:min(440px, calc(100vw - 32px)); max-height:calc(100vh - 60px); overflow-y:auto; }
 .ib-modal__card h3 { font-size:19px; margin-bottom:6px; }
+/* documents sheet: big touch targets */
+.ib-docs__opt { display:flex; gap:12px; align-items:center; padding:12px 12px; border:1.5px solid var(--sep); border-radius:12px; margin-bottom:8px; cursor:pointer; }
+.ib-docs__opt:has(input:checked) { border-color:var(--tint); background:var(--tint-soft); }
+.ib-docs__opt input { width:22px; height:22px; flex:none; accent-color:var(--tint); }
+.ib-docs__opt span { display:flex; flex-direction:column; min-width:0; } .ib-docs__opt small { color:var(--label-2); font-size:13px; }
+.ib-docs__lang { display:flex; gap:10px; align-items:center; margin:12px 0; }
+.ib-seg { display:inline-flex; border:1px solid var(--sep); border-radius:10px; overflow:hidden; }
+.ib-seg button { padding:8px 12px; font-weight:600; color:var(--label-2); border-right:1px solid var(--sep); } .ib-seg button:last-child { border-right:none; }
+.ib-seg button.is-on { background:var(--tint); color:#fff; }
+.ib-docs__go { width:100%; padding:15px; border-radius:14px; background:var(--tint); color:#fff; font-size:17px; font-weight:700; margin-top:4px; }
+.ib-docs__go:disabled { opacity:.6; }
+.ib-docsbtn { background:var(--tint-soft); color:var(--tint-text); }
 .ib-modal__card p { color:var(--label-2); font-size:14px; margin-bottom:12px; }
 .ib-modal__card ol { padding-left:20px; color:var(--label-2); font-size:14px; margin-bottom:12px; }
 .ib-qr { display:block; width:280px; height:280px; margin:6px auto 12px; border-radius:12px; background:var(--fill); image-rendering:pixelated; }
@@ -227,7 +239,9 @@ textarea.ib-field { resize:vertical; min-height:80px; }
   .ib-msgs { padding:10px 10px 14px; min-height:0; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   .ib-m { max-width:86%; }
   .ib-compose { flex:none; }
-  .ib-modal__card { max-height:calc(100% - 24px); }
+  .ib-modal { place-items:end center; }
+  .ib-modal__card { width:100%; max-height:calc(100% - 24px); border-radius:18px 18px 0 0; padding:16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); animation:ib-sheet .22s cubic-bezier(.2,.8,.2,1); }
+  @keyframes ib-sheet { from { transform:translateY(30px); opacity:0; } to { transform:none; opacity:1; } }
   /* tap targets: nothing interactive under 40 px */
   .ib-filters { gap:8px; padding:0 14px 8px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
   .ib-filters::-webkit-scrollbar { display:none; }

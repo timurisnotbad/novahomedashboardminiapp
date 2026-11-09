@@ -256,7 +256,8 @@
     const receipt = c.receipt ? `<span class="ib-rcpt ${c.receipt_pending ? "pending" : ""}" title="Что гость видит в своём мессенджере">${c.receipt_pending ? "👁" : "✓✓"} ${esc(c.receipt)}</span>` : "";
     const d0 = new Date(); const today = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(d0.getDate()).padStart(2, "0")}`;
     const etaChip = c.booking && c.booking.begin >= today ? `<button class="ib-eta ${c.booking.eta ? "set" : ""}" id="bk-eta" title="Во сколько гость приедет — попадёт в утренний список для горничных">🕒 ${c.booking.eta ? "приедет в " + esc(c.booking.eta) + (c.booking.eta_note ? " · " + esc(c.booking.eta_note) : "") : "время приезда?"}</button>` : "";
-    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}${c.booking && !c.booking.pinned ? `<button class="ib-link attn" id="bk-confirm" data-bk="${c.booking.id}" title="Бронь подобрана автоматически; после подтверждения по ней пойдут автосообщения гостю">✅ Подтвердить</button>` : ""}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : c.booking ? "Другая" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
+    const docsBtn = c.booking ? `<button class="ib-eta ib-docsbtn" id="bk-docs" title="Отправить гостю квитанцию, подтверждение или счёт одним нажатием">📄 Документы</button>` : "";
+    b.innerHTML = `<div class="ib-booking__row ${bkBtn ? "two" : ""}"><span>${c.booking ? bookingText(c.booking, true) : stayText || '<span class="ib-muted">Бронь не привязана</span>'}</span><span class="ib-booking__btns">${bkBtn}${c.booking && !c.booking.pinned ? `<button class="ib-link attn" id="bk-confirm" data-bk="${c.booking.id}" title="Бронь подобрана автоматически; после подтверждения по ней пойдут автосообщения гостю">✅ Подтвердить</button>` : ""}<button class="ib-link ${stay ? "attn" : ""}" id="bk-pick">${c.booking && c.booking.pinned ? "Изменить" : c.booking ? "Другая" : stay ? "Выбрать бронь" : "Привязать бронь"}</button></span></div>` + (receipt || etaChip || docsBtn ? `<div class="ib-booking__row ib-booking__rcpt">${receipt}${etaChip}${docsBtn}</div>` : "") + (c.client_notes ? `<div class="ib-notes">📝 ${esc(c.client_notes)}</div>` : "");
     b.classList.remove("hidden");
     $("receipt").classList.toggle("hidden", !c.receipt_pending);
     const st = $("cl-status");
@@ -820,6 +821,35 @@
   }
 
   // ---- link the chat to a booking from the calendar ------------------------------
+  // «📄 Документы»: pick what to send, one big button, the PDFs land in this chat
+  function openDocsSheet() {
+    if (!S.open || !S.open.booking) return;
+    const b = S.open.booking;
+    const auto = /[a-z]/i.test(S.open.title || "") && !/[а-яё]/i.test(S.open.title || "") ? "en" : "ru";
+    $("modal").classList.remove("hidden");
+    $("modal-card").innerHTML = `<div class="ib-docs">
+      <h3>Отправить гостю</h3><p>${esc(b.apartment)} · ${esc(dm(b.begin))}–${esc(dm(b.end))}${b.guest ? " · " + esc(b.guest) : ""}${b.pinned ? "" : " · бронь будет закреплена за чатом"}</p>
+      <label class="ib-docs__opt"><input type="checkbox" value="receipt" checked /><span><b>Квитанция об оплате</b><small>на сумму, которая уже оплачена</small></span></label>
+      <label class="ib-docs__opt"><input type="checkbox" value="confirmation" checked /><span><b>Подтверждение брони</b><small>даты, квартира, сумма, № брони</small></span></label>
+      <label class="ib-docs__opt"><input type="checkbox" value="invoice" /><span><b>Счёт на оплату</b><small>на остаток долга</small></span></label>
+      <div class="ib-docs__lang"><span class="ib-muted">Язык:</span><div class="ib-seg" id="docs-lang"><button data-l="auto" class="is-on">Авто (${auto.toUpperCase()})</button><button data-l="ru">RU</button><button data-l="en">EN</button></div></div>
+      <button class="ib-docs__go" id="docs-go">Отправить в чат</button>
+      <button class="ib-link" data-close style="width:100%;text-align:center;margin-top:6px">Отмена</button>
+    </div>`;
+    let lang = "auto";
+    $("docs-lang").addEventListener("click", (e) => { const t = e.target.closest("[data-l]"); if (!t) return; lang = t.dataset.l; $("docs-lang").querySelectorAll("button").forEach((x) => x.classList.toggle("is-on", x === t)); });
+    $("docs-go").addEventListener("click", async () => {
+      const kinds = Array.from($("modal-card").querySelectorAll("input[type=checkbox]:checked")).map((x) => x.value);
+      if (!kinds.length) { toast("Выберите хотя бы один документ"); return; }
+      const btn = $("docs-go"); btn.disabled = true; btn.textContent = "Отправляю…";
+      try {
+        const r = await req(`/chats/${S.open.id}/documents`, { method: "POST", json: { kinds, lang: lang === "auto" ? null : lang } });
+        closeModal();
+        toast(r.sent.length ? `Отправлено: ${r.sent.map((x) => x.title).join(", ")}` + (r.errors.length ? ` · не ушло: ${r.errors.join("; ")}` : "") : (r.errors.join("; ") || "Не отправлено"));
+        pollNow();
+      } catch (err) { btn.disabled = false; btn.textContent = "Отправить в чат"; toast(err.message); }
+    });
+  }
   async function openBookingPick() {
     if (!S.open) return;
     const id = S.open.id;
@@ -1038,6 +1068,7 @@
     });
     $("conv-booking").addEventListener("click", (e) => {
       if (e.target.id === "bk-pick") { openBookingPick(); return; }
+      if (e.target.id === "bk-docs") { openDocsSheet(); return; }
       if (e.target.id === "bk-confirm") {
         const btn = e.target; btn.disabled = true;
         req(`/chats/${S.open.id}/bookings`, { method: "POST", json: { booking_id: parseInt(btn.dataset.bk, 10) } })

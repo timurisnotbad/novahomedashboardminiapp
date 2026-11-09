@@ -745,6 +745,19 @@ def make_document(bid: int, payload: dict, user: dict = Depends(current_user)): 
         _bad(exc)
 
 
+@router.post("/bookings/{bid}/documents/send")
+async def send_documents(bid: int, payload: dict, user: dict = Depends(current_user)):  # noqa: B008
+    chat_id = int(payload.get("chat_id") or 0)
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="Выберите чат гостя")
+    try:
+        return await asyncio.get_event_loop().run_in_executor(None, lambda: docs.send_to_chat(bid, chat_id, payload.get("kinds") or [], user["id"], user["name"], payload.get("lang")))
+    except ValueError as exc:
+        _bad(exc)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+
+
 @router.get("/documents/{did}.pdf")
 def document_pdf(did: int, user: dict = Depends(current_user)):  # noqa: B008
     d = docs.get_document(did)

@@ -397,6 +397,50 @@ def render_pdf(doc: dict) -> bytes:
 
 
 # ---- email -------------------------------------------------------------------------
+CAPTIONS = {
+    "ru": {"invoice": "Счёт на оплату № {n}", "receipt": "Квитанция об оплате № {n}", "confirmation": "Подтверждение бронирования № {n}"},
+    "en": {"invoice": "Invoice No. {n}", "receipt": "Payment receipt No. {n}", "confirmation": "Reservation confirmation No. {n}"},
+}
+
+
+def send_to_chat(bid: int, chat_id: int, kinds: list[str], uid: int, author: str, lang: str | None = None) -> dict:
+    """One button for the team: make the chosen documents for the booking and send them as PDF files into the
+    guest's chat (WhatsApp / Telegram / Booking). The chat is pinned to the booking — a person chose it."""
+    from . import crm_ext, inbox
+    kinds = [k for k in (kinds or ["receipt", "confirmation"]) if k in KINDS]
+    if not kinds:
+        raise ValueError("Не выбран ни один документ")
+    chat = inbox.get_chat(chat_id)
+    if not chat:
+        raise ValueError("Чат не найден")
+    lang = lang if lang in ("ru", "en") else inbox.guest_language(chat)
+    if chat_id not in crm_ext.chats_for_booking(bid):
+        crm_ext.link_chat(bid, chat_id, author)
+    config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    sent, errors = [], []
+    for kind in kinds:
+        d, name = None, None
+        try:
+            d = create_document(bid, kind, uid, lang)
+            pdf = render_pdf(d)
+            name = f"doc{d['id']}.pdf"
+            (config.INBOX_MEDIA_DIR / name).write_bytes(pdf)
+            caption = CAPTIONS[lang][kind].format(n=d["number"])
+            m = inbox.send(chat_id, author, caption, media=name, mime="application/pdf", file_name=f"{d['number']}.pdf")
+            sent.append({"kind": kind, "title": d["title"], "number": d["number"], "doc_id": d["id"], "message_id": m.get("id")})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("document %s to chat %s failed: %s", kind, chat_id, exc)
+            errors.append(f"{CAPTIONS['ru'][kind].split(' №')[0]}: {config.redact(str(exc))[:160]}")
+            if d:  # nothing reached the guest: no orphan document in the booking card, no stray file
+                try:
+                    delete_document(d["id"])
+                    if name:
+                        (config.INBOX_MEDIA_DIR / name).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+    return {"sent": sent, "errors": errors, "lang": lang, "chat": chat.get("title")}
+
+
 def email_configured() -> bool:
     return bool(config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD)
 

@@ -1265,6 +1265,7 @@
           <div style="display:flex;gap:6px;margin-top:6px"><input class="field" id="bk-find" placeholder="Привязать чат: имя или номер" /><button class="btn sm" id="bk-find-go">Найти</button></div>
           <div id="bk-found"></div>
           ${b.phone ? `<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button class="btn sm" id="bk-wa"><i class="ch wa"></i> Написать в WhatsApp</button><button class="btn sm" id="bk-tg"><i class="ch tg"></i> Написать в Telegram</button>${b.client && b.client.email ? `<button class="btn sm" id="bk-mail" ${S.features.smtp === false ? `disabled title="SMTP не настроен — Интеграции"` : ""}>✉ Email</button>` : ""}</div>` : ""}
+          <div style="margin-top:10px"><button class="btn primary sm" id="bk-senddocs" ${(b.chats || []).length || cands.length ? "" : "disabled title=\"Сначала привяжите чат гостя\""}>📄 Отправить документы в чат</button> <span class="muted small">квитанция, подтверждение, счёт — PDF в WhatsApp / Telegram гостя</span></div>
           <div class="card__title" style="margin-top:14px">Написать гостю</div>
           ${b.chats.length ? `<select class="field" id="bk-to">${b.chats.map((c) => `<option value="${c.id}">${esc(c.channel_name)} · ${esc(c.title)}</option>`).join("")}</select>
           <textarea class="field" id="bk-msg" rows="3" placeholder="Текст (переменные {имя} {объект} {заезд время} {выезд время} подставятся)" style="margin-top:6px"></textarea>
@@ -1293,6 +1294,7 @@
     const bd = $("bk-deal"); if (bd) bd.addEventListener("click", (e) => busy(e.currentTarget, async () => { await loadPipelines(); const d = await post(`/bookings/${id}/deal`); openDeal(d.id); }));
     const wa = $("bk-wa"); if (wa) wa.addEventListener("click", async () => { if (!b.client) { toast("У брони нет карточки гостя"); return; } await openClientChat(b.client.id, "wa"); });
     const tg = $("bk-tg"); if (tg) tg.addEventListener("click", async () => { if (!b.client) { toast("У брони нет карточки гостя"); return; } await openClientChat(b.client.id, "tg"); });
+    const sd = $("bk-senddocs"); if (sd) sd.addEventListener("click", () => docsToChatForm(b, [...(b.chats || []), ...cands.filter((c) => !(b.chats || []).some((x) => x.id === c.id)).map((c) => Object.assign({}, c, { pinned: false }))]));
     const bm = $("bk-mail"); if (bm) bm.addEventListener("click", () => emailForm({ to: b.client.email, booking_id: b.id, client_id: b.client.id, subject: `Nova Home · ${b.apartment} · ${dShort(b.checkin)}–${dShort(b.checkout)}`, text: "", after: () => openBooking(id) }));
     const find = () => {
       const q = $("bk-find").value.trim(); if (!q) return;
@@ -1312,6 +1314,28 @@
     };
   }
 
+  // «Отправить документы в чат»: choose the chat (pinned first), the documents and the language; PDFs go into the chat
+  function docsToChatForm(b, chats) {
+    const auto = /[a-z]/i.test(b.guest || "") && !/[а-яё]/i.test(b.guest || "") ? "en" : "ru";
+    const opts = chats.map((c) => `<option value="${c.id}">${esc(c.channel_name || c.channel)} · ${esc(c.title)}${c.pinned ? "" : " (найден автоматически — будет закреплён)"}</option>`).join("");
+    modal(`<h2>Отправить документы гостю</h2><p class="muted small">${esc(b.apartment)} · ${esc(dShort(b.checkin))}–${esc(dShort(b.checkout))} · ${esc(b.guest || "гость")}</p>
+      <label class="lbl">Куда</label><select class="field" id="sd-chat">${opts}</select>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px">
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" value="receipt" checked /> Квитанция об оплате <span class="muted small">— на оплаченную сумму</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" value="confirmation" checked /> Подтверждение брони</label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" value="invoice" /> Счёт на оплату <span class="muted small">— на остаток</span></label></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px"><span class="muted small">Язык:</span><div class="seg sm" id="sd-lang"><button data-l="auto" class="is-on">Авто (${auto.toUpperCase()})</button><button data-l="ru">RU</button><button data-l="en">EN</button></div></div>
+      <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="sd-go">Отправить в чат</button></div>`);
+    let lang = "auto";
+    $("sd-lang").addEventListener("click", (e) => { const t = e.target.closest("[data-l]"); if (!t) return; lang = t.dataset.l; $("sd-lang").querySelectorAll("button").forEach((x) => x.classList.toggle("is-on", x === t)); });
+    $("sd-go").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+      const kinds = Array.from($("modal-card").querySelectorAll("input[type=checkbox]:checked")).map((x) => x.value);
+      if (!kinds.length) { toast("Выберите хотя бы один документ"); return; }
+      const r = await post(`/bookings/${b.id}/documents/send`, { chat_id: parseInt(val("sd-chat"), 10), kinds, lang: lang === "auto" ? null : lang });
+      closeModal();
+      toast(r.sent.length ? `Отправлено в ${r.chat}: ${r.sent.map((x) => x.title).join(", ")}` + (r.errors.length ? ` · не ушло: ${r.errors.join("; ")}` : "") : (r.errors.join("; ") || "Не отправлено"));
+    }));
+  }
   // «Документы»: invoice / receipt / confirmation PDFs made from the booking, sent by email
   const DOC_KINDS = [["invoice", "Счёт"], ["receipt", "Квитанция"], ["confirmation", "Подтверждение"]];
   async function renderBookingDocs(b) {
