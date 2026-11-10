@@ -184,6 +184,10 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .popup__x { position:absolute; top:6px; right:8px; width:26px; height:26px; border-radius:50%; color:var(--label-2); font-size:14px; display:grid; place-items:center; }
 .popup__x:hover { background:#F3F4F6; color:var(--label); }
 .popup b { padding-right:26px; }
+/* «Аналитика» */
+.an-hours { display:flex; align-items:flex-end; gap:1px; height:28px; min-width:96px; }
+.an-hours i { flex:1; background:var(--blue); opacity:.75; border-radius:1px 1px 0 0; display:block; }
+.an-table td, .an-table th { white-space:nowrap; }
 /* «Автосообщения» */
 .au-master { border-left:4px solid var(--label-3); }
 .au-master.on { border-left-color:var(--green); }

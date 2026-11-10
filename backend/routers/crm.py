@@ -1420,6 +1420,15 @@ async def leads_backfill(user: dict = Depends(admin_user)):  # noqa: B008
     return await asyncio.get_event_loop().run_in_executor(None, run)
 
 
+@router.get("/analytics")
+def analytics_view(days: int = 30, start: str = "", end: str = "", user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import analytics
+    try:
+        return analytics.manager_stats(max(1, min(days, 366)), start or None, end or None)
+    except ValueError as exc:
+        _bad(exc)
+
+
 @router.post("/integrations/rc_probe")
 async def rc_probe(user: dict = Depends(admin_user)):  # noqa: B008
     """Which booking statuses RealtyCalendar answers to (and with how many events for the past 45 days)."""

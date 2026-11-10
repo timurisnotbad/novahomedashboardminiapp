@@ -1481,6 +1481,39 @@
 
   // ---- auto-message rules ------------------------------------------------------------
   const CHANNEL_NAMES = { auto: "любой доступный", wa: "WhatsApp (QR)", wac: "WhatsApp Cloud API", tg: "Telegram-аккаунт", tgbot: "Telegram-бот", ig: "Instagram" };
+  // ---- analytics: who answers guests, how fast, when (owner) -------------------------------
+  ROUTES.analytics = async () => {
+    const seq = S.navSeq;
+    const st = S.cache.an || { days: 30 };
+    S.cache.an = st;
+    const d = await get(`/analytics?days=${st.days}`);
+    if (stale(seq)) return;
+    const mins = (v) => v == null ? "—" : v < 60 ? `${Math.round(v)} мин` : v < 1440 ? `${(v / 60).toFixed(1)} ч` : `${(v / 1440).toFixed(1)} дн`;
+    const t = d.totals;
+    const people = d.managers.filter((m) => !m.system), systems = d.managers.filter((m) => m.system);
+    const maxH = Math.max(1, ...people.flatMap((m) => m.hours));
+    const bars = (m) => `<div class="an-hours">${m.hours.map((v, h) => `<i style="height:${Math.max(2, Math.round(v / maxH * 28))}px" title="${h}:00 — ${v}"></i>`).join("")}</div>`;
+    const row = (m) => `<tr class="${m.replies ? "" : "muted"}"><td><b>${esc(m.label)}</b>${m.is_user ? "" : ` <span class="muted small">не пользователь CRM</span>`}</td><td><b>${m.replies}</b> <span class="muted small">${m.share}%</span></td><td>${m.chats}</td><td>${m.n}</td>
+      <td class="${m.median != null && m.median > 30 ? "bad" : m.median != null && m.median > 10 ? "warn-t" : "ok"}"><b>${mins(m.median)}</b></td><td>${mins(m.avg)}</td><td>${mins(m.p90)}</td><td>${m.within15}%</td><td class="${m.over60 ? "bad" : ""}">${m.over60}</td>
+      <td>${m.days_active} <span class="muted small">· ${m.per_day}/день</span></td><td class="small">${esc(m.first_reply_avg || "—")}–${esc(m.last_reply_avg || "—")}</td><td>${bars(m)}</td></tr>`;
+    $("main").innerHTML = `<div class="page-head"><h1>Аналитика</h1><div class="seg" id="an-days">${[7, 30, 90].map((n) => `<button data-days="${n}" class="${st.days === n ? "is-on" : ""}">${n} дней</button>`).join("")}</div></div>
+      <div class="page-sub">${esc(dShort(d.from))} – ${esc(dShort(d.to))}. Скорость ответа — от первого сообщения гостя без ответа до первого ответа сотрудника в этом чате. Считаются все часы суток, включая ночь.</div>
+      <div class="grid c5">
+        <div class="stat"><b>${mins(t.median)}</b><span>медиана ответа</span></div>
+        <div class="stat ${t.within15 < 70 ? "warn" : ""}"><b>${t.within15}%</b><span>ответов за 15 минут</span></div>
+        <div class="stat"><b>${t.guest_messages}</b><span>сообщений от гостей</span></div>
+        <div class="stat"><b>${t.people_replies}</b><span>ответов сотрудников · ${t.replies - t.people_replies} авто</span></div>
+        <div class="stat ${t.unanswered_now ? "warn" : ""}"><b>${t.unanswered_now}</b><span>без ответа сейчас</span></div>
+      </div>
+      <div class="card" style="margin-top:16px"><div class="card__title">Сотрудники</div>
+        <div class="table-wrap"><table class="table an-table"><thead><tr><th>Кто</th><th>Ответов</th><th>Чатов</th><th>Первых ответов</th><th>Медиана</th><th>Среднее</th><th>90% быстрее</th><th>≤ 15 мин</th><th>> 1 часа</th><th>Дней</th><th>Активен</th><th>По часам</th></tr></thead>
+        <tbody>${people.map(row).join("") || `<tr><td colspan="12" class="muted">За период сотрудники не писали гостям</td></tr>`}</tbody></table></div>
+        <div class="muted small" style="margin-top:8px">«Первых ответов» — сколько обращений гостей сотрудник закрыл первым. «Активен» — среднее время первого и последнего ответа за день. «По часам» — когда сотрудник отвечает чаще всего.</div></div>
+      ${systems.length ? `<div class="card" style="margin-top:16px"><div class="card__title">Автоматика</div><div class="table-wrap"><table class="table an-table"><thead><tr><th>Кто</th><th>Ответов</th><th>Чатов</th><th>Первых ответов</th><th>Медиана</th></tr></thead><tbody>${systems.map((m) => `<tr><td>${esc(m.label)}</td><td>${m.replies}</td><td>${m.chats}</td><td>${m.n}</td><td>${mins(m.median)}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+      <div class="card" style="margin-top:16px"><div class="card__title">Обращения гостей</div><div class="small">За период гости начинали разговор <b>${t.bursts}</b> раз; получили ответ <b>${t.answered}</b> (${t.answered_pct}%). Из ответов: за 5 минут — ${t.within5}%, за 15 минут — ${t.within15}%, за час — ${t.within60}%, дольше часа — ${t.over60}.</div></div>`;
+    $("an-days").addEventListener("click", (e) => { const b = e.target.closest("[data-days]"); if (!b) return; st.days = parseInt(b.dataset.days, 10); navigate(); });
+  };
+
   ROUTES.auto = async () => {
     const seq = S.navSeq;
     const d = await get("/auto");
