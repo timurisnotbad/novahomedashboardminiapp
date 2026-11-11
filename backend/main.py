@@ -80,6 +80,12 @@ async def lifespan(app: FastAPI):
     await tg_channels.start()   # own Telegram account as a guest channel (if TG_API_ID is set)
     tg_channels.bot_start()     # guest bot long-polling thread (if TG_GUEST_BOT_TOKEN is set)
     crm_bot.start()             # CRM notification bot (if CRM_BOT_TOKEN is set)
+    try:
+        from . import bg, uptime
+        uptime.init_db()
+        bg.run(uptime.on_start)  # was the server down? why (Windows event log) — owners are told once
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uptime check failed: %s", exc)
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
     scheduler.shutdown()

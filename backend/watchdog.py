@@ -82,6 +82,11 @@ def check_bot(now: datetime | None = None) -> str | None:
 def tick() -> None:
     """Scheduler entry point: every minute."""
     try:
+        from . import uptime
+        uptime.beat()  # the black box: a gap in these marks = the server or the computer was off
+    except Exception:  # noqa: BLE001
+        logger.exception("uptime beat failed")
+    try:
         check_bot()
     except Exception:  # noqa: BLE001
         logger.exception("bot watch failed")

@@ -1420,6 +1420,12 @@ async def leads_backfill(user: dict = Depends(admin_user)):  # noqa: B008
     return await asyncio.get_event_loop().run_in_executor(None, run)
 
 
+@router.get("/uptime")
+def uptime_view(user: dict = Depends(admin_user)):  # noqa: B008
+    from .. import uptime
+    return uptime.status()
+
+
 @router.get("/analytics")
 def analytics_view(days: int = 30, start: str = "", end: str = "", user: dict = Depends(admin_user)):  # noqa: B008
     from .. import analytics

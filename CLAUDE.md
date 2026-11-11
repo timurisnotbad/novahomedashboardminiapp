@@ -3,7 +3,7 @@
 ## What this is
 Telegram bot + web CRM for Nova Home Apartments (Nest One, Tashkent, 17 apartments, owner Timur).
 Repo `timurisnotbad/novahomedashboardminiapp`, work branch `claude/fervent-planck-gno50t` (push there; no PR unless asked).
-Current release **v100**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
+Current release **v112**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
 Language of the product and of the owner: Russian. Never put model names into commits/code. Keys live only in the owner's `.env`; `data/` is gitignored.
 
 ## Code map
@@ -25,6 +25,8 @@ Language of the product and of the owner: Russian. Never put model names into co
 ## Done in this project line (v83 → v100)
 v83 RC tariffs for AI · v84–v86 AI quality (per-chat toggle, Uzbek, voice transcription, playbook, lessons, lost-context fix) · v87 apartment photos + send_photos · v88 AI tab rebuilt · v89 only manual tasks shown, auto tasks off · v90 speed (immutable assets) · v91 background drafts · v92 every lead registered (username/phone) · v93 edited messages reflected; home tiles · v94 «Оплаты» (CRM page, bot, sheet rows, joint payments → review, audit, cancel = amount 0) · v95 keyboard module · v96 chat list shows all stays with dates; keyboard applies only on change · v97 step messages to guests OFF by default (`auto_step_messages`), «...» counts as unfilled · v98 edit/delete own messages (wa/tg/tgbot); per-user Telegram notification kinds · v99 missed WhatsApp calls → «📞» line + auto-reply in guest language (`missed_call_*` settings, Интеграции → вкладка «Сценарий заезда») · v100 separate CRM notification bot (`CRM_BOT_TOKEN`).
 
+v101 RC sync without status filter; chat finds booking by guest name · v102 assistant notices personal only · v103 auto-matched booking needs «Подтвердить» before auto messages; mirror 62 days back / 120 ahead · v104 «Автосообщения» rebuilt (steps editor moved there), apartment data table removed · v105 clients from 3 years of bookings (phone or e-mail) · v106 started stays never dropped · v107 version shown in sidebar · v108 RC status probe (`rc_sync.probe_statuses`, button in Интеграции) · v109 documents to chat (`docs.send_to_chat`) · v110 Wazzup: file and caption as two messages · v111 `backend/analytics.py` manager analytics page · v112 `backend/uptime.py` outage black box (Windows event log reasons).
+
 ## Decisions taken with the owner
 - Sheet «Операции» mirrors real cash per apartment: rows only for the receiver apartment, bills never split; joint payments wait in owner's review («Оставить» / «Записать как долг между квартирами» → sheet «Долг между Аппартами»). Article is always «Бронь». Stay dates typed manually («19.10-23.10» → comment «19-23.10»). Rates/accounts from sheet «Валюты» (cached 1 h, defaults in `cash.DEFAULT_*`). Write to the sheet immediately; failures retried every 10 min. Rows with year 1899 = no date (legacy). Open question: column «Сумма $» value or formula — CRM writes a number; `USD_FORMULA` in the script switches to a formula.
 - Nothing is deleted in payments: edit rewrites the same rows (author 30 min, owner always), cancel needs a reason, audit `cash_audit`, owner notified.
@@ -34,6 +36,8 @@ v83 RC tariffs for AI · v84–v86 AI quality (per-chat toggle, Uzbek, voice tra
 - Everything on the phone: big controls, few buttons (owner's words: «достать, открыть, записать и всё»).
 
 ## Current problem (open)
+Past/current stays do not arrive from RealtyCalendar (future ones do), even with the v108 status probe available; owner has not yet sent the probe table (Интеграции → «Проверить статусы RC»). RC has no public API docs; realtycalendar.ru is unreachable from the sandbox. Next idea if every probe row is 0: RC webhooks or report export. The owner's laptop (the server) shuts down by itself: v112 records each outage with the Windows event-log reason — ask for the «Работа сервера» table. Cloud move is documented in `deploy/README.md`; Booking.com needs a logged-in Chrome with the `booking-ext` extension, so it stays on a PC.
+
 Owner's new CRM bot («NOVA CRM») did not answer /start and /link after v100. Not reproducible here (api.telegram.org is blocked from this sandbox, token validation impossible). Locally the thread starts and logs `CRM bot @… is polling` or `CRM bot: <error>` (`backend/crm_bot.py::_loop`). Owner was asked to: put `CRM_BOT_TOKEN=` into `.env` (it was shipped only in `env.add` inside the zip), restart via `restart_all.bat`, read `logs/backend.log`, check CRM → «Telegram-уведомления» (shows bot name or `bot_error`). Likely causes: token not in `.env`/no restart, or 409 (webhook set / another poller). Owner's Telegram id 36201702 must be in OWNER_IDS.
 Also unverified on a real device: iOS keyboard handling (v95/v96, `js/keyboard.js`; 5 taps on the CRM title show diagnostics), WhatsApp edit/delete through the bridge (needs the bridge running), missed-call events (needs bridge restart), the Apps Script in the owner's sheet (not installed yet as far as known).
 
