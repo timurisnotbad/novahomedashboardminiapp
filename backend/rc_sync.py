@@ -101,8 +101,26 @@ def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 
     Dates are sent as DD.MM.YYYY and apartment_ids as a comma-separated string,
-    exactly as the RC API expects.
+    exactly as the RC API expects. The range is requested in two-week windows
+    and merged by event id: one giant request is where a server-side cap on
+    the number of events would silently drop the newest bookings.
     """
+    merged: dict = {}
+    order: list = []
+    step = timedelta(days=14)
+    start = date_from
+    while start <= date_to:
+        end = min(start + step, date_to)
+        for b in _fetch_window(start, end):
+            key = b.get("id") or (b.get("apartment_id"), b.get("begin_date"), b.get("end_date"))
+            if key not in merged:
+                order.append(key)
+            merged[key] = b
+        start = end + timedelta(days=1)
+    return [merged[k] for k in order]
+
+
+def _fetch_window(date_from: date, date_to: date) -> list[dict]:
     apt_ids = ",".join(str(i) for i in config.APARTMENTS.keys())
     params = {
         "apartment_ids": apt_ids,
@@ -116,11 +134,21 @@ def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
         headers=_headers(),
         timeout=30,
     )
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"RealtyCalendar отклонил доступ ({resp.status_code}): истёк RC_TOKEN или cookies в .env"
+        )
     resp.raise_for_status()
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError("RealtyCalendar вернул не JSON (страница входа?) — истекли cookies в .env") from None
     if not isinstance(data, dict):
         raise RuntimeError(f"RC returned unexpected payload ({type(data).__name__})")
+    extra = {k: v for k, v in data.items() if k != "items" and not isinstance(v, (list, dict))}
+    if extra:
+        logger.info("RC event_calendars %s–%s meta: %s", date_from, date_to, extra)
     bookings: list[dict] = []
     for item in data.get("items") or []:
         if not isinstance(item, dict):
@@ -167,8 +195,8 @@ def sync_to_db() -> int:
         database.replace_all_bookings(bookings)
         database.log_sync(len(bookings), True)
         return len(bookings)
-    except Exception:  # noqa: BLE001 - log failure, keep the app alive
-        database.log_sync(0, False)
+    except Exception as exc:  # noqa: BLE001 - log failure, keep the app alive
+        database.log_sync(0, False, f"{type(exc).__name__}: {exc}")
         raise
 
 

@@ -176,7 +176,21 @@ def check_server():
         if not same:
             problem(f"Сервер работает на версии {data.get('version')}, а файлы версии "
                     f"{config.APP_VERSION} — закройте окна и запустите restart_all.bat")
-        print(f"         Последняя синхронизация: {data.get('last_sync')}")
+        print(f"         Последняя синхронизация: {data.get('last_sync_local') or data.get('last_sync')}")
+        try:
+            from datetime import datetime as _dt
+            age = (_dt.now() - _dt.fromisoformat(data.get("last_sync_local"))).total_seconds() / 60
+            if age >= 90:
+                print(f"{BAD}Брони не обновлялись {age / 60:.1f} ч — синхронизация с RealtyCalendar не работает")
+                if data.get("sync_error"):
+                    print(f"         Ошибка: {data.get('sync_error')}")
+                problem(f"Синхронизация с RealtyCalendar не работает {age / 60:.1f} ч"
+                        + (f" ({str(data.get('sync_error'))[:80]})" if data.get("sync_error") else "")
+                        + " — если 401/403 или «не JSON», обновите RC_TOKEN/cookies в .env")
+            else:
+                print(f"{OK}Брони свежие (обновлены {age:.0f} мин назад)")
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         print(f"{WARN}/api/health не ответил: {type(exc).__name__}: {exc}")
 

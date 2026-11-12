@@ -268,6 +268,7 @@ def init_db() -> None:
         _add_column("tasks", "created_by", "TEXT")
         _add_column("tasks", "src_key", "TEXT")
         _add_column("supplies", "src_key", "TEXT")
+        _add_column("sync_log", "error", "TEXT")  # why a sync failed — shown in reports
         # attendance log: explicit status (ok / late / absent) — no-shows are
         # recorded too, so the monthly statistics are complete
         if _add_column("attendance", "status", "TEXT"):
@@ -1082,11 +1083,11 @@ def add_payment(payment: dict) -> int:
 # ---------------------------------------------------------------------------
 # Sync log
 # ---------------------------------------------------------------------------
-def log_sync(bookings_count: int, success: bool) -> None:
+def log_sync(bookings_count: int, success: bool, error: str | None = None) -> None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO sync_log (bookings_count, success) VALUES (?, ?)",
-            (bookings_count, 1 if success else 0),
+            "INSERT INTO sync_log (bookings_count, success, error) VALUES (?, ?, ?)",
+            (bookings_count, 1 if success else 0, (error or None) and str(error)[:300]),
         )
 
 
@@ -1097,3 +1098,39 @@ def last_sync() -> str | None:
         )
         row = cur.fetchone()
         return row["synced_at"] if row else None
+
+
+def sync_state() -> dict:
+    """Last successful sync (local time, ISO) and the latest failure since it.
+    Lets every report say "data is N hours old" instead of lying quietly."""
+    with get_conn() as conn:
+        ok = conn.execute(
+            "SELECT id, synced_at, bookings_count FROM sync_log WHERE success = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        last_ok_id = ok["id"] if ok else 0
+        bad = conn.execute(
+            "SELECT synced_at, error FROM sync_log WHERE success = 0 AND id > ? ORDER BY id DESC LIMIT 1",
+            (last_ok_id,),
+        ).fetchone()
+        fails = conn.execute(
+            "SELECT COUNT(*) FROM sync_log WHERE success = 0 AND id > ?", (last_ok_id,)
+        ).fetchone()[0]
+    return {
+        "last_ok": _utc_to_local(ok["synced_at"]) if ok else None,
+        "bookings": ok["bookings_count"] if ok else None,
+        "last_error": bad["error"] if bad else None,
+        "last_error_at": _utc_to_local(bad["synced_at"]) if bad else None,
+        "fails_since_ok": fails,
+    }
+
+
+def _utc_to_local(ts: str | None) -> str | None:
+    """sync_log.synced_at is SQLite's CURRENT_TIMESTAMP (UTC); show local time."""
+    if not ts:
+        return None
+    try:
+        from datetime import timezone
+        dt = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.astimezone().replace(tzinfo=None).isoformat(timespec="minutes")
+    except ValueError:
+        return ts

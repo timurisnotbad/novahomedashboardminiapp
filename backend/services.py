@@ -377,6 +377,49 @@ def build_tasks(target: date) -> dict:
     }
 
 
+STALE_AFTER_MIN = 90  # RC data older than this gets a warning line in every report
+
+
+def sync_staleness() -> dict:
+    """{'stale': bool, 'minutes': int|None, 'last_ok': str|None, 'error': str|None}."""
+    st = database.sync_state()
+    mins = None
+    if st.get("last_ok"):
+        try:
+            mins = int((datetime.now() - datetime.fromisoformat(st["last_ok"])).total_seconds() // 60)
+        except ValueError:
+            mins = None
+    return {
+        "stale": bool(st.get("last_ok")) and mins is not None and mins >= STALE_AFTER_MIN,
+        "minutes": mins,
+        "last_ok": st.get("last_ok"),
+        "error": st.get("last_error"),
+        "fails": st.get("fails_since_ok", 0),
+    }
+
+
+def fmt_local(iso: str | None) -> str:
+    """'2026-11-12T01:47' -> '12.11 01:47'."""
+    try:
+        return datetime.fromisoformat(iso).strftime("%d.%m %H:%M")
+    except (TypeError, ValueError):
+        return iso or "?"
+
+
+def stale_warning() -> str:
+    """One line for the top of a report, or '' when the data is fresh."""
+    s = sync_staleness()
+    if not s["stale"]:
+        return ""
+    h, m = divmod(s["minutes"], 60)
+    age = f"{h} ч {m:02d} мин" if h else f"{m} мин"
+    when = fmt_local(s["last_ok"])
+    line = f"⚠️ Брони из RealtyCalendar не обновлялись {age} (последний раз {when}) — список может быть неполным."
+    if s["error"]:
+        line += f"\n   Причина: {s['error'][:140]}"
+    return line
+
+
 def build_tomorrow_schedule_text(target: date) -> str:
     """Nice evening (22:00) preview of tomorrow for the team group."""
     d = build_day(target)
@@ -386,6 +429,9 @@ def build_tomorrow_schedule_text(target: date) -> str:
         "",
         f"🔑 Заезды: {s['checkins_today']}   🚪 Выезды: {s['checkouts_today']}   🧹 Уборки: {s['cleanings_today']}",
     ]
+    warn = stale_warning()
+    if warn:
+        lines[1:1] = ["", warn]
     if d["checkins"]:
         lines.append("")
         lines.append("🔑 Заезды:")
@@ -425,6 +471,9 @@ def build_text_summary(target: date) -> str:
         f"🔑 Заезды ({s['checkins_today']}): {names(d['checkins'])}",
         f"🚪 Выезды ({s['checkouts_today']}): {names(d['checkouts'])}",
     ]
+    warn = stale_warning()
+    if warn:
+        lines[1:1] = ["", warn]
     if d["cleanings"]:
         cl = ", ".join(
             f"{c['apartment']}" + (f" до {c['next_arrival_time']}" if c.get('next_arrival_time') else "")

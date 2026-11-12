@@ -57,6 +57,10 @@ except BaseException as _import_exc:  # noqa: BLE001 — a missing library must 
     raise SystemExit(1)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+# httpx prints every Telegram request URL — with the bot token inside it. Not
+# in the window, not in bot.log (a screenshot of the window must stay harmless).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 LOG_PATH = logsetup.setup("bot")  # everything also goes to logs/bot.log
 logger = logging.getLogger("nova.bot")
 
@@ -145,9 +149,17 @@ async def sync_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = await update.effective_message.reply_text("🔄 Синхронизация…")
     try:
         count = await asyncio.to_thread(rc_sync.sync_to_db)
-        await msg.edit_text(f"✅ Синхронизировано: {count} броней")
+        await msg.edit_text(f"✅ Синхронизировано: {count} броней (окно {config.SYNC_DAYS_AHEAD} дней вперёд)")
     except Exception as exc:  # noqa: BLE001
-        await msg.edit_text(f"❌ Ошибка синхронизации: {exc}")
+        try:
+            s = await asyncio.to_thread(services.sync_staleness)
+            last = (s.get("last_ok") or "никогда").replace("T", " ")
+        except Exception:  # noqa: BLE001
+            last = "?"
+        await msg.edit_text(
+            f"❌ Ошибка синхронизации: {exc}\n\nПоследняя удачная: {last}. До исправления бот и дашборд "
+            f"показывают брони на тот момент."
+        )
 
 
 async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1433,6 +1445,12 @@ async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
     done = [c["apartment"] for c in todays if c.get("status") == "done"]
     ch, cm = config.CLEANING_CHECK_T
     lines = [f"🧹 Контроль уборок на {ch:02d}:{cm:02d}:"]
+    try:
+        warn = await asyncio.to_thread(services.stale_warning)
+    except Exception:  # noqa: BLE001
+        warn = ""
+    if warn:
+        lines.append(warn)
     if not_done:
         lines.append("❌ Нет отчёта об уборке: " + ", ".join(sorted(not_done)))
         lines.append("Горничные, пришлите фото/кружок с номером квартиры!")

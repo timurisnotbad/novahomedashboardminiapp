@@ -83,5 +83,43 @@ def tick() -> None:
         check_bot()
     except Exception:  # noqa: BLE001
         logger.exception("bot watch failed")
+    try:
+        check_sync()
+    except Exception:  # noqa: BLE001
+        logger.exception("sync watch failed")
     if config.HEARTBEAT_URL_SERVER:
         ping(config.HEARTBEAT_URL_SERVER)
+
+
+_sync_state = {"alerted": False}
+SYNC_ALERT_AFTER_MIN = 60
+
+
+def check_sync(now: datetime | None = None) -> str | None:
+    """RealtyCalendar sync failing for an hour → tell the owners once (with
+    the reason), and again when it recovers. Without this the bot keeps
+    posting yesterday's calendar as if nothing happened."""
+    from . import services
+    s = services.sync_staleness()
+    if s["minutes"] is None:
+        return None  # never synced yet (fresh install) — nothing to compare
+    owners = config.OWNER_TELEGRAM_IDS or None
+    if s["minutes"] >= SYNC_ALERT_AFTER_MIN and s["fails"] > 0:
+        if _sync_state["alerted"]:
+            return None
+        _sync_state["alerted"] = True
+        when = services.fmt_local(s["last_ok"])
+        text = (f"🔴 Синхронизация с RealtyCalendar не работает с {when}: {s['fails']} попыток подряд "
+                f"без успеха.\nОшибка: {s['error'] or '—'}\n\n"
+                f"Бот и дашборд показывают брони на момент {when}; новые заезды и выезды не видны.\n"
+                f"Если в ошибке 401/403 или «не JSON» — истекли RC_TOKEN или cookies в .env: "
+                f"войдите в RealtyCalendar в браузере, скопируйте новые значения, затем restart_all.bat.")
+        notify.send(text, targets=owners)
+        logger.warning("RC sync stale for %s min — owners alerted", s["minutes"])
+        return text
+    if s["minutes"] < SYNC_ALERT_AFTER_MIN and _sync_state["alerted"]:
+        _sync_state["alerted"] = False
+        text = "🟢 Синхронизация с RealtyCalendar восстановлена, брони снова актуальные."
+        notify.send(text, targets=owners)
+        return text
+    return None

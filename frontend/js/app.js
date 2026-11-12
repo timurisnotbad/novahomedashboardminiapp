@@ -87,6 +87,18 @@
         serverStale = true;
         showBanner(`⚠️ Сервер не обновлён (версия ${v}, файлы ${NH.APP_VERSION}). ` +
           "Закройте окна «Nova Backend» и «Nova Bot» на компьютере и запустите restart_all.bat.");
+        return;
+      }
+      // bookings older than 90 min: RealtyCalendar sync is failing — say so,
+      // otherwise every screen quietly shows yesterday's calendar
+      if (h && h.last_sync_local) {
+        const ageMin = (Date.now() - new Date(h.last_sync_local).getTime()) / 60000;
+        if (ageMin >= 90) {
+          const hrs = Math.floor(ageMin / 60), mins = Math.round(ageMin % 60);
+          const age = hrs ? `${hrs} ч ${mins} мин` : `${mins} мин`;
+          showBanner(`⚠️ Брони не обновлялись ${age}. Синхронизация с RealtyCalendar не работает` +
+            (h.sync_error ? `: ${h.sync_error}` : "") + ". Данные на экранах могут быть устаревшими.");
+        }
       }
     } catch (e) { /* offline — the screens report it themselves */ }
   }
