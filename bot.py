@@ -1622,9 +1622,65 @@ async def _announce_back(app) -> None:
             pass
 
 
+_SHARED_TOKEN_TEXT = (
+    "⚠️ Токен этого бота использует ещё одна программа{where}.\n\n"
+    "Два приложения на одном токене мешают друг другу: Telegram отдаёт сообщения то одному, "
+    "то другому, бот «отваливается» и не отвечает (например, на /sync), реакции и отчёты теряются.\n\n"
+    "Что делать: для второй программы (похоже, это CRM на /crm/) создать отдельного бота в @BotFather "
+    "(/newbot) и вписать её новый токен в её настройки. Этот бот оставить дашборду."
+)
+_conflict_state = {"count": 0, "last_alert": 0.0}
+
+
+async def _warn_shared_token(bot, where: str) -> None:
+    import time as _time
+    now = _time.time()
+    if now - _conflict_state["last_alert"] < 6 * 3600:
+        return
+    _conflict_state["last_alert"] = now
+    text = _SHARED_TOKEN_TEXT.format(where=where)
+    logger.error("shared bot token detected%s", where)
+    for uid in config.OWNER_TELEGRAM_IDS:
+        try:
+            await bot.send_message(chat_id=uid, text=text)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _webhook_check(app) -> None:
+    """Before polling starts (PTB deletes any webhook a moment later): a webhook
+    on this token means another program receives this bot's updates."""
+    try:
+        info = await app.bot.get_webhook_info()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("getWebhookInfo failed: %s", exc)
+        return
+    if info and info.url:
+        logger.error("webhook set on this token by someone else: %s", info.url)
+        await _warn_shared_token(app.bot, f" — на нём стоит webhook {info.url}")
+
+
+async def on_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB routes polling errors here (update is None). A stream of Conflict
+    errors = a second process polls the same token."""
+    from telegram.error import Conflict, NetworkError, TimedOut
+    err = context.error
+    if isinstance(err, Conflict):
+        _conflict_state["count"] += 1
+        if _conflict_state["count"] >= 3:
+            await _warn_shared_token(context.bot, " (ошибка Conflict при опросе Telegram)")
+        return
+    if isinstance(err, (NetworkError, TimedOut)):
+        logger.warning("network: %s", err)
+        return
+    _conflict_state["count"] = 0
+    logger.error("handler error: %s", err, exc_info=err)
+
+
 async def _set_commands(app) -> None:
     """Publish the command menu: a short list for everyone, the full one in
     the owners' private chats. Runs once at startup; failures are harmless."""
+    await _webhook_check(app)
     from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
     common = [
         BotCommand("start", "Открыть дашборд"),
@@ -1706,6 +1762,7 @@ def main() -> None:
 
     database.init_db()
     app = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands).build()
+    app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("sync", sync_cmd))
