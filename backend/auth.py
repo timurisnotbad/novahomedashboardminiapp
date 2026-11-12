@@ -36,6 +36,12 @@ def parse_init_data(raw: str):
     received = pairs.pop("hash", None)
     if not received:
         return None
+    try:  # a signed initData is valid for 48 h: an old copy from a chat log must not open the app
+        import time
+        if time.time() - int(pairs.get("auth_date") or 0) > 48 * 3600:
+            return None
+    except (TypeError, ValueError):
+        return None
     data_check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
     secret = hmac.new(b"WebAppData", config.BOT_TOKEN.encode(), hashlib.sha256).digest()
     calc = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
@@ -57,9 +63,23 @@ def key_ok(key: str) -> bool:
     return bool(config.OWNER_KEY) and bool(key) and hmac.compare_digest(key, config.OWNER_KEY)
 
 
+def dev_mode() -> bool:
+    """No bot configured AND DEV_MODE=1: everything is owner. Without the flag a
+    half-configured .env fails CLOSED (nobody gets in) instead of open."""
+    return config.DEV_MODE and (not config.BOT_TOKEN or not config.OWNER_TELEGRAM_IDS)
+
+
+def staff_uid_from_key(key: str) -> int | None:
+    """uid of an ACTIVE employee behind a personal key issued by the bot."""
+    from . import database
+    uid = database.access_key_uid(key) if key and "." in key else None
+    if uid is None:
+        return None
+    return uid if (uid in config.OWNER_TELEGRAM_IDS or database.is_active_staff(uid)) else None
+
+
 def role_from_init(raw: str, owner_key: str = "") -> str:
-    # Not fully configured → dev mode, full access.
-    if not config.BOT_TOKEN or not config.OWNER_TELEGRAM_IDS:
+    if dev_mode():
         return "owner"
     if key_ok(owner_key):
         logger.info("auth: owner key OK -> owner")
@@ -136,15 +156,20 @@ def has_access(raw: str, key: str = "") -> bool:
     the app through the bot (valid initData signature, or the staff key the bot
     appends to the URL for clients that pass no initData). Everyone else — a
     random visitor who found the domain — gets nothing."""
-    if not config.BOT_TOKEN or not config.OWNER_TELEGRAM_IDS:
-        return True  # dev mode
+    if dev_mode():
+        return True
     if key_ok(key):
         return True
     if key and config.PAY_KEY and hmac.compare_digest(key, config.PAY_KEY):
         return True
-    if key and config.STAFF_KEY and hmac.compare_digest(key, config.STAFF_KEY):
+    if staff_uid_from_key(key) is not None:
         return True
-    return parse_init_data(raw) is not None
+    user = parse_init_data(raw)
+    uid = user.get("id") if user else None
+    if not uid:
+        return False
+    from . import database
+    return uid in config.OWNER_TELEGRAM_IDS or uid in pay_viewer_ids() or database.is_active_staff(uid)
 
 
 # FastAPI dependency applied to every data endpoint.

@@ -28,10 +28,28 @@ def setup(name: str) -> Path:
         return path
     h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     h._nova_tag = name  # noqa: SLF001
+    h.addFilter(_RedactFilter())
     root.addHandler(h)
+    for other in root.handlers:  # the console handler too
+        if not any(isinstance(f, _RedactFilter) for f in other.filters):
+            other.addFilter(_RedactFilter())
     if root.level > logging.INFO or root.level == logging.NOTSET:
         root.setLevel(logging.INFO)
     return path
+
+
+class _RedactFilter(logging.Filter):
+    """Bot tokens appear inside Bot API URLs in exception text; keep them out of the files."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from . import config
+            msg = record.getMessage()
+            red = config.redact(msg)
+            if red != msg:
+                record.msg, record.args = red, ()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
 
 
 def log_crash(name: str, exc: BaseException) -> Path:

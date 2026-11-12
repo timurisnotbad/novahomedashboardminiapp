@@ -49,17 +49,16 @@ def check_due_tasks(now: datetime | None = None) -> None:
             for _h, k in due:
                 database.mark_task_notif(task["id"], k)
             left = "1 час" if hours == 1 else f"{hours} ч"
-            notify.send(
-                f"⏰ Через {left} — дедлайн задачи:\n{_label(task)}\n"
-                f"Срок: {dt.strftime('%d.%m %H:%M')}"
-            )
+            from . import alerts
+            alerts.broadcast("tasks", f"⏰ Через {left} — дедлайн задачи:\n{_label(task)}\nСрок: {dt.strftime('%d.%m %H:%M')}")
         else:
             try:
                 dd = date.fromisoformat(task["deadline"])
             except (ValueError, TypeError):
                 continue
             if now.date() == dd and now.hour >= 8 and database.mark_task_notif(task["id"], "due_day"):
-                notify.send(f"📌 Сегодня дедлайн задачи:\n{_label(task)}")
+                from . import alerts
+                alerts.broadcast("tasks", f"📌 Сегодня дедлайн задачи:\n{_label(task)}")
 
 
 def prime_task(task_id) -> None:
@@ -153,17 +152,16 @@ def check_booking_changes() -> None:
         bid = b.get("id")
         old = snaps.get(bid)
         if old is None:
-            notify.send(_new_booking_msg(b), targets=owners)
+            from . import alerts
+            alerts.broadcast("bookings", _new_booking_msg(b), base=owners)
             if target and _touches(target, b):
                 schedule_dirty = True
         else:
             diffs = _booking_diffs(old, b)
             if diffs:
-                notify.send(
-                    f"🔁 Бронь изменена · {b.get('apartment_name') or ''}\n"
-                    f"👤 {b.get('client_name') or 'Гость'}\n" + "\n".join(diffs),
-                    targets=owners,
-                )
+                from . import alerts
+                alerts.broadcast("bookings", f"🔁 Бронь изменена · {b.get('apartment_name') or ''}\n"
+                                 f"👤 {b.get('client_name') or 'Гость'}\n" + "\n".join(diffs), base=owners)
                 if target and (_touches(target, b) or _touches(target, old)):
                     schedule_dirty = True
     database.upsert_booking_snapshots(bookings)

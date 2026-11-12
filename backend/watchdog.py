@@ -62,7 +62,8 @@ def check_bot(now: datetime | None = None) -> str | None:
             text = (f"🔴 Бот не отвечает с {ts:%H:%M} ({int(age_min)} мин). Сервер и компьютер работают.\n"
                     f"Что делать: на компьютере запустить restart_all.bat. "
                     f"Если окно «Nova Bot» открыто — посмотреть, что в нём написано.")
-            notify.send(text, targets=owners)
+            from . import alerts
+            alerts.broadcast("system", text, base=owners)
             logger.warning("bot heartbeat is %d min old — owners alerted", age_min)
             return text
         return None
@@ -71,7 +72,8 @@ def check_bot(now: datetime | None = None) -> str | None:
         since = _state["bot_down_since"]
         gap = f" (не работал с {since:%H:%M})" if since else ""
         text = f"🟢 Бот снова в сети{gap}."
-        notify.send(text, targets=owners)
+        from . import alerts
+        alerts.broadcast("system", text, base=owners)
         logger.info("bot heartbeat back — owners told")
         return text
     return None
@@ -79,6 +81,11 @@ def check_bot(now: datetime | None = None) -> str | None:
 
 def tick() -> None:
     """Scheduler entry point: every minute."""
+    try:
+        from . import uptime
+        uptime.beat()  # the black box: a gap in these marks = the server or the computer was off
+    except Exception:  # noqa: BLE001
+        logger.exception("uptime beat failed")
     try:
         check_bot()
     except Exception:  # noqa: BLE001

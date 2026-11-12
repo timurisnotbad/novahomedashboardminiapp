@@ -1,0 +1,55 @@
+import { chromium } from "playwright";
+const B = "http://127.0.0.1:8000";
+const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+await ctx.route(/telegram\.org/, (r) => r.fulfill({ status: 200, body: "" }));
+const page = await ctx.newPage();
+const errors = [];
+page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text()); });
+// standalone without a key -> denied
+await page.goto(B + "/cash/"); await page.waitForTimeout(800);
+console.log("denied visible:", await page.locator("#denied").isVisible());
+// CRM login
+await page.goto(B + "/crm/"); await page.fill("#auth-email", "admin@novahome.uz"); await page.fill("#auth-pass", "secret123"); await page.click("#auth-btn");
+await page.waitForSelector("#app:not(.hidden)", { timeout: 10000 });
+await page.goto(B + "/crm/#cash"); await page.waitForTimeout(1200);
+const frame = page.frames().find((f) => f.url().includes("/cash/"));
+console.log("iframe:", !!frame, frame && frame.url());
+await page.screenshot({ path: process.env.SP + "/shot_crm_cash.png" });
+// standalone page with the cookie (what the bot opens, same look)
+await page.goto(B + "/cash/"); await page.waitForSelector(".apt", { timeout: 8000 });
+await page.screenshot({ path: process.env.SP + "/shot_cash_new.png" });
+console.log("tabs:", await page.locator("#tabs button:visible").allInnerTexts());
+console.log("apts:", await page.locator(".apt").count(), "go disabled:", await page.locator("#go").isDisabled(), "go text:", await page.locator("#go").innerText());
+await page.locator(".apt", { hasText: "110" }).tap(); await page.waitForTimeout(200);
+await page.locator("[data-amt='0']").fill("400"); await page.waitForTimeout(100);
+await page.locator("#add-line").tap(); await page.waitForTimeout(300);
+await page.locator("[data-amt='1']").fill("480000"); await page.waitForTimeout(100);
+console.log("line1 value:", await page.locator("[data-amt='1']").inputValue(), "| usd:", await page.locator("[data-usd='1']").innerText());
+await page.locator("#stay").fill("19.10-23.10"); await page.waitForTimeout(100);
+console.log("go:", await page.locator("#go").innerText(), "disabled:", await page.locator("#go").isDisabled());
+await page.locator(".apt", { hasText: "66" }).tap(); await page.waitForTimeout(300);
+console.log("receiver chips:", await page.locator(".chip").allInnerTexts());
+await page.screenshot({ path: process.env.SP + "/shot_cash_filled.png", fullPage: true });
+await page.locator("#go").tap(); await page.waitForSelector("#done:not(.hidden)", { timeout: 10000 }); await page.waitForTimeout(900);
+console.log("done:", (await page.locator("#done").innerText()).replace(/\n+/g, " | "));
+await page.screenshot({ path: process.env.SP + "/shot_cash_done.png" });
+await page.locator("#done-more").tap(); await page.waitForTimeout(300);
+await page.locator("#tabs button[data-tab=today]").tap(); await page.waitForTimeout(800);
+console.log("today rows:", await page.locator(".pay").count(), "| badge:", await page.locator(".pay .badge").first().innerText());
+await page.screenshot({ path: process.env.SP + "/shot_cash_today.png" });
+await page.locator(".pay").first().tap(); await page.waitForTimeout(500);
+console.log("sheet:", (await page.locator("#sheet-card").innerText()).replace(/\n+/g, " | ").slice(0, 400));
+await page.locator("#p-cancel").tap(); await page.waitForTimeout(400);
+await page.locator("#c-reason").fill("тест отмены"); await page.locator("#c-yes").tap(); await page.waitForTimeout(800);
+console.log("after cancel rows:", await page.locator(".pay.cancelled").count());
+await page.locator("#tabs button[data-tab=stats]").tap(); await page.waitForTimeout(1200);
+console.log("stats:", (await page.locator(".stats").innerText()).replace(/\n+/g, " | "));
+await page.screenshot({ path: process.env.SP + "/shot_cash_stats.png", fullPage: true });
+// desktop width inside CRM
+await page.setViewportSize({ width: 1280, height: 860 });
+await page.goto(B + "/crm/#cash"); await page.waitForTimeout(1200);
+await page.screenshot({ path: process.env.SP + "/shot_crm_cash_desktop.png" });
+console.log("errors:", errors);
+await browser.close();

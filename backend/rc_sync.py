@@ -3,6 +3,7 @@
 In DEMO_MODE (no RC token configured) a realistic dataset is generated relative
 to today's date so the dashboard is fully populated for development and demos.
 """
+import json
 import logging
 import random
 import re
@@ -97,79 +98,214 @@ def _headers() -> dict:
     }
 
 
-def fetch_bookings(date_from: date, date_to: date) -> list[dict]:
+def refresh_booking(bid: int) -> None:
+    """Re-read one booking's apartment for its dates (seconds, not a full sync)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    rows = fetch_bookings(d0, d1, [cur["apartment_id"]])
+    if rows:
+        database.upsert_bookings(rows)
+
+
+RAW_EXTRA = ("apartment_name", "client_name", "client_phone", "client_email", "client_phone2")
+
+
+def fetch_raw_event(bid: int) -> dict | None:
+    """The calendar's own full object for one booking (for a full-object PUT)."""
+    with database.get_conn() as conn:
+        cur = conn.execute("SELECT apartment_id, begin_date, end_date FROM bookings WHERE id = ?", (bid,)).fetchone()
+    if not cur or config.DEMO_MODE:
+        return None
+    d0 = date.fromisoformat(cur["begin_date"][:10]) - timedelta(days=1)
+    d1 = date.fromisoformat(cur["end_date"][:10]) + timedelta(days=1)
+    for ev in fetch_bookings(d0, d1, [cur["apartment_id"]]):
+        if ev.get("id") == bid:
+            return {k: v for k, v in ev.items() if k not in RAW_EXTRA}
+    return None
+
+
+KNOWN_STATUSES = ["booked", "paid", "confirmed", "prepaid", "not_confirmed"]
+# status values RC might use for a guest who checked in / out; the probe keeps the ones that return events
+CANDIDATE_STATUSES = KNOWN_STATUSES + ["check_in", "checked_in", "checkin", "arrived", "in_house", "living", "settled", "check_out", "checked_out", "checkout",
+                                       "departed", "completed", "finished", "closed", "done", "archived", "expired", "pending", "request", "reserved", "blocked",
+                                       "cancelled", "canceled", "declined", "rejected", "no_show"]
+
+
+def statuses_to_request() -> list[str] | None:
+    """The explicit status list for RC: the known five plus whatever the probe discovered; None = probe never ran."""
+    from . import crm
+    raw = crm.get_setting("rc_statuses", "")
+    if not raw:
+        return None
+    try:
+        extra = [s for s in json.loads(raw) if isinstance(s, str)]
+    except ValueError:
+        extra = []
+    return list(dict.fromkeys(KNOWN_STATUSES + extra))
+
+
+def _get_events(params: dict, timeout: int = 30):
+    resp = requests.get(f"{config.RC_BASE_URL}/v2/event_calendars", params=params, headers=_headers(), timeout=timeout)
+    return resp
+
+
+def _count_events(data) -> tuple[int, dict]:
+    n, seen = 0, {}
+    for item in (data.get("items") or []) if isinstance(data, dict) else []:
+        for ev in item.get("events") or []:
+            if isinstance(ev, dict) and not ev.get("is_delete"):
+                n += 1
+                st = str(ev.get("status") or "").lower()
+                seen[st] = seen.get(st, 0) + 1
+    return n, seen
+
+
+def probe_statuses(days_back: int = 45) -> dict:
+    """Ask RC for the last `days_back` days once per candidate status (and once without a filter); remember the
+    statuses that return events so the regular sync requests them explicitly. Returns a report for the UI."""
+    from . import crm
+    today = date.today()
+    base = {"apartment_ids": ",".join(str(i) for i in config.APARTMENTS.keys()),
+            "begin_date": (today - timedelta(days=days_back)).strftime("%d.%m.%Y"), "end_date": (today - timedelta(days=1)).strftime("%d.%m.%Y")}
+    report = {"from": (today - timedelta(days=days_back)).isoformat(), "to": (today - timedelta(days=1)).isoformat(), "rows": [], "discovered": [], "seen": {}}
+    try:
+        r = _get_events(base, timeout=40)
+        n, seen = _count_events(r.json() if r.status_code == 200 else {})
+        report["rows"].append({"status": "(без фильтра)", "http": r.status_code, "events": n, "seen": seen})
+        for k, v in seen.items():
+            report["seen"][k] = report["seen"].get(k, 0) + v
+    except Exception as exc:  # noqa: BLE001
+        report["rows"].append({"status": "(без фильтра)", "http": 0, "events": 0, "error": str(exc)[:120]})
+    for st in CANDIDATE_STATUSES:
+        try:
+            r = _get_events({**base, "statuses[]": [st]}, timeout=25)
+            n, seen = _count_events(r.json() if r.status_code == 200 else {})
+            row = {"status": st, "http": r.status_code, "events": n, "seen": seen}
+            if r.status_code == 200 and n and st not in ("cancelled", "canceled", "declined", "rejected", "no_show"):
+                # the answer must really be about this status (RC may ignore an unknown value and return everything)
+                if seen.get(st, 0) > 0 or (len(seen) == 1 and st in KNOWN_STATUSES):
+                    report["discovered"].append(st)
+            report["rows"].append(row)
+            for k, v in seen.items():
+                report["seen"][k] = report["seen"].get(k, 0) + v
+        except Exception as exc:  # noqa: BLE001
+            report["rows"].append({"status": st, "http": 0, "events": 0, "error": str(exc)[:120]})
+    # every status value RC itself showed in any answer is worth requesting too
+    for k in report["seen"]:
+        if k and k not in report["discovered"] and k not in ("cancelled", "canceled", "declined", "rejected", "no_show"):
+            report["discovered"].append(k)
+    extra = [s for s in report["discovered"] if s not in KNOWN_STATUSES]
+    crm.set_setting("rc_statuses", json.dumps(extra))
+    crm.set_setting("rc_statuses_probed", today.isoformat())
+    report["request"] = statuses_to_request()
+    logger.info("RC status probe: seen %s, extra statuses %s", report["seen"], extra)
+    return report
+# statuses that mean «no booking»; everything else (checked-in, checked-out, whatever RC adds) is a booking
+CANCELLED_STATUSES = {"cancelled", "canceled", "declined", "rejected", "deleted", "removed", "canceled_by_guest", "no_show"}
+_status_seen: dict = {}
+
+
+def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = None) -> list[dict]:
     """Fetch all bookings from Realty Calendar for the date range.
 
     Dates are sent as DD.MM.YYYY and apartment_ids as a comma-separated string,
-    exactly as the RC API expects. The range is requested in two-week windows
-    and merged by event id: one giant request is where a server-side cap on
-    the number of events would silently drop the newest bookings.
-    """
-    merged: dict = {}
-    order: list = []
-    step = timedelta(days=14)
-    start = date_from
-    while start <= date_to:
-        end = min(start + step, date_to)
-        for b in _fetch_window(start, end):
-            key = b.get("id") or (b.get("apartment_id"), b.get("begin_date"), b.get("end_date"))
-            if key not in merged:
-                order.append(key)
-            merged[key] = b
-        start = end + timedelta(days=1)
-    return [merged[k] for k in order]
+    exactly as the RC API expects.
 
-
-def _fetch_window(date_from: date, date_to: date) -> list[dict]:
-    apt_ids = ",".join(str(i) for i in config.APARTMENTS.keys())
+    Two requests, merged by booking id (v113):
+    * the explicit status list (the known five + whatever the probe found) —
+      this is the call that worked for months and returns stays in progress;
+    * the same range with no status filter — picks up statuses nobody listed.
+    Either one alone has lost bookings: the unfiltered answer hides some
+    statuses by default, the explicit one misses statuses RC adds. A booking
+    is dropped only when its status says "cancelled"."""
+    apt_ids = ",".join(str(i) for i in (apartment_ids or config.APARTMENTS.keys()))
     params = {
         "apartment_ids": apt_ids,
         "begin_date": date_from.strftime("%d.%m.%Y"),
         "end_date": date_to.strftime("%d.%m.%Y"),
-        "statuses[]": ["booked", "paid", "confirmed", "prepaid", "not_confirmed"],
     }
-    resp = requests.get(
-        f"{config.RC_BASE_URL}/v2/event_calendars",
-        params=params,
-        headers=_headers(),
-        timeout=30,
-    )
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"RealtyCalendar отклонил доступ ({resp.status_code}): истёк RC_TOKEN или cookies в .env"
-        )
-    resp.raise_for_status()
+    wanted = statuses_to_request() or list(KNOWN_STATUSES)
+    answers = []
+    errors = []
+    for extra in ({"statuses[]": wanted}, {}):
+        try:
+            resp = _get_events({**params, **extra})
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"RealtyCalendar отклонил доступ ({resp.status_code}): истёк RC_TOKEN или cookies в .env"
+                )
+            if resp.status_code in (400, 422) and extra and wanted != KNOWN_STATUSES:
+                resp = _get_events({**params, "statuses[]": KNOWN_STATUSES})  # a probed status RC no longer accepts
+            if resp.status_code in (400, 422) and not extra:
+                continue  # RC refuses the unfiltered call — the explicit one is enough
+            resp.raise_for_status()
+            try:
+                data = resp.json()
+            except ValueError:
+                raise RuntimeError("RealtyCalendar вернул не JSON (страница входа?) — истекли cookies в .env") from None
+            if not isinstance(data, dict):
+                raise RuntimeError(f"RC returned unexpected payload ({type(data).__name__})")
+            answers.append(data)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+    if not answers:
+        raise errors[0]
+    if errors:
+        logger.warning("RC: one of the two booking requests failed (%s) — using the other", errors[0])
 
-    try:
-        data = resp.json()
-    except ValueError:
-        raise RuntimeError("RealtyCalendar вернул не JSON (страница входа?) — истекли cookies в .env") from None
-    if not isinstance(data, dict):
-        raise RuntimeError(f"RC returned unexpected payload ({type(data).__name__})")
-    extra = {k: v for k, v in data.items() if k != "items" and not isinstance(v, (list, dict))}
-    if extra:
-        logger.info("RC event_calendars %s–%s meta: %s", date_from, date_to, extra)
-    bookings: list[dict] = []
-    for item in data.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        apt_id = item.get("apartment_id")
-        apt_name = config.APARTMENTS.get(apt_id, str(apt_id))
-        for event in item.get("events") or []:
-            if not isinstance(event, dict) or event.get("is_delete"):
+    merged: dict = {}
+    order: list = []
+    for data in answers:
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
                 continue
-            if not event.get("begin_date") or not event.get("end_date"):
-                logger.warning("RC event %s without dates skipped", event.get("id"))
-                continue
-            client = event.get("client") or {}
-            bookings.append({
-                **event,
-                "apartment_id": apt_id,
-                "apartment_name": apt_name,
-                "client_name": client.get("fio"),
-                "client_phone": client.get("phone"),
-            })
-    return bookings
+            apt_id = item.get("apartment_id")
+            apt_name = config.APARTMENTS.get(apt_id, str(apt_id))
+            for event in item.get("events") or []:
+                if not isinstance(event, dict) or event.get("is_delete"):
+                    continue
+                st = str(event.get("status") or "").lower()
+                _status_seen[st] = _status_seen.get(st, 0) + 1
+                if st in CANCELLED_STATUSES:
+                    continue
+                if st and st not in KNOWN_STATUSES and _status_seen[st] == 1:
+                    logger.info("RC status «%s» seen for the first time (booking %s) — kept as a booking", st, event.get("id"))
+                if not event.get("begin_date") or not event.get("end_date"):
+                    logger.warning("RC event %s without dates skipped", event.get("id"))
+                    continue
+                client = event.get("client") or {}
+                if not event.get("prepayment"):
+                    for k in ("paid", "payed", "paid_amount", "payments_sum", "payed_amount", "total_paid"):
+                        if isinstance(event.get(k), (int, float)) and event[k]:
+                            event["prepayment"] = event[k]
+                            break
+                    pays = event.get("payments")
+                    if isinstance(pays, list) and pays and not event.get("prepayment"):
+                        try:
+                            event["prepayment"] = sum(float(p.get("amount") or p.get("sum") or 0) for p in pays if isinstance(p, dict))
+                        except (TypeError, ValueError):
+                            pass
+                key = event.get("id") or (apt_id, event.get("begin_date"), event.get("end_date"))
+                if key not in merged:
+                    order.append(key)
+                merged[key] = {
+                    **event,
+                    "apartment_id": apt_id,
+                    "apartment_name": apt_name,
+                    "client_name": client.get("fio"),
+                    "client_phone": client.get("phone"),
+                }
+    if len(answers) == 2:
+        n1, _s1 = _count_events(answers[0])
+        n2, _s2 = _count_events(answers[1])
+        if n1 != n2:
+            logger.info("RC bookings %s–%s: %d with the status list, %d unfiltered, %d after merge",
+                        date_from, date_to, n1, n2, len(merged))
+    return [merged[k] for k in order]
 
 
 def sync_to_db() -> int:
@@ -183,21 +319,89 @@ def sync_to_db() -> int:
     today = date.today()
     try:
         if config.DEMO_MODE:
+            d0, d1 = today - timedelta(days=7), today + timedelta(days=13)
             bookings = generate_demo_bookings(today)
         else:
             refresh_apartments()  # pick up units newly added in RC
-            bookings = fetch_bookings(today - timedelta(days=1), today + timedelta(days=config.SYNC_DAYS_AHEAD))
+            d0, d1 = today - timedelta(days=config.SYNC_DAYS_BACK), today + timedelta(days=config.SYNC_DAYS_AHEAD)
+            bookings = fetch_bookings(d0, d1)
             # An expired session sometimes yields "200 OK, 0 items" rather than
             # an error. 18 units never have zero bookings for a month — treat
             # that as a failed sync instead of wiping the calendar.
             if not bookings and database.count_bookings() > 0:
                 raise RuntimeError("RC returned 0 bookings — keeping the previous data (token/cookies?)")
-        database.replace_all_bookings(bookings)
+        # Window mirror instead of DELETE-all: history outside the window stays,
+        # readers never see an empty table mid-sync, and a booking has to be
+        # missing twice in a row before it is treated as cancelled.
+        stats = database.replace_window_bookings(bookings, d0.isoformat(), d1.isoformat())
+        try:
+            restored = database.restore_started_cancelled()
+            if restored:
+                logger.info("sync: %d started stays restored from the cancelled archive", restored)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore of archived stays failed: %s", exc)
+        try:
+            from . import inbox
+            inbox._phone_cache["at"] = 0.0  # noqa: SLF001 — phone → booking index follows the calendar at once
+            inbox._name_cache["at"] = 0.0  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        if stats["removed"] or stats["missing"]:
+            logger.info("sync: %d written, %d removed, %d missing (pending)", stats["written"], stats["removed"], stats["missing"])
         database.log_sync(len(bookings), True)
+        if not config.DEMO_MODE:
+            _sync_history(today)
         return len(bookings)
     except Exception as exc:  # noqa: BLE001 - log failure, keep the app alive
         database.log_sync(0, False, f"{type(exc).__name__}: {exc}")
         raise
+
+
+HISTORY_DAYS = 1100   # three years: every past guest becomes a client card
+HISTORY_CHUNK = 60
+
+
+def _sync_history(today: date) -> None:
+    """Once a day pull the past year so the CRM keeps a guest's previous stays
+    (the regular sync covers [-SYNC_DAYS_BACK, +SYNC_DAYS_AHEAD]). Fetched in
+    60-day chunks: one request for 400 days used to time out and the past never
+    arrived. A failed chunk is retried on the next sync; the day is marked done
+    only when every chunk came through."""
+    from . import crm  # noqa: WPS433 - lazy, crm imports database
+    if (crm.get_setting("rc_statuses_probed") or "")[:10] != today.isoformat():
+        try:
+            rep = probe_statuses()
+            if rep.get("discovered"):
+                crm.set_setting("rc_history_synced", "")  # new statuses → pull the history again with them
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RC status probe failed: %s", exc)
+    key = "rc_history_synced"
+    if (crm.get_setting(key) or "")[:10] == today.isoformat():
+        return
+    end = today - timedelta(days=config.SYNC_DAYS_BACK + 1)
+    start = today - timedelta(days=HISTORY_DAYS)
+    total, ok = 0, True
+    cur = start
+    while cur <= end:
+        nxt = min(cur + timedelta(days=HISTORY_CHUNK - 1), end)
+        try:
+            rows = fetch_bookings(cur, nxt)
+            if rows:
+                database.upsert_bookings(rows)
+            total += len(rows)
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            logger.warning("history sync %s..%s failed: %s", cur, nxt, exc)
+        cur = nxt + timedelta(days=1)
+    if ok:
+        crm.set_setting(key, today.isoformat())
+        logger.info("history sync: %d past bookings", total)
+        try:
+            n = crm.import_clients()  # the past guests just fetched → client cards
+            if n:
+                logger.info("clients from history: +%d", n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("client import after history failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
