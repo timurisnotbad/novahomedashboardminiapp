@@ -210,7 +210,7 @@
     const box = $("ai-draft"); if (!box) return;
     if (!c || !c.ai_draft) {
       const eff = c && (c.ai_mode || (S.ai && S.ai.mode)) || "off";
-      if (c && c.ai_last_status && (c.last_dir === "in" || /думает/.test(c.ai_last_status)) && (eff !== "off" || /думает/.test(c.ai_last_status))) { box.innerHTML = `<div class="ib-draft__status">✨ ИИ ${esc(c.ai_last_status)} · <button class="ib-draft__link" data-draft="redo">ответить с ИИ</button></div>`; box.classList.remove("hidden"); return; }
+      if (c && c.ai_last_status && !/^\s*(\d{1,2}:\d{2}\s*·\s*)?ошибка/i.test(c.ai_last_status) && (c.last_dir === "in" || /думает/.test(c.ai_last_status)) && (eff !== "off" || /думает/.test(c.ai_last_status))) { box.innerHTML = `<div class="ib-draft__status">✨ ИИ ${esc(c.ai_last_status)} · <button class="ib-draft__link" data-draft="redo">ответить с ИИ</button></div>`; box.classList.remove("hidden"); return; }
       box.classList.add("hidden"); box.innerHTML = ""; return;
     }
     box.innerHTML = `<div class="ib-draft__head"><span>✨ Черновик ИИ${c.ai_note ? " · " + esc(c.ai_note.slice(0, 80)) : ""}</span><span>${esc((c.ai_draft_at || "").slice(11, 16))}</span></div>

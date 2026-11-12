@@ -3,7 +3,7 @@
 ## What this is
 Telegram bot + web CRM for Nova Home Apartments (Nest One, Tashkent, 17 apartments, owner Timur).
 Repo `timurisnotbad/novahomedashboardminiapp`, work branch `claude/new-session-85xp4a` (push there; no PR unless asked). Until v112 the CRM line lived on `claude/fervent-planck-gno50t` and the dashboard line on `claude/new-session-85xp4a`; v113 merged them — there is ONE line now, do not continue the old CRM branch.
-Current release **v113**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
+Current release **v114**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
 Language of the product and of the owner: Russian. Never put model names into commits/code. Keys live only in the owner's `.env`; `data/` is gitignored.
 
 ## Code map
