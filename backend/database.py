@@ -831,6 +831,13 @@ def get_topic(chat_id: int, role: str):
     return None
 
 
+def topic_binding(chat_id: int, role: str):
+    """The binding row for exactly this role (no fallback to 'general'), or None."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM chat_topics WHERE chat_id = ? AND role = ?", (chat_id, role)).fetchone()
+        return dict(row) if row is not None else None
+
+
 def chat_topics(chat_id: int) -> list[dict]:
     with get_conn() as conn:
         cur = conn.execute("SELECT * FROM chat_topics WHERE chat_id = ? ORDER BY role", (chat_id,))
@@ -1073,6 +1080,20 @@ def attendance_month(ym: str) -> list[dict]:
             "SELECT * FROM attendance WHERE work_date LIKE ? ORDER BY work_date", (ym + "%",)
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def delete_penalties_by_marker(marker: str, staffs: list[str]) -> int:
+    """Remove auto-penalties whose reason starts with `marker` for these names
+    (a no-show fine after the arrival was found in the missed messages)."""
+    staffs = [x for x in staffs if x]
+    if not staffs:
+        return 0
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"DELETE FROM penalties WHERE reason LIKE ? AND staff IN ({','.join('?' * len(staffs))})",
+            (marker + "%", *staffs),
+        )
+        return cur.rowcount
 
 
 def has_penalty_marker(staff: str, marker: str) -> bool:

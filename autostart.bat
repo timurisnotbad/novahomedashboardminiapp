@@ -10,7 +10,13 @@ echo.
 echo [1/3] Zapreshchayu kompyuteru zasypat (ot seti)...
 powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+powercfg /change hibernate-timeout-dc 0
 powercfg /change monitor-timeout-ac 20
+rem zakrytie kryshki noutbuka: nichego ne delat (ot seti i ot batarei)
+powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setactive SCHEME_CURRENT
 if errorlevel 1 (
   echo     !!! ne udalos: zapustite etot fayl ot imeni administratora ^(pravyy klik^)
 ) else (

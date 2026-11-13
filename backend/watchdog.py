@@ -20,15 +20,25 @@ logger = logging.getLogger("nova.watchdog")
 
 HEARTBEAT_PATH: Path = logsetup.LOG_DIR / "bot-heartbeat.txt"
 
-_state = {"bot_down_since": None, "alerted": False, "ping_fail_logged": False}
+_state = {"bot_down_since": None, "alerted": False, "ping_fail_logged": False,
+          "revived_at": None, "revives": 0, "second_alert": False}
+_STARTED = datetime.now()
+START_GRACE_MIN = 4      # after the server starts the bot needs a moment to come up
+REVIVE_EVERY_MIN = 10    # one restart attempt per this many minutes while the bot stays silent
+BASE_DIR: Path = config.BASE_DIR
 
 
 def read_heartbeat():
-    """(timestamp, polling_ok) from the bot's mark, or (None, None)."""
+    """(timestamp, state) from the bot's mark — state is ok / NO_NETWORK /
+    CONFLICT / STALLED / DEAD — or (None, None) when there is no mark."""
     try:
         txt = HEARTBEAT_PATH.read_text(encoding="utf-8").strip()
-        ts = datetime.fromisoformat(txt.split()[0])  # "2026-09-19T03:19:30 polling=ok"
-        return ts, "polling=ok" in txt
+        ts = datetime.fromisoformat(txt.split()[0])  # "2026-09-19T03:19:30 polling=ok last_poll=4s"
+        state = "ok"
+        for part in txt.split()[1:]:
+            if part.startswith("polling="):
+                state = part.split("=", 1)[1]
+        return ts, state
     except Exception:  # noqa: BLE001
         return None, None
 
@@ -47,40 +57,196 @@ def ping(url: str) -> bool:
         return False
 
 
+def _ps(cmd: str, timeout: int = 25) -> str:
+    import os
+    import subprocess
+    if os.name != "nt":
+        return ""
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=timeout)
+        return (r.stdout or b"").decode("utf-8", "replace").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("powershell failed: %s", exc)
+        return ""
+
+
+def log_tail(limit: int = 500) -> str:
+    """Why the bot is down, in its own words: the newest crash from
+    logs/bot-error.log, else the last error lines of logs/bot.log."""
+    from datetime import timedelta
+    out = ""
+    try:
+        p = logsetup.LOG_DIR / "bot-error.log"
+        if p.exists() and datetime.fromtimestamp(p.stat().st_mtime) > datetime.now() - timedelta(hours=24):
+            lines = [x.rstrip() for x in p.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+            out = "\n".join(lines[-4:])
+        if not out:
+            p = logsetup.LOG_DIR / "bot.log"
+            if p.exists():
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-400:]
+                bad = [x.rstrip() for x in lines if " ERROR " in x or " CRITICAL " in x or "Traceback" in x or "Error:" in x]
+                out = "\n".join(bad[-4:])
+    except Exception as exc:  # noqa: BLE001
+        out = f"(лог не прочитался: {exc})"
+    return config.redact(out)[-limit:]
+
+
+def revive_bot() -> str:
+    """Windows: stop the stuck bot process and make sure a «Nova Bot» window
+    is running it again. Returns what was done, in Russian, for the alert."""
+    import os
+    import subprocess
+    if os.name != "nt":
+        return "автоперезапуск доступен только на Windows"
+    out = _ps(
+        "$b = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*bot.py*' -and $_.Name -like 'python*' }); "
+        "$w = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*start_bot.bat*' -and $_.Name -eq 'cmd.exe' }); "
+        "$b | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
+        # a window with no python inside has stopped its loop (config error, closed by hand): replace it
+        "if ($b.Count -eq 0) { $w | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }; "
+        "Write-Output ('bots=' + $b.Count + ' windows=' + $w.Count)"
+    )
+    bots = windows = -1
+    for part in out.split():
+        if part.startswith("bots="):
+            bots = int(part[5:] or 0)
+        if part.startswith("windows="):
+            windows = int(part[8:] or 0)
+    if windows > 0 and bots > 0:
+        # the window's loop starts python again 15 s after it exits
+        return f"остановил зависший процесс бота ({max(bots, 0)} шт.), окно «Nova Bot» запустит его заново через 15 секунд"
+    try:
+        bat = BASE_DIR / "start_bot.bat"
+        subprocess.Popen(f'start "Nova Bot" cmd /k "{bat}"', shell=True, cwd=str(BASE_DIR))
+        return "окна «Nova Bot» не было — открыл его заново" + (f" (старых процессов снято: {bots})" if bots > 0 else "")
+    except Exception as exc:  # noqa: BLE001
+        return f"не смог открыть окно бота: {exc}"
+
+
+_STATE_TEXT = {
+    "NO_NETWORK": "бот не может достучаться до Telegram (нет интернета или Telegram заблокирован у провайдера)",
+    "CONFLICT": "токен бота опрашивает ещё одна программа — запущена вторая копия (второе окно «Nova Bot» или старый компьютер, "
+                "с которого переносили проект). Выключите вторую копию: пока она работает, сообщения теряются",
+    "STALLED": "бот перестал получать сообщения от Telegram, хотя интернет есть",
+    "DEAD": "опрос Telegram остановился",
+}
+
+
 def check_bot(now: datetime | None = None) -> str | None:
-    """Return the alert text sent this round (for tests), else None."""
+    """Every minute. The bot is «down» when its mark is old (process dead or
+    frozen), missing (never started), or says it is not receiving. The server
+    then restarts it by itself and tells the owners what happened and why.
+    Returns the alert text sent this round (for tests), else None."""
+    from . import alerts
     now = now or datetime.now()
-    ts, _ok = read_heartbeat()
-    if ts is None:
-        return None  # the bot never ran on this version yet — nothing to compare
-    age_min = (now - ts).total_seconds() / 60
     owners = config.OWNER_TELEGRAM_IDS or None
-    if age_min >= config.BOT_DOWN_AFTER_MIN:
-        if not _state["alerted"]:
-            _state["alerted"] = True
-            _state["bot_down_since"] = ts
-            text = (f"🔴 Бот не отвечает с {ts:%H:%M} ({int(age_min)} мин). Сервер и компьютер работают.\n"
-                    f"Что делать: на компьютере запустить restart_all.bat. "
-                    f"Если окно «Nova Bot» открыто — посмотреть, что в нём написано.")
-            from . import alerts
+    if (now - _STARTED).total_seconds() < START_GRACE_MIN * 60:
+        return None
+    ts, state = read_heartbeat()
+    if ts is None:
+        ts, state = _STARTED, "MISSING"  # the bot has not written a single mark since the server started
+    age_min = (now - ts).total_seconds() / 60
+    silent = age_min >= config.BOT_DOWN_AFTER_MIN
+    deaf = not silent and state not in ("ok", None)
+
+    if not silent and not deaf:
+        if _state["alerted"]:
+            since = _state["bot_down_since"]
+            _state.update(alerted=False, revived_at=None, revives=0, second_alert=False)
+            text = "🟢 Бот снова в сети" + (f" (не работал с {since:%H:%M})." if since else ".")
             alerts.broadcast("system", text, base=owners)
-            logger.warning("bot heartbeat is %d min old — owners alerted", age_min)
+            logger.info("bot is back — owners told")
             return text
         return None
-    if _state["alerted"]:
-        _state["alerted"] = False
-        since = _state["bot_down_since"]
-        gap = f" (не работал с {since:%H:%M})" if since else ""
-        text = f"🟢 Бот снова в сети{gap}."
-        from . import alerts
+
+    if deaf and state in ("NO_NETWORK", "CONFLICT"):
+        # restarting does not cure these; say it once
+        if _state["alerted"]:
+            return None
+        _state.update(alerted=True, bot_down_since=now)
+        text = f"🔴 Бот не принимает сообщения: {_STATE_TEXT[state]}."
         alerts.broadcast("system", text, base=owners)
-        logger.info("bot heartbeat back — owners told")
+        logger.warning("bot deaf (%s) — owners alerted", state)
+        return text
+
+    # dead / frozen / never started / stalled: restart it, at most once per REVIVE_EVERY_MIN
+    last = _state["revived_at"]
+    if last is not None and (now - last).total_seconds() < REVIVE_EVERY_MIN * 60:
+        return None
+    first = not _state["alerted"]
+    if first:
+        _state.update(alerted=True, bot_down_since=ts)
+    _state["revived_at"] = now
+    _state["revives"] += 1
+    done = revive_bot()
+    logger.warning("bot down (%s, mark %d min old) — revive #%d: %s", state, age_min, _state["revives"], done)
+    if first:
+        why = _STATE_TEXT.get(state, "процесс бота не работает" if state != "MISSING" else "бот не запускался после старта сервера")
+        text = (f"🔴 Бот не отвечает с {ts:%H:%M} ({int(age_min)} мин): {why}.\n"
+                f"Что сделал сервер: {done}.")
+        tail = log_tail()
+        if tail:
+            text += f"\n\nПоследнее из лога бота:\n{tail}"
+        alerts.broadcast("system", text, base=owners)
+        return text
+    if _state["revives"] == 3 and not _state["second_alert"]:
+        _state["second_alert"] = True
+        text = ("⚠️ Бот не поднялся после трёх перезапусков. Нужен человек: на компьютере откройте окно «Nova Bot» "
+                "и пришлите, что в нём написано, или запустите restart_all.bat.")
+        tail = log_tail()
+        if tail:
+            text += f"\n\nПоследнее из лога бота:\n{tail}"
+        alerts.broadcast("system", text, base=owners)
         return text
     return None
 
 
+def keep_awake() -> list[str]:
+    """The office laptop IS the server: it must not fall asleep, and closing
+    the lid must not suspend it. Applied at every server start (Windows only,
+    KEEP_AWAKE=0 in .env turns it off). Returns what was done, for the log."""
+    import os
+    done: list[str] = []
+    if os.name != "nt" or os.environ.get("KEEP_AWAKE", "1").strip() in ("0", "false", "no"):
+        return done
+    import subprocess
+    cmds = [
+        ["powercfg", "/change", "standby-timeout-ac", "0"], ["powercfg", "/change", "standby-timeout-dc", "0"],
+        ["powercfg", "/change", "hibernate-timeout-ac", "0"], ["powercfg", "/change", "hibernate-timeout-dc", "0"],
+        # closing the lid: do nothing (on mains and on battery)
+        ["powercfg", "/setacvalueindex", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION", "0"],
+        ["powercfg", "/setdcvalueindex", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION", "0"],
+        ["powercfg", "/setactive", "SCHEME_CURRENT"],
+    ]
+    for c in cmds:
+        try:
+            r = subprocess.run(c, capture_output=True, timeout=15)
+            if r.returncode == 0:
+                done.append(" ".join(c[1:]))
+            else:
+                logger.warning("powercfg %s -> %s", " ".join(c[1:]), r.returncode)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("powercfg failed: %s", exc)
+    logger.info("keep-awake applied: %d of %d settings", len(done), len(cmds))
+    return done
+
+
+def poke_awake() -> None:
+    """Reset Windows' idle-sleep timer (called every minute): while the server
+    runs the computer does not doze off on its own, whatever the power plan says."""
+    import os
+    if os.name != "nt" or os.environ.get("KEEP_AWAKE", "1").strip() in ("0", "false", "no"):
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x00000001)  # ES_SYSTEM_REQUIRED
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def tick() -> None:
     """Scheduler entry point: every minute."""
+    poke_awake()
     try:
         from . import uptime
         uptime.beat()  # the black box: a gap in these marks = the server or the computer was off

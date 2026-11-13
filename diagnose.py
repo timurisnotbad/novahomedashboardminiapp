@@ -326,7 +326,13 @@ def check_why_stopped():
                 ts = None
             age = (now - ts).total_seconds() / 60 if ts else None
             if age is not None and age <= 3:
-                print(f"{OK}Бот жив: последняя отметка {ts:%d.%m %H:%M} ({txt.split()[-1]})")
+                state = next((x.split("=", 1)[1] for x in txt.split() if x.startswith("polling=")), "?")
+                if state == "ok":
+                    print(f"{OK}Бот жив и получает сообщения: отметка {ts:%d.%m %H:%M}")
+                else:
+                    print(f"{BAD}Бот запущен, но НЕ получает сообщения: состояние {state} "
+                          f"(CONFLICT = вторая копия бота на этом токене, NO_NETWORK = нет связи с Telegram)")
+                    problem(f"Бот не получает сообщения ({state})")
             else:
                 when = f"{ts:%d.%m %H:%M}" if ts else "?"
                 print(f"{BAD}Бот НЕ работает: последняя отметка жизни {when}"

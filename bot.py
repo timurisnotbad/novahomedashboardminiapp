@@ -447,7 +447,8 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     loc = msg.location
     user = update.effective_user
-    _register(user)
+    _register(user, msg.chat)
+    await _report_auto_activated(context.bot)
     is_live = bool(loc.live_period) or update.edited_message is not None
 
     if not is_live:
@@ -479,14 +480,31 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "location: uid=%s edit=%s live_period=%s coords=%.6f,%.6f",
         uid, is_edit, loc.live_period, loc.latitude, loc.longitude,
     )
+    when = _when(msg, is_edit)        # after downtime: the time the location was really sent
+    late_read = _is_backlog(msg, is_edit)
+    was_absent = False
+    if late_read:
+        try:
+            was_absent = await asyncio.to_thread(_marked_absent, uid, when.date().isoformat())
+        except Exception:  # noqa: BLE001
+            pass
     try:
         res = await asyncio.to_thread(
-            attendance.check_arrival, uid, name, loc.latitude, loc.longitude
+            attendance.check_arrival, uid, name, loc.latitude, loc.longitude, when
         )
     except Exception:  # noqa: BLE001
         logger.exception("check_arrival failed")
         return
     status = res.get("status")
+    if status == "recorded" and late_read:
+        note = f"⏱ Приход {name} засчитан задним числом: локация отправлена в {when:%H:%M}, бот в это время не работал."
+        if was_absent:
+            try:
+                n = await asyncio.to_thread(_drop_noshow_fine, uid, name, when.date())
+            except Exception:  # noqa: BLE001
+                n = 0
+            note += " Отметка «неявка» снята" + (", автоштраф удалён." if n else ".")
+        await _notify_owners(context.bot, note)
     logger.info(
         "attendance: status=%s distance=%.0fm radius=%sm",
         status, res.get("distance", -1), config.WORK_RADIUS_M,
@@ -605,17 +623,59 @@ async def daily_prices(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to send daily prices to %s: %s", uid, exc)
 
 
-def _register(user) -> bool:
+def _register(user, chat=None) -> bool:
     """Everyone who talks to the bot lands in the registry as PENDING (owners
     excluded); an owner activates them with /staff_ok. Returns True for a
-    person seen for the first time."""
+    person seen for the first time.
+
+    A person who works inside the team group (`chat` is one of NOTIFY_CHAT_IDS:
+    the owner decides who is in it) is staff by definition — activated at
+    once, so reminders and the roll call see new cleaners without /staff_ok."""
     if not user or user.id in config.OWNER_TELEGRAM_IDS:
         return False
     try:
-        return database.upsert_staff(user.id, user.full_name or user.first_name or "", user.username or "")
+        created = database.upsert_staff(user.id, user.full_name or user.first_name or "", user.username or "")
+        if chat is not None and getattr(chat, "id", None) in config.NOTIFY_CHAT_IDS \
+                and not database.is_active_staff(user.id):
+            database.set_staff_active(user.id, True)
+            _auto_activated.append((user.id, user.full_name or user.first_name or str(user.id), user.username or ""))
+            logger.info("staff %s activated automatically (works in the team group)", user.id)
+        return created
     except Exception:  # noqa: BLE001
         logger.exception("staff auto-register failed")
         return False
+
+
+_auto_activated: list = []  # (id, name, username) waiting to be reported to the owners
+
+
+async def _report_auto_activated(bot) -> None:
+    while _auto_activated:
+        uid, nm, un = _auto_activated.pop(0)
+        await _notify_owners(bot, f"👥 {nm} (@{un or '—'}, id {uid}) добавлен(а) в список сотрудников автоматически: "
+                                  f"пишет в рабочей группе. Теперь учитывается в перекличке и напоминаниях.\n"
+                                  f"Убрать: /staff_del {uid}")
+
+
+BACKLOG_SEC = 180  # a message older than this is being read after downtime
+
+
+def _when(msg, edited: bool = False) -> datetime.datetime:
+    """When the person actually sent the message (local time). After downtime
+    Telegram hands over up to 24 hours of missed messages — they must be
+    recorded with THEIR time, not with the moment the bot woke up."""
+    now = datetime.datetime.now()
+    try:
+        d = (msg.edit_date if edited else None) or msg.date
+        if d:
+            return min(d.astimezone().replace(tzinfo=None), now)
+    except Exception:  # noqa: BLE001
+        pass
+    return now
+
+
+def _is_backlog(msg, edited: bool = False) -> bool:
+    return (datetime.datetime.now() - _when(msg, edited)).total_seconds() > BACKLOG_SEC
 
 
 def _may_open(uid: int) -> bool:
@@ -1081,7 +1141,7 @@ def _session_step(apt: str, phase: str, uid: int, who: str, now: datetime.dateti
 
 async def _process_report(context, msg, user, apt: str, phase: str, media: list) -> None:
     """`media` — one or more (kind, file_id) the person sent for this report."""
-    now = datetime.datetime.now()
+    now = _when(msg)  # the report's own time: missed messages are read later
     if media:
         if len(_last_media) > 200:
             _last_media.clear()
@@ -1186,8 +1246,21 @@ async def _observe_topic(msg, context) -> None:
     if not role:
         return
     bound = await _bindings(msg.chat_id)
+    moved = False
     if role in bound:
-        return  # the owner's /topic wins
+        if (bound[role] or None) == thread:
+            return
+        # Bound to another thread. If that binding carries the very same topic
+        # name, the topic was deleted and created again (a new thread id): the
+        # old binding points nowhere and every report would be ignored silently.
+        try:
+            row = await asyncio.to_thread(database.topic_binding, msg.chat_id, role)
+        except Exception:  # noqa: BLE001
+            row = None
+        old_name = ((row or {}).get("name") or "").strip().casefold()
+        if not name or old_name != name.strip().casefold():
+            return  # a different topic — the owner's /topic wins
+        moved = True
     try:
         await asyncio.to_thread(database.set_topic, msg.chat_id, role, thread, name)
     except Exception:  # noqa: BLE001
@@ -1201,6 +1274,9 @@ async def _observe_topic(msg, context) -> None:
             }.get(role, role)
     text = (f"🔗 В группе «{msg.chat.title or msg.chat_id}» тема «{name}» привязана автоматически: "
             f"туда пойдут {what}.\nИзменить: отправьте /topic внутри нужной темы.")
+    if moved:
+        text = (f"🔗 В группе «{msg.chat.title or msg.chat_id}» тема «{name}» была создана заново — "
+                f"привязал бота к новой. До этого сообщения в ней бот не видел.")
     for uid in config.OWNER_TELEGRAM_IDS:
         try:
             await context.bot.send_message(chat_id=uid, text=text, disable_notification=True)
@@ -1258,12 +1334,13 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not msg or not user:
         return
-    _register(user)
+    _register(user, msg.chat)
+    await _report_auto_activated(context.bot)
     kind, file_id = _media_of(msg)
     if not kind:
         return
     uid = user.id
-    now_ts = datetime.datetime.now().timestamp()
+    now_ts = _when(msg).timestamp()
     mgid = str(msg.media_group_id) if msg.media_group_id else None
 
     # album mate of an already-announced report: forward silently
@@ -1307,6 +1384,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(_album_prompted) > 500:
             _album_prompted.clear()
         _album_prompted.add(mgid)
+    if _is_backlog(msg):
+        return  # read after downtime: the number is already next in the queue (or long gone)
     try:
         await msg.reply_text(
             "Принял! Теперь напишите номер квартиры:\n"
@@ -1328,7 +1407,7 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not msg or not user or not msg.text:
         return
     uid = user.id
-    now_ts = datetime.datetime.now().timestamp()
+    now_ts = _when(msg).timestamp()
     private = msg.chat.type == "private"
     if not private:
         await _observe_topic(msg, context)
@@ -1362,7 +1441,7 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception:  # noqa: BLE001
                 pass
         return
-    _register(user)
+    _register(user, msg.chat)
     phase = _report_phase(msg.text)
     if waiting:
         _pending_media.pop(uid, None)
@@ -1478,9 +1557,9 @@ async def on_supplies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if not private and not supplies.looks_like_list(apt, items):
         return  # "нужно перезвонить гостю" in the group is not a shopping list
-    _register(user)
+    _register(user, msg.chat)
     who = _display_name(user)
-    now = datetime.datetime.now().isoformat(timespec="minutes")
+    now = _when(msg).isoformat(timespec="minutes")
     for item, qty in items:
         try:
             await asyncio.to_thread(database.add_supply, apt, item, qty, who, now)
@@ -1509,9 +1588,9 @@ async def on_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     items = issues.parse_lines(msg.text, lambda t: _match_apartment(t, allow_bare=True))
     if not items:
         raise ApplicationHandlerStop  # chatter in «Поломки» is nobody else's business either
-    _register(user)
+    _register(user, msg.chat)
     who = _display_name(user)
-    now = datetime.datetime.now().isoformat(timespec="minutes")
+    now = _when(msg, update.edited_message is not None).isoformat(timespec="minutes")
     added_buy: list[str] = []
     added_fix: list[str] = []
     for it in items:
@@ -1551,6 +1630,20 @@ async def supplies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def _fmt_sum(x: float) -> str:
     return f"{int(x):,}".replace(",", " ") + " сум"
+
+
+def _marked_absent(uid: int, day: str) -> bool:
+    for r in database.attendance_for(day, arrived_only=False):
+        if r.get("staff_id") == uid:
+            return r.get("status") == "absent" or not r.get("arrived_at")
+    return False
+
+
+def _drop_noshow_fine(uid: int, name: str, day: datetime.date) -> int:
+    """The roll call fined a no-show, then the arrival turned up in the backlog."""
+    marker = f"Автоштраф: неявка {day.strftime('%d.%m.%Y')}"
+    names = {name, _staff_roster().get(uid) or name}
+    return database.delete_penalties_by_marker(marker, list(names))
 
 
 def _auto_fine_noshow(staff_name: str, day: datetime.date) -> bool:
@@ -1638,6 +1731,11 @@ async def attendance_remind(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not staff:
         return
     today = datetime.date.today().isoformat()
+    try:
+        if not await asyncio.to_thread(database.mark_job, "attendance_remind", today):
+            return  # already sent today (scheduled run + catch-up after a restart)
+    except Exception:  # noqa: BLE001
+        pass
     done = {r["staff_id"] for r in database.attendance_for(today)}
     dh, dm = config.ATTEND_DEADLINE_T
     sh, sm = config.ATTEND_REMIND_T  # noqa: F841 — reminder fires at this time
@@ -1806,29 +1904,71 @@ async def daily_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 HEARTBEAT_PATH = logsetup.LOG_DIR / "bot-heartbeat.txt"
 EXIT_RESTART = 3  # start_bot.bat restarts the bot on this exit code
+POLL_STALL_SEC = 150  # a long poll answers every ~10 s even when the chats are silent
+_last_poll: list = [None]   # time.time() of the last successful getUpdates round-trip
+_pending_at_start = [0]     # messages Telegram kept for us while the bot was down
+
+
+def _poll_request():
+    """The HTTP client used ONLY for getUpdates, stamping every successful
+    answer — the one reliable sign that the bot hears Telegram."""
+    import time as _time
+    from telegram.request import HTTPXRequest
+
+    class _PollRequest(HTTPXRequest):
+        async def do_request(self, *args, **kwargs):
+            res = await super().do_request(*args, **kwargs)
+            _last_poll[0] = _time.time()
+            _conflict_state["count"] = 0
+            return res
+
+    return _PollRequest(connection_pool_size=1)
 
 
 async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Every minute: note that the bot is alive (diagnose.bat shows the age of
-    this mark, so a dead bot is visible at a glance) and make sure the Telegram
-    polling task is still running. PTB retries network errors forever, but if
-    the poller ever stops for good the process would sit there looking alive
-    while receiving nothing — better to exit and let the .bat start it again."""
+    """Every minute: note that the bot is alive and — the part that matters —
+    that it is really RECEIVING from Telegram. A process can look alive for
+    hours while its long-poll connection is dead (after sleep, a network
+    change) or while another copy steals the updates; then nobody's кружок or
+    location is seen. The mark carries the state for the server's watchdog:
+
+      polling=ok          the last getUpdates answer is fresh
+      polling=NO_NETWORK  Telegram is unreachable (the bot keeps retrying)
+      polling=CONFLICT    another process polls the same token
+      polling=STALLED     network is fine but polling stopped → exit, the
+                          .bat window (or the server) starts a fresh bot
+    """
+    import time as _time
     updater = context.application.updater
-    polling = bool(updater and updater.running)
+    running = bool(updater and updater.running)
+    age = None if _last_poll[0] is None else _time.time() - _last_poll[0]
+    state = "ok"
+    if not running:
+        state = "DEAD"
+    elif _conflict_state["count"] >= 3:
+        state = "CONFLICT"
+    elif age is not None and age > POLL_STALL_SEC:
+        try:
+            await asyncio.wait_for(context.bot.get_me(), timeout=15)
+            state = "STALLED"
+        except Exception:  # noqa: BLE001
+            state = "NO_NETWORK"
     try:
         HEARTBEAT_PATH.parent.mkdir(exist_ok=True)
         HEARTBEAT_PATH.write_text(
-            f"{datetime.datetime.now().isoformat(timespec='seconds')} polling={'ok' if polling else 'DEAD'}\n",
+            f"{datetime.datetime.now().isoformat(timespec='seconds')} polling={state}"
+            f" last_poll={'?' if age is None else int(age)}s\n",
             encoding="utf-8",
         )
     except Exception:  # noqa: BLE001
         pass
-    # two misses in a row (2 min): a normal shutdown also passes through a
-    # short "updater stopped, app still running" moment and must not count
-    _dead_polls[0] = _dead_polls[0] + 1 if (not polling and context.application.running) else 0
+    # two bad minutes in a row: a normal shutdown also passes through a short
+    # "updater stopped, app still running" moment and must not count
+    bad = state in ("DEAD", "STALLED") and context.application.running
+    _dead_polls[0] = _dead_polls[0] + 1 if bad else 0
     if _dead_polls[0] >= 2:
-        logger.critical("Telegram polling stopped — exiting so start_bot.bat restarts the bot")
+        logger.critical("Telegram polling %s (last answer %s s ago) — exiting so the bot is started again",
+                        state, "?" if age is None else int(age))
         print("\n❌ Опрос Telegram остановился. Перезапускаюсь…\n", flush=True)
         import os
         os._exit(EXIT_RESTART)
@@ -1902,6 +2042,11 @@ async def _announce_back(app) -> None:
     when = prev.strftime("%d.%m %H:%M") if gap.days else prev.strftime("%H:%M")
     text = (f"🟢 Бот снова в сети (версия {config.APP_VERSION}). Не работал с {when} — "
             f"{f'{h} ч {m:02d} мин' if h else f'{m} мин'}.")
+    if _pending_at_start[0]:
+        text += (f"\nДочитываю пропущенное: {_pending_at_start[0]} сообщ. (кружки, локации, заявки) — "
+                 f"записываю по времени отправки. Telegram хранит пропущенное 24 часа.")
+    elif mins > 24 * 60:
+        text += "\nСообщения старше 24 часов Telegram не хранит — их нужно прислать заново."
     for uid in config.OWNER_TELEGRAM_IDS:
         try:
             await app.bot.send_message(chat_id=uid, text=text, disable_notification=config.quiet_now())
@@ -1913,7 +2058,8 @@ _SHARED_TOKEN_TEXT = (
     "⚠️ Токен этого бота опрашивает ещё один процесс{where}.\n\n"
     "Telegram отдаёт сообщения только одному получателю: бот перестаёт отвечать на команды "
     "(например, /sync), теряет кружки и отчёты.\n\n"
-    "Частые причины: открыто два окна «Nova Bot»; на другом компьютере осталась запущенная копия; "
+    "Частые причины: открыто два окна «Nova Bot»; на ДРУГОМ компьютере (старом сервере, откуда "
+    "переносили проект) осталась запущенная копия с автозапуском; "
     "в .env один и тот же токен вписан в BOT_TOKEN и в CRM_BOT_TOKEN или TG_GUEST_BOT_TOKEN "
     "(у каждого из трёх ботов должен быть свой токен из @BotFather).\n"
     "Что делать: закрыть лишнее и запустить restart_all.bat."
@@ -1944,6 +2090,12 @@ async def _webhook_check(app) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.info("getWebhookInfo failed: %s", exc)
         return
+    try:
+        _pending_at_start[0] = int(info.pending_update_count or 0)
+        if _pending_at_start[0]:
+            logger.info("%d messages are waiting at Telegram from the time the bot was down", _pending_at_start[0])
+    except Exception:  # noqa: BLE001
+        pass
     if info and info.url:
         logger.error("webhook set on this token by someone else: %s", info.url)
         await _warn_shared_token(app.bot, f" — на нём стоит webhook {info.url}")
@@ -1997,7 +2149,15 @@ async def _set_commands(app) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("set_my_commands failed")
     await _announce_back(app)  # before the first heartbeat overwrites the old mark
-    await _catch_up_jobs(app)
+    # Missed daily jobs run AFTER the backlog is read: a roll call fired before
+    # the morning's locations are processed would mark everyone absent.
+    delay = 240 if _pending_at_start[0] else 60
+    if app.job_queue:
+        async def _later(_context):
+            await _catch_up_jobs(app)
+        app.job_queue.run_once(_later, when=delay)
+    else:
+        await _catch_up_jobs(app)
 
 
 _CATCH_UP_WINDOW_H = 3  # run a missed daily job only within this many hours of its time
@@ -2010,6 +2170,12 @@ async def _catch_up_jobs(app) -> None:
     now = datetime.datetime.now()
     today = now.date().isoformat()
     ctx = type("Ctx", (), {"bot": app.bot})()  # the jobs only use context.bot
+    # the morning reminder: still useful any time before the roll call
+    try:
+        if config.ATTEND_REMIND_T <= (now.hour, now.minute) < config.ATTEND_DEADLINE_T:
+            await attendance_remind(ctx)
+    except Exception:  # noqa: BLE001
+        logger.exception("catch-up attendance_remind failed")
     for name, (h, m), job in (
         ("attendance_deadline", config.ATTEND_DEADLINE_T, attendance_deadline),
         ("cleaning_watch", config.CLEANING_CHECK_T, cleaning_watch),
@@ -2051,7 +2217,16 @@ def main() -> None:
         )
 
     database.init_db()
-    app = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands).build()
+    builder = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands)
+    try:
+        builder = builder.get_updates_request(_poll_request())
+        import time as _time
+        _last_poll[0] = _time.time()  # the clock starts now; None = no liveness check
+    except Exception:  # noqa: BLE001 — an unexpected library version: run without the check
+        logger.exception("poll liveness check is off")
+        _last_poll[0] = None
+        builder = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands)
+    app = builder.build()
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("today", today_cmd))

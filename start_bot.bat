@@ -20,14 +20,19 @@ if exist "logs\bot-error.log" (
   echo.
   powershell -NoProfile -Command "Get-Content 'logs\bot-error.log' -Tail 15"
 )
+rem kod 3 = bot sam poprosil perezapusk (zavis opros Telegram): ne schitaem
+if "%code%"=="3" goto again
 set /a restarts+=1
 if %restarts% GTR 30 (
   echo.
-  echo  !!! Bot padaet snova i snova (30 raz). Zapustite diagnose.bat i prishlite logs\diagnose.txt
-  goto done
+  echo  !!! Bot padaet snova i snova. Zhdu 10 minut i probuyu eshchyo: okno NE zakryvat.
+  echo  !!! Prichina - v logs\bot-error.log, server prishlyot eyo v Telegram.
+  timeout /t 600 /nobreak >nul
+  set restarts=0
 )
+:again
 echo.
-echo Perezapusk cherez 15 sekund (popytka %restarts%)... Zakryt okno = ostanovit bota.
+echo Perezapusk cherez 15 sekund... Zakryt okno = ostanovit bota.
 timeout /t 15 /nobreak >nul
 goto run
 

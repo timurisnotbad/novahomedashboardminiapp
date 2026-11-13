@@ -86,6 +86,11 @@ async def lifespan(app: FastAPI):
         bg.run(uptime.on_start)  # was the server down? why (Windows event log) — owners are told once
     except Exception as exc:  # noqa: BLE001
         logger.warning("uptime check failed: %s", exc)
+    try:
+        from . import bg as _bg, watchdog as _wd
+        _bg.run(_wd.keep_awake)  # the laptop is the server: no sleep, the lid does not suspend it
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("keep-awake failed: %s", exc)
     asyncio.create_task(_initial_sync())  # don't block startup on the network
     yield
     scheduler.shutdown()
