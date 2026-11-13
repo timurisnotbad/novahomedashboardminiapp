@@ -282,7 +282,7 @@ WhatsApp за это блокирует номера. Обычная переп�
 ## Структура
 
 ```
-bot.py                  Telegram-бот (python-telegram-bot v20)
+bot.py                  Telegram-бот (python-telegram-bot 22+)
 backend/main.py         FastAPI, раздаёт frontend/ и /api
 backend/database.py     SQLite (nova_dashboard.db), схема и запросы
 backend/services.py     расчёт экранов (сегодня/завтра/уборки/занятость)

@@ -82,8 +82,20 @@ def check_jobqueue():
             print("         Исправить:  запустите install.bat")
             problem("Нет планировщика: перекличка 14:00 и контроль 18:00 не работают — install.bat")
     except BaseException as exc:  # noqa: BLE001
+        ver = ""
+        try:
+            import telegram
+            ver = str(telegram.__version__)
+        except BaseException:  # noqa: BLE001
+            pass
         print(f"{BAD}Не удалось проверить: {type(exc).__name__}: {exc}")
-        problem(f"Библиотека бота сломана ({type(exc).__name__}) — запустите install.bat")
+        if ver and int(ver.split(".")[0] or 0) < 21 and sys.version_info >= (3, 13):
+            print(f"         Причина: python-telegram-bot {ver} не работает на Python {sys.version_info.major}.{sys.version_info.minor}. "
+                  f"Нужна версия 22+: install.bat обновит её (или бот обновит сам при запуске).")
+            problem(f"Бот не запускается: библиотека python-telegram-bot {ver} несовместима с Python "
+                    f"{sys.version_info.major}.{sys.version_info.minor} — запустите install.bat, затем restart_all.bat")
+        else:
+            problem(f"Библиотека бота сломана ({type(exc).__name__}) — запустите install.bat")
 
 
 def check_env():

@@ -2261,7 +2261,49 @@ async def _catch_up_jobs(app) -> None:
                 pass
 
 
+PTB_SPEC = "python-telegram-bot[job-queue]>=22.0"
+
+
+def _ptb_incompatible() -> str:
+    """'' when the installed python-telegram-bot can run on this Python, else
+    why not. Versions 20.x cannot even build the Application on Python 3.13+
+    (AttributeError … '_Application__stop_running_marker' … no __dict__)."""
+    try:
+        import telegram
+        major = int(str(telegram.__version__).split(".")[0])
+    except Exception:  # noqa: BLE001
+        return ""
+    if sys.version_info >= (3, 13) and major < 21:
+        return (f"установлена библиотека python-telegram-bot {telegram.__version__}, она не работает на Python "
+                f"{sys.version_info.major}.{sys.version_info.minor} (нужна 22 или новее)")
+    return ""
+
+
+def _self_repair_ptb() -> None:
+    """The wrong library version kept the bot dead for days and nobody could
+    tell why. Fix it without a human: upgrade the package and exit — the
+    window's loop (or the server's watchdog) starts the bot again."""
+    why = _ptb_incompatible()
+    if not why:
+        return
+    import subprocess
+    print(f"\n⚠️ Бот не может запуститься: {why}.\nОбновляю библиотеку сам, это займёт минуту…\n", flush=True)
+    logger.error("incompatible python-telegram-bot: %s — upgrading", why)
+    try:
+        rc = subprocess.call([sys.executable, "-m", "pip", "install", "--upgrade", PTB_SPEC])
+    except Exception as exc:  # noqa: BLE001
+        rc = 1
+        logger.error("pip could not be started: %s", exc)
+    if rc == 0:
+        print("\n✅ Библиотека обновлена. Перезапускаюсь…\n", flush=True)
+        logger.info("python-telegram-bot upgraded — restarting")
+        sys.exit(EXIT_RESTART)
+    raise SystemExit(f"Бот не запущен: {why}. Автоматически обновить не удалось (нет интернета?). "
+                     f"Запустите install.bat в папке проекта, затем restart_all.bat.")
+
+
 def main() -> None:
+    _self_repair_ptb()
     if not config.BOT_TOKEN:
         raise SystemExit(
             "BOT_TOKEN не задан. Откройте файл .env в папке проекта и впишите токен "
