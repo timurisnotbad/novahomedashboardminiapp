@@ -1,33 +1,59 @@
-# Nova Home on a Linux server: app + Caddy (automatic HTTPS for CRM_DOMAIN).
-# Usage: see deploy/install_server.sh (one command does everything).
+# Nova Home on a Linux server. Started by deploy/install_server.sh, which picks
+# ONE way for the outside world to reach it (COMPOSE_PROFILES in deploy/.env):
+#   tunnel-token / tunnel-file — the same Cloudflare Tunnel the office computer
+#                                used: the address stays the same, no DNS work;
+#   caddy                      — own HTTPS certificate for CRM_DOMAIN (needs a
+#                                DNS A record pointing at this server).
 services:
   nova:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        WITH_BROWSER: ${WITH_BROWSER:-1}
     restart: unless-stopped
-    env_file: ../.env
     environment:
-      - WA_BRIDGE=${WA_BRIDGE:-1}
+      - WA_BRIDGE=${WA_BRIDGE:-0}
+      - TZ=${TZ:-Asia/Tashkent}
+      - NOVA_CLOUD=1
+      # process environment beats the .env copied from Windows (its paths mean nothing here)
+      - DB_PATH=/data/nova_dashboard.db
+      - INBOX_MEDIA_DIR=/data/inbox_media
     volumes:
-      - nova-data:/data
-    expose:
-      - "8000"
+      - ${NOVA_DATA:-/opt/novahome-data}:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  cloudflared-token:
+    profiles: ["tunnel-token"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    network_mode: host          # the tunnel's route says http://localhost:8000
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+
+  cloudflared-file:
+    profiles: ["tunnel-file"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ${NOVA_DATA:-/opt/novahome-data}/cloudflared:/etc/cloudflared:ro
 
   caddy:
+    profiles: ["caddy"]
     image: caddy:2
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
     environment:
-      - CRM_DOMAIN=${CRM_DOMAIN}
+      - CRM_DOMAIN=${CRM_DOMAIN:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
 
 volumes:
-  nova-data:
   caddy-data:
   caddy-config:

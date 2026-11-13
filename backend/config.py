@@ -56,6 +56,10 @@ RC_TOKEN = os.environ.get("RC_TOKEN", "").strip()
 # Cookies are read from a JSON file (RC_COOKIES_FILE) with a `cookies` field,
 # or directly from the RC_COOKIES env var as "key=value; key2=value2".
 RC_COOKIES_FILE = os.environ.get("RC_COOKIES_FILE", "").strip()
+# moved to another machine: the path from the old .env means nothing — the
+# migration puts the file next to the database as data/rc_cookies.json
+if (not RC_COOKIES_FILE or not Path(RC_COOKIES_FILE).exists()) and (BASE_DIR / "data" / "rc_cookies.json").exists():
+    RC_COOKIES_FILE = str(BASE_DIR / "data" / "rc_cookies.json")
 
 
 def _load_cookies() -> dict:
@@ -376,7 +380,7 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "115"
+APP_VERSION = "116"
 
 
 def features() -> dict:

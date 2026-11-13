@@ -3,6 +3,8 @@ chcp 65001 >nul
 cd /d %~dp0
 title Nova Bot
 set restarts=0
+rem pod etim tsiklom bot ne zhdyot nazhatiya Enter posle oshibki - okno samo zapustit ego snova
+set NOVA_LOOP=1
 
 :run
 echo === Nova Bot ===
@@ -13,7 +15,7 @@ echo.
 echo ============================================================
 echo   Bot ostanovlen (kod vyhoda: %code%)  %date% %time%
 echo ============================================================
-if "%code%"=="0" goto done
+rem tolko kod 2 (oshibka v .env) ostanavlivaet tsikl; lyuboy drugoy vyhod - perezapusk
 if "%code%"=="2" goto done
 if exist "logs\bot-error.log" (
   echo Poslednie stroki iz logs\bot-error.log:
@@ -23,13 +25,13 @@ if exist "logs\bot-error.log" (
 rem kod 3 = bot sam poprosil perezapusk (zavis opros Telegram): ne schitaem
 if "%code%"=="3" goto again
 set /a restarts+=1
-if %restarts% GTR 30 (
-  echo.
-  echo  !!! Bot padaet snova i snova. Zhdu 10 minut i probuyu eshchyo: okno NE zakryvat.
-  echo  !!! Prichina - v logs\bot-error.log, server prishlyot eyo v Telegram.
-  timeout /t 600 /nobreak >nul
-  set restarts=0
-)
+if %restarts% LEQ 30 goto again
+echo.
+echo  !!! Bot padaet snova i snova. Zhdu 10 minut i probuyu eshchyo: okno NE zakryvat.
+echo  !!! Prichina - v logs\bot-error.log, server prishlyot eyo v Telegram.
+timeout /t 600 /nobreak >nul
+set restarts=0
+
 :again
 echo.
 echo Perezapusk cherez 15 sekund... Zakryt okno = ostanovit bota.
@@ -38,4 +40,5 @@ goto run
 
 :done
 echo.
+echo Bot ostanovlen iz-za oshibki v nastroykah (.env). Ispravte i zapustite restart_all.bat
 pause

@@ -7,6 +7,18 @@ echo   Nova Home - restart server and bot
 echo ============================================
 echo.
 
+if exist "MOVED_TO_CLOUD.txt" (
+  echo.
+  echo  Nova Home rabotaet V OBLAKE. Na etom kompyutere ona ostanovlena:
+  echo  dve kopii bota odnovremenno rabotat ne mogut.
+  echo.
+  echo  Obnovit server:      komanda /update botu ili cloud_update.bat
+  echo  Vernut rabotu syuda: udalit fayl MOVED_TO_CLOUD.txt i zapustit etot fayl snova
+  echo.
+  pause
+  exit /b 0
+)
+
 echo [1/5] Proverka Python...
 python --version
 if errorlevel 1 (

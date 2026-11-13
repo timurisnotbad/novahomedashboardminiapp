@@ -97,7 +97,7 @@ def revive_bot() -> str:
     import os
     import subprocess
     if os.name != "nt":
-        return "автоперезапуск доступен только на Windows"
+        return _revive_posix()
     out = _ps(
         "$b = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*bot.py*' -and $_.Name -like 'python*' }); "
         "$w = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*start_bot.bat*' -and $_.Name -eq 'cmd.exe' }); "
@@ -121,6 +121,53 @@ def revive_bot() -> str:
         return "окна «Nova Bot» не было — открыл его заново" + (f" (старых процессов снято: {bots})" if bots > 0 else "")
     except Exception as exc:  # noqa: BLE001
         return f"не смог открыть окно бота: {exc}"
+
+
+def _revive_posix() -> str:
+    """Linux server (cloud): the entrypoint keeps the bot in a restart loop, so
+    killing the stuck process is all it takes."""
+    import os
+    import signal
+    killed = 0
+    try:
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == os.getpid():
+                continue
+            try:
+                cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+            except OSError:
+                continue
+            if "bot.py" in cmd and "python" in cmd:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                    killed += 1
+                except OSError:
+                    pass
+    except OSError as exc:
+        return f"не смог найти процесс бота: {exc}"
+    if killed:
+        return f"остановил зависший процесс бота ({killed} шт.), он запустится заново через 15 секунд"
+    return "процесса бота не было — он запускается сам, раз в 15 секунд (если не стартует, причина в логе ниже)"
+
+
+def check_update_result() -> str | None:
+    """Cloud: «/update» from the bot → the host rebuilds and leaves the outcome
+    in data/update.result; tell the owners once."""
+    p = BASE_DIR / "data" / "update.result"
+    try:
+        if not p.exists():
+            return None
+        text = p.read_text(encoding="utf-8", errors="replace").strip()
+        p.unlink()
+    except OSError:
+        return None
+    from . import alerts
+    if text.startswith("ok"):
+        msg = f"✅ Сервер обновлён до версии {text[2:].strip() or config.APP_VERSION}."
+    else:
+        msg = "❌ Обновление не удалось, работает прежняя версия.\n" + config.redact(text[4:].strip())[-700:]
+    alerts.broadcast("system", msg, base=config.OWNER_TELEGRAM_IDS or None)
+    return msg
 
 
 _STATE_TEXT = {
@@ -256,6 +303,10 @@ def tick() -> None:
         check_bot()
     except Exception:  # noqa: BLE001
         logger.exception("bot watch failed")
+    try:
+        check_update_result()
+    except Exception:  # noqa: BLE001
+        logger.exception("update result check failed")
     try:
         check_sync()
     except Exception:  # noqa: BLE001

@@ -133,6 +133,10 @@ def _housekeeping():
             except Exception as exc:  # noqa: BLE001 — a table that this install never created
                 logger.debug("housekeeping skipped: %s (%s)", sql[:40], exc)
     _prune_auto_log()
+    try:
+        logger.info("Nightly database copy: %s", database.backup_db())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nightly database copy failed: %s", exc)
     logger.info("Housekeeping done")
 
 

@@ -1315,3 +1315,26 @@ def _utc_to_local(ts: str | None) -> str | None:
         return dt.astimezone().replace(tzinfo=None).isoformat(timespec="minutes")
     except ValueError:
         return ts
+
+
+def backup_db(keep: int = 7) -> str:
+    """A consistent copy of the database into data/backups (online backup API:
+    safe while everything runs); the newest `keep` nightly copies stay."""
+    import sqlite3 as _sq
+    from pathlib import Path as _P
+    folder = _P(config.BASE_DIR) / "data" / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    out = folder / f"nightly-{datetime.now().strftime('%Y%m%d')}.db"
+    src = _sq.connect(config.DB_PATH, timeout=30)
+    dst = _sq.connect(str(out))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    for old in sorted(folder.glob("nightly-*.db"))[:-keep]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return str(out)

@@ -8,3 +8,7 @@ data/
 wa-bridge/node_modules/
 wa-bridge/auth/
 env.add
+cloud.json
+nova-migration.zip
+nova-migration.json
+MOVED_TO_CLOUD.txt

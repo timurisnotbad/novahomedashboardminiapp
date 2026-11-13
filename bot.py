@@ -50,7 +50,8 @@ except BaseException as _import_exc:  # noqa: BLE001 — a missing library must 
     print("   (он же: python -m pip install -r backend\\requirements.txt)\n")
     traceback.print_exc()
     try:
-        if sys.stdin is not None and sys.stdin.isatty():
+        import os as _os
+        if not _os.environ.get("NOVA_LOOP") and sys.stdin is not None and sys.stdin.isatty():
             input("\nНажмите Enter, чтобы закрыть окно… ")
     except BaseException:  # noqa: BLE001
         pass
@@ -726,6 +727,28 @@ async def link_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(f"✅ Готово, {u['name']}: уведомления CRM будут приходить сюда — сообщения гостей без ответа, "
                                               "задачи, брони, ассистент. Какие именно — настраивается в CRM → «Telegram-уведомления». "
                                               "Ответьте на уведомление о сообщении — ответ уйдёт гостю.")
+
+
+async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Owner: /update — on the cloud server, download the new version from
+    GitHub, rebuild and restart (the host watches data/update.request)."""
+    import os
+    user = update.effective_user
+    msg = update.effective_message
+    if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
+        return
+    if os.environ.get("NOVA_CLOUD") != "1":
+        await msg.reply_text("Эта команда работает, когда Nova Home стоит на облачном сервере. "
+                             "На офисном компьютере обновление ставится архивом и restart_all.bat.")
+        return
+    try:
+        flag = config.BASE_DIR / "data" / "update.request"
+        flag.write_text(datetime.datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+    except OSError as exc:
+        await msg.reply_text(f"❌ Не удалось запросить обновление: {exc}")
+        return
+    await msg.reply_text(f"🔄 Обновление запрошено (сейчас версия {config.APP_VERSION}). Сервер скачает новую версию и "
+                         "перезапустится — 2–5 минут, бот и CRM на это время недоступны. По окончании пришлю результат.")
 
 
 async def staff_ok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2138,6 +2161,7 @@ async def _set_commands(app) -> None:
         BotCommand("topic", "Привязать тему группы"),
         BotCommand("chatid", "ID чата / темы"),
         BotCommand("sync", "Синхронизация с RealtyCalendar"),
+        BotCommand("update", "Обновить сервер (в облаке)"),
     ]
     try:
         await app.bot.set_my_commands(common, scope=BotCommandScopeDefault())
@@ -2238,6 +2262,7 @@ def main() -> None:
     app.add_handler(CommandHandler("staff", staff_cmd))
     app.add_handler(CommandHandler("staff_del", staff_del_cmd))
     app.add_handler(CommandHandler("staff_ok", staff_ok_cmd))
+    app.add_handler(CommandHandler("update", update_cmd))
     app.add_handler(CommandHandler("link", link_cmd))
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
@@ -2316,11 +2341,18 @@ def main() -> None:
     print("=" * 62 + "\n", flush=True)
     # ALL_TYPES guards against a token whose allowed_updates was ever narrowed by
     # a previous webhook, which would silently drop edited_message (live) updates.
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # bootstrap_retries=-1: no internet yet (the computer has just booted, Wi-Fi
+    # is still connecting) is not a reason to die — keep trying.
+    app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
 
 
 def _pause(reason: str = "") -> None:
-    """A console window must never disappear with the error inside it."""
+    """A console window must never disappear with the error inside it — but
+    under the restart loop (start_bot.bat / the cloud container set NOVA_LOOP)
+    nobody is there to press Enter: waiting would leave the bot dead for good."""
+    import os
+    if os.environ.get("NOVA_LOOP") or os.environ.get("NOVA_CLOUD"):
+        return
     try:
         if sys.stdin is not None and sys.stdin.isatty():
             input(f"\n{reason}Нажмите Enter, чтобы закрыть окно… ")
@@ -2361,3 +2393,7 @@ if __name__ == "__main__":
               f"Подробности сохранены в файл:\n    {path}\n"
               f"Пришлите этот файл — по нему видно причину.\n", flush=True)
         _pause()
+        # A crash is NOT a clean exit: with code 0 the window's loop took it for
+        # "stopped on purpose" and never started the bot again (no internet at
+        # boot was enough to leave the bot dead until someone noticed).
+        sys.exit(1)
