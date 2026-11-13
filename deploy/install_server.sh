@@ -39,9 +39,9 @@ fetch_code() {
   say "Код проекта → $DIR (ветка $BRANCH)"
   command -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git >/dev/null; }
   if [ -d "$DIR/.git" ]; then
-    git -C "$DIR" fetch --depth 1 origin "$BRANCH" && git -C "$DIR" reset --hard FETCH_HEAD || die "Не удалось скачать обновление"
+    git -C "$DIR" fetch --depth 1 origin "$BRANCH" && git -C "$DIR" reset --hard FETCH_HEAD || { echo "!!! Не удалось скачать обновление"; return 1; }
   else
-    git clone --depth 1 --branch "$BRANCH" "$REPO" "$DIR" || die "Не удалось скачать проект"
+    git clone --depth 1 --branch "$BRANCH" "$REPO" "$DIR" || { echo "!!! Не удалось скачать проект"; return 1; }
   fi
   [ -f "$DIR/deploy/.env" ] || : > "$DIR/deploy/.env"
 }
@@ -138,33 +138,91 @@ PathExists=$DATA/update.request
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload >/dev/null 2>&1 && systemctl enable --now nova-update.path >/dev/null 2>&1 || true
+  cat > /etc/systemd/system/nova-autoupdate.service <<EOF
+[Unit]
+Description=Nova Home nightly auto-update (only when switched on by the owner)
+[Service]
+Type=oneshot
+Environment=NOVA_DIR=$DIR NOVA_DATA=$DATA NOVA_BRANCH=$BRANCH
+ExecStart=/bin/bash $DIR/deploy/install_server.sh auto
+EOF
+  cat > /etc/systemd/system/nova-autoupdate.timer <<EOF
+[Unit]
+Description=Nova Home nightly auto-update check (04:30 Tashkent)
+[Timer]
+OnCalendar=*-*-* 23:30:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 && systemctl enable --now nova-update.path nova-autoupdate.timer >/dev/null 2>&1 || true
 }
 
+UPDATE_NOTE=""
 do_update() {
-  local before after
+  # Safe by construction:
+  #  * the new image is built FIRST — while it builds (and if it does not build) the old version keeps working;
+  #  * the database is copied before the switch;
+  #  * if the new version does not answer within 2 minutes, the previous one is put back automatically.
+  local before after prev
   before=$(version_now)
-  fetch_code
+  prev=$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo "")
+  fetch_code || return 1
   after=$(version_now)
-  say "Сборка и перезапуск (версия $before → $after)"
-  dc up -d --build || return 1
-  wait_health || return 1
-  docker image prune -f >/dev/null 2>&1 || true
-  echo "$after" > "$DATA/update.version"
-  return 0
+  if [ -n "$prev" ] && [ "$(git -C "$DIR" rev-parse HEAD)" = "$prev" ]; then
+    UPDATE_NOTE="same"; echo "    уже установлена последняя версия ($after)"; return 0
+  fi
+  say "Сборка новой версии ($before → $after); прежняя пока работает"
+  if ! dc build nova; then
+    [ -n "$prev" ] && git -C "$DIR" reset --hard "$prev" >/dev/null 2>&1
+    UPDATE_NOTE="сборка не удалась — прежняя версия $before продолжает работать, перерыва не было"
+    return 1
+  fi
+  dc exec -T nova python -c "import sys; sys.path.insert(0, '/app'); from backend import database; print('копия базы:', database.backup_db())" 2>/dev/null || true
+  say "Переключение на версию $after"
+  dc up -d
+  if wait_health; then
+    docker image prune -f >/dev/null 2>&1 || true
+    docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+    echo "$after" > "$DATA/update.version"
+    return 0
+  fi
+  dc logs --tail 40 nova 2>&1 | tail -40
+  if [ -n "$prev" ]; then
+    say "Новая версия не отвечает — возвращаю прежнюю ($before)"
+    git -C "$DIR" reset --hard "$prev" >/dev/null 2>&1
+    dc up -d --build
+    if wait_health; then
+      UPDATE_NOTE="версия $after не запустилась — сервер сам вернулся на $before и работает"
+    else
+      UPDATE_NOTE="версия $after не запустилась, и прежняя $before тоже не отвечает — нужен человек"
+    fi
+  fi
+  return 1
+}
+
+run_flagged() {
+  # started by systemd (the bot's /update, or the nightly auto-update); the outcome goes back through a file the server reads
+  rm -f "$DATA/update.request"
+  LOG="$DATA/logs/update.log"; mkdir -p "$DATA/logs"
+  if do_update > "$LOG" 2>&1; then
+    if [ "$UPDATE_NOTE" = "same" ]; then echo "same $(version_now)" > "$DATA/update.result"; else echo "ok $(version_now)" > "$DATA/update.result"; fi
+  else
+    { echo "fail"; echo "$UPDATE_NOTE"; grep -v '^$' "$LOG" | tail -n 8; } > "$DATA/update.result"
+  fi
 }
 
 case "$MODE" in
   prepare)
     need_docker
-    fetch_code
+    fetch_code || die "Проект не скачался"
     say "Сборка образа (первый раз 5–10 минут)"
     dc build nova || die "Образ не собрался — пришлите этот вывод"
     say "Сервер готов к переносу данных (версия $(version_now))"
     ;;
   start)
     need_docker
-    [ -d "$DIR/.git" ] || fetch_code
+    [ -d "$DIR/.git" ] || fetch_code || die "Проект не скачался"
     import_zip
     ensure_env
     pick_access
@@ -182,17 +240,22 @@ case "$MODE" in
     ;;
   update)
     need_docker
-    if do_update; then say "Обновлено до версии $(version_now)"; else dc logs --tail 40 nova; die "Обновление не удалось"; fi
+    if do_update; then
+      if [ "$UPDATE_NOTE" = "same" ]; then say "Уже последняя версия: $(version_now)"; else say "Обновлено до версии $(version_now)"; fi
+    else
+      die "Обновление не удалось: ${UPDATE_NOTE:-см. вывод выше}"
+    fi
     ;;
   flag)
-    # started by systemd when the bot wrote update.request; the result goes back through a file the server reads
-    rm -f "$DATA/update.request"
-    LOG="$DATA/logs/update.log"; mkdir -p "$DATA/logs"
-    if do_update > "$LOG" 2>&1; then
-      echo "ok $(version_now)" > "$DATA/update.result"
-    else
-      { echo "fail"; tail -n 12 "$LOG"; } > "$DATA/update.result"
-    fi
+    run_flagged
+    ;;
+  auto)
+    # nightly, only when the owner switched it on (/autoupdate on) and GitHub has something new
+    [ -f "$DATA/autoupdate.on" ] || exit 0
+    remote=$(git ls-remote "$REPO" "refs/heads/$BRANCH" 2>/dev/null | cut -f1)
+    [ -n "$remote" ] || exit 0
+    [ "$remote" = "$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" ] && exit 0
+    run_flagged
     ;;
   status)
     dc ps; curl -s http://127.0.0.1:8000/api/health; echo

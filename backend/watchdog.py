@@ -164,8 +164,14 @@ def check_update_result() -> str | None:
     from . import alerts
     if text.startswith("ok"):
         msg = f"✅ Сервер обновлён до версии {text[2:].strip() or config.APP_VERSION}."
+    elif text.startswith("same"):
+        msg = f"👌 Обновлять нечего: уже стоит последняя версия ({text[4:].strip() or config.APP_VERSION})."
     else:
-        msg = "❌ Обновление не удалось, работает прежняя версия.\n" + config.redact(text[4:].strip())[-700:]
+        lines = [x for x in text.splitlines()[1:] if x.strip()]
+        note = lines[0] if lines else "причина в логе"
+        msg = f"❌ Обновление не установлено: {config.redact(note)}."
+        if len(lines) > 1:
+            msg += "\n\nКонец лога:\n" + config.redact("\n".join(lines[1:]))[-600:]
     alerts.broadcast("system", msg, base=config.OWNER_TELEGRAM_IDS or None)
     return msg
 

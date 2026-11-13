@@ -748,7 +748,35 @@ async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text(f"❌ Не удалось запросить обновление: {exc}")
         return
     await msg.reply_text(f"🔄 Обновление запрошено (сейчас версия {config.APP_VERSION}). Сервер скачает новую версию и "
-                         "перезапустится — 2–5 минут, бот и CRM на это время недоступны. По окончании пришлю результат.")
+                         "переключится на неё. Пока идёт сборка (2–5 минут), всё работает; перерыв — меньше минуты в конце. "
+                         "Если новая версия не запустится, сервер сам вернёт прежнюю. Результат пришлю.")
+
+
+async def autoupdate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Owner: /autoupdate on|off — let the cloud server install new versions
+    by itself at night (04:30), with the same safety net as /update."""
+    import os
+    user = update.effective_user
+    msg = update.effective_message
+    if config.OWNER_TELEGRAM_IDS and (not user or user.id not in config.OWNER_TELEGRAM_IDS):
+        return
+    if os.environ.get("NOVA_CLOUD") != "1":
+        await msg.reply_text("Автообновление работает только на облачном сервере.")
+        return
+    flag = config.BASE_DIR / "data" / "autoupdate.on"
+    parts = (msg.text or "").lower().split()
+    arg = parts[1] if len(parts) > 1 else ""
+    try:
+        if arg in ("on", "вкл", "да", "1"):
+            flag.write_text("on", encoding="utf-8")
+        elif arg in ("off", "выкл", "нет", "0"):
+            flag.unlink(missing_ok=True)
+    except OSError as exc:
+        await msg.reply_text(f"❌ Не удалось сохранить: {exc}")
+        return
+    state = "включено: новые версии ставятся сами ночью в 04:30, утром приходит сообщение" if flag.exists() \
+        else "выключено: новые версии ставятся командой /update"
+    await msg.reply_text(f"Автообновление {state}.\nПереключить: /autoupdate on или /autoupdate off")
 
 
 async def staff_ok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2263,6 +2291,7 @@ def main() -> None:
     app.add_handler(CommandHandler("staff_del", staff_del_cmd))
     app.add_handler(CommandHandler("staff_ok", staff_ok_cmd))
     app.add_handler(CommandHandler("update", update_cmd))
+    app.add_handler(CommandHandler("autoupdate", autoupdate_cmd))
     app.add_handler(CommandHandler("link", link_cmd))
     app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))

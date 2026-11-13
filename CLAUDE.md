@@ -3,7 +3,7 @@
 ## What this is
 Telegram bot + web CRM for Nova Home Apartments (Nest One, Tashkent, 17 apartments, owner Timur).
 Repo `timurisnotbad/novahomedashboardminiapp`, work branch `claude/new-session-85xp4a` (push there; no PR unless asked). Until v112 the CRM line lived on `claude/fervent-planck-gno50t` and the dashboard line on `claude/new-session-85xp4a`; v113 merged them — there is ONE line now, do not continue the old CRM branch.
-Current release **v116**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
+Current release **v117**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
 Language of the product and of the owner: Russian. Never put model names into commits/code. Keys live only in the owner's `.env`; `data/` is gitignored.
 
 ## Code map
@@ -32,6 +32,8 @@ v113 merge of the dashboard line (v35–v36 there): `database.sync_state` / `ser
 v114 chat hides the assistant's raw error status. v115 stability: `bot.py` `_poll_request` stamps every getUpdates answer, `heartbeat` writes `polling=ok|NO_NETWORK|CONFLICT|STALLED|DEAD` and exits(3) when stalled; `_when(msg)` = the message's own time (backlog after downtime is recorded with real times; `_is_backlog`), absence + auto-fine undone by a late-read arrival; `_observe_topic` follows a topic recreated under the same name; `_register(user, chat)` activates people who work in NOTIFY_CHAT_IDS groups; `_catch_up_jobs` runs after the backlog. `backend/watchdog.py`: `check_bot` (revives the bot via `revive_bot`, alert with `log_tail`), `keep_awake`/`poke_awake` (powercfg + SetThreadExecutionState).
 
 v116 cloud move: `move_to_cloud.bat` → `deploy/move_to_cloud.py` (ssh key, `install_server.sh prepare`, stop local + `MOVED_TO_CLOUD.txt` guard in `restart_all.bat`, `deploy/migrate_pack.py` → `nova-migration.zip`, `install_server.sh start`), data on the server in `/opt/novahome-data` (bind-mounted `/data`: db, `.env`, media, sessions, logs, backups), access via the migrated Cloudflare Tunnel (`cloudflared-token`/`cloudflared-file` compose profiles) or `caddy`; `/update` bot command → `data/update.request` → systemd `nova-update.path` → `install_server.sh flag` → `data/update.result` → `watchdog.check_update_result`; `watchdog._revive_posix`; `database.backup_db` nightly; container TZ Asia/Tashkent. Bot fix: a crash exits 1 (was 0 → the window loop stopped), `_pause` skipped under `NOVA_LOOP`/`NOVA_CLOUD`, `run_polling(bootstrap_retries=-1)`. Tested in the sandbox with Docker (reduced image: apt and Docker Hub are blocked there — base image from mirror.gcr.io, no node layer): import, TZ, pages, caddy, revive. NOT tested: the Windows side of `move_to_cloud.py`, a real VPS, the tunnel profiles, the systemd updater.
+
+v117 safe cloud updates: `install_server.sh` `do_update` builds first, copies the DB, switches, and rolls back to the previous commit when `/api/health` does not answer (verified on a mock repo: same / broken → rollback / fixed); `auto` mode + `nova-autoupdate.timer` gated by `data/autoupdate.on` (`/autoupdate on|off`).
 
 ## Decisions taken with the owner
 - One chat, one archive: the owner works on dashboard and CRM in a single session and installs a single `nova-updateNN.zip`.
