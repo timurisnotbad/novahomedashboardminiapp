@@ -156,6 +156,11 @@ svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9;
 .ib-m__act svg { width:15px; height:15px; }
 .ib-m__err { font-size:12px; color:var(--red); margin-top:2px; text-align:right; }
 .ib-m__err button { color:var(--tint-text); font-weight:600; text-decoration:underline; font-size:12px; }
+.ib-m__err.ib-m__wait { color:var(--label-2); }
+.ib-m.queued .ib-m__b { opacity:.72; }
+.ib-m.queued + .ib-m__err { font-size:13px; line-height:1.9; }
+.ib-m.queued + .ib-m__err button { font-size:14px; padding:4px 2px; }
+.ib-net { flex:none; padding:6px 12px; font-size:12.5px; line-height:1.3; text-align:center; color:#7C2D12; background:#FFEDD5; border-bottom:1px solid #FED7AA; }
 
 .ib-reply { display:flex; align-items:center; gap:8px; padding:6px 14px; background:var(--card); border-top:1px solid var(--sep); font-size:13px; color:var(--label-2); }
 .ib-reply > div { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-left:3px solid var(--tint); padding-left:8px; }

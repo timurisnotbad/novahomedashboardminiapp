@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>Чаты · Nova Home</title>
-  <link rel="stylesheet" href="inbox.css?v=118" />
+  <link rel="stylesheet" href="inbox.css?v=119" />
   <script>/* Telegram Mini App bridge: not needed inside the CRM (embed=1), and it must not block the page when telegram.org is slow */
     if (!/[?&]embed=1/.test(location.search)) document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\/script>');</script>
 </head>
@@ -30,6 +30,7 @@
         <button data-only="unread" title="Чаты, в которых гость ждёт ответа">Нужен ответ <b id="unread-total"></b></button>
         <button data-only="mine">Мои</button>
       </div>
+      <div class="ib-net hidden"></div>
       <div id="chat-list" class="ib-list"></div>
     </aside>
 
@@ -62,6 +63,7 @@
           </button>
         </header>
         <div class="ib-booking hidden" id="conv-booking"></div>
+        <div class="ib-net hidden"></div>
         <div class="ib-msgs" id="msgs"></div>
         <div class="ib-reply hidden" id="reply-bar">
           <div><b>Ответ на:</b> <span id="reply-text"></span></div>
@@ -100,9 +102,9 @@
     </div>
   </div>
 
-  <script src="/js/common.js?v=118"></script>
-  <script src="/js/keyboard.js?v=118"></script>
-  <script src="/js/phone.js?v=118"></script>
-  <script src="inbox.js?v=118"></script>
+  <script src="/js/common.js?v=119"></script>
+  <script src="/js/keyboard.js?v=119"></script>
+  <script src="/js/phone.js?v=119"></script>
+  <script src="inbox.js?v=119"></script>
 </body>
 </html>

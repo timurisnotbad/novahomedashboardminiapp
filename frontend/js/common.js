@@ -84,14 +84,16 @@
       res = await fetch(url, opts);
     } catch (e) {
       const aborted = e && e.name === "AbortError";
-      const err = new Error(aborted && outer && outer.aborted ? "aborted" : aborted ? "Сервер не ответил — проверьте связь" : "Нет связи с сервером");
+      const err = new Error(aborted && outer && outer.aborted ? "aborted" : aborted ? "Сервер не ответил — проверьте связь"
+        : (typeof navigator !== "undefined" && navigator.onLine === false) ? "Нет интернета на этом устройстве — проверьте Wi-Fi или мобильную сеть"
+          : "Нет связи с сервером — проверьте интернет и повторите");
       err.status = 0; err.name = aborted && outer && outer.aborted ? "AbortError" : "RequestError";
       throw err;
     } finally { if (timer) clearTimeout(timer); }
     let data = null;
     try { data = await res.json(); } catch (e) { /* empty body */ }
     if (!res.ok) {
-      const gw = res.status === 502 || res.status === 504;
+      const gw = res.status === 502 || res.status === 504 || (res.status >= 520 && res.status <= 530);  // 52x = Cloudflare could not reach the laptop
       const err = new Error((data && data.detail) || (gw ? "Сервер не ответил (ошибка " + res.status + "): окно Nova Backend закрыто или туннель оборван. Попробуйте ещё раз" : "Ошибка " + res.status));
       err.status = res.status; err.data = data;
       throw err;

@@ -3,7 +3,7 @@
 ## What this is
 Telegram bot + web CRM for Nova Home Apartments (Nest One, Tashkent, 17 apartments, owner Timur).
 Repo `timurisnotbad/novahomedashboardminiapp`, work branch `claude/new-session-85xp4a` (push there; no PR unless asked). Until v112 the CRM line lived on `claude/fervent-planck-gno50t` and the dashboard line on `claude/new-session-85xp4a`; v113 merged them — there is ONE line now, do not continue the old CRM branch.
-Current release **v118**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
+Current release **v119**. Owner installs releases from a zip (see «Release»), server is Windows («Nova Backend» window = uvicorn, «Nova WhatsApp» = Baileys bridge, `restart_all.bat`).
 Language of the product and of the owner: Russian. Never put model names into commits/code. Keys live only in the owner's `.env`; `data/` is gitignored.
 
 ## Code map
@@ -35,6 +35,8 @@ v116 cloud move: `move_to_cloud.bat` → `deploy/move_to_cloud.py` (ssh key, `in
 
 v117 safe cloud updates: `install_server.sh` `do_update` builds first, copies the DB, switches, and rolls back to the previous commit when `/api/health` does not answer (verified on a mock repo: same / broken → rollback / fixed); `auto` mode + `nova-autoupdate.timer` gated by `data/autoupdate.on` (`/autoupdate on|off`).
 
+v118 `bot.py::_self_repair_ptb` (PTB 20.x on Python 3.14 → upgrades itself). v119 chat replies survive a lost connection: `frontend/inbox/inbox.js` outbox (`sendText` → `outbox` in localStorage `nh_outbox` → `pumpOutbox`, sequential, retries on `netError` = status 0 / gateway 502–504, 520–530 without `detail`; 10 min old → «Не отправлено», manual; `setNet` strip `.ib-net`; `boot()` retries when the page opens offline), server idempotency `inbox.send(..., client_id)` (`inbox_messages.client_id`, unique partial index; a repeat returns the stored row, never a second dispatch). Text only — `sendFile` and album sends are not queued. Tests `tests/session/test_v119.py`, `ui_119.mjs` (server = `run119.py`-style wrapper that stubs `inbox._dispatch_send`).
+
 ## Decisions taken with the owner
 - One chat, one archive: the owner works on dashboard and CRM in a single session and installs a single `nova-updateNN.zip`.
 - Sheet «Операции» mirrors real cash per apartment: rows only for the receiver apartment, bills never split; joint payments wait in owner's review («Оставить» / «Записать как долг между квартирами» → sheet «Долг между Аппартами»). Article is always «Бронь». Stay dates typed manually («19.10-23.10» → comment «19-23.10»). Rates/accounts from sheet «Валюты» (cached 1 h, defaults in `cash.DEFAULT_*`). Write to the sheet immediately; failures retried every 10 min. Rows with year 1899 = no date (legacy). Open question: column «Сумма $» value or formula — CRM writes a number; `USD_FORMULA` in the script switches to a formula.
@@ -45,6 +47,7 @@ v117 safe cloud updates: `install_server.sh` `do_update` builds first, copies th
 - Everything on the phone: big controls, few buttons (owner's words: «достать, открыть, записать и всё»).
 
 ## Current problem (open)
+Nov 14: staff phone showed «Нет связи с сервером» on send (Android, CRM chat). That text = `fetch` threw on the phone (network change / weak signal), not a server outage (the tunnel down gives Cloudflare 5xx). v119 queues and retries; not yet confirmed on the staff phone. If it keeps happening with the strip saying «Нет связи с сервером — переподключаюсь…» for long, look at the tunnel / the laptop instead.
 Nov 13–14: the dashboard bot was dead. CAUSE FOUND (the v115 watchdog sent the log tail): python-telegram-bot 20.x on the owner's Python 3.14 → `Application` cannot be built. v118: requirements demand 22+, `bot.py::_self_repair_ptb` upgrades the package itself and restarts. Waiting for the owner to confirm the bot answers `/sync` after installing v118.
 Past/current stays do not arrive from RealtyCalendar (future ones do), even with the v108 status probe available; owner has not yet sent the probe table (Интеграции → «Проверить статусы RC»). RC has no public API docs; realtycalendar.ru is unreachable from the sandbox. Next idea if every probe row is 0: RC webhooks or report export. The owner's laptop (the server) shuts down by itself: v112 records each outage with the Windows event-log reason — ask for the «Работа сервера» table. Cloud move is documented in `deploy/README.md`; Booking.com needs a logged-in Chrome with the `booking-ext` extension, so it stays on a PC.
 

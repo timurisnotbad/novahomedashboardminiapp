@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import logging
 import re
+import sqlite3
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -142,6 +143,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_messages ADD COLUMN edited_at TEXT")  # the guest (or we) edited the message in the messenger
         if "deleted_at" not in mcols:
             conn.execute("ALTER TABLE inbox_messages ADD COLUMN deleted_at TEXT")  # we deleted it for the guest; the row stays
+        if "client_id" not in mcols:
+            # the id the browser gave this reply: a repeat of the same request (the phone
+            # lost the network before the answer came) finds the row instead of sending twice
+            conn.execute("ALTER TABLE inbox_messages ADD COLUMN client_id TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_msg_client ON inbox_messages(client_id) "
+                     "WHERE client_id IS NOT NULL")
     config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -1083,13 +1090,28 @@ def update_chat(chat_id: int, **fields) -> dict | None:
     return get_chat(chat_id)
 
 
+def _by_client_id(client_id: str) -> dict | None:
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM inbox_messages WHERE client_id = ?", (client_id,)).fetchone()
+    return _msg_out(row) if row else None
+
+
 def send(chat_id: int, author: str, text: str = "", media: str | None = None, mime: str | None = None,
-         file_name: str | None = None, quoted_id: str | None = None) -> dict:
+         file_name: str | None = None, quoted_id: str | None = None, client_id: str | None = None) -> dict:
     """Store the reply as 'pending', hand it to the chat's channel, then record
-    the external id (or the error, so the operator sees a red mark and can retry)."""
+    the external id (or the error, so the operator sees a red mark and can retry).
+
+    client_id — the browser's own id of this reply. The CRM repeats a request the
+    phone could not finish; with the same client_id the stored message is returned
+    and nothing goes to the guest a second time."""
     text = (text or "").strip()
     if not text and not media:
         raise BridgeError("Пустое сообщение")
+    client_id = re.sub(r"[^A-Za-z0-9_-]", "", client_id or "")[:64] or None
+    if client_id:
+        known = _by_client_id(client_id)
+        if known:
+            return known
     try:
         send_receipt(chat_id, "reply")  # answering = we have read it
     except Exception:  # noqa: BLE001
@@ -1109,11 +1131,21 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
         if quoted_id:
             quoted = conn.execute("SELECT direction, text FROM inbox_messages WHERE wa_id = ?",
                                   (quoted_id,)).fetchone()
-        cur = conn.execute(
-            "INSERT INTO inbox_messages (chat_id, wa_id, direction, author, kind, text, media, mime, "
-            "file_name, quoted_wa_id, status, at, rev) VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (chat_id, local_id, author, kind, text, media, mime, file_name, quoted_id, at, _bump(conn)),
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO inbox_messages (chat_id, wa_id, direction, author, kind, text, media, mime, "
+                "file_name, quoted_wa_id, status, at, rev, client_id) "
+                "VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (chat_id, local_id, author, kind, text, media, mime, file_name, quoted_id, at, _bump(conn), client_id),
+            )
+        except sqlite3.IntegrityError:
+            # the same reply arrived twice at the same moment: the other request is sending it
+            cur = None
+        if cur is None:
+            row = conn.execute("SELECT * FROM inbox_messages WHERE client_id = ?", (client_id,)).fetchone()
+            if row:
+                return _msg_out(row)
+            raise BridgeError("Не удалось сохранить сообщение — отправьте ещё раз")
         mid = cur.lastrowid
         _touch_chat(conn, chat_id, at, "out", kind, text, "pending", 0)
         conn.execute("UPDATE inbox_chats SET last_author = ? WHERE id = ?", (author, chat_id))

@@ -344,6 +344,15 @@
       else html += msgHtml(mm);
       lastAuthor = key;
     });
+    // replies still on this phone (no connection yet): shown at once, sent by pumpOutbox()
+    const waitingList = outboxFor(S.open && S.open.id);
+    const lastWaiting = waitingList.filter((o) => !o.stale).pop();
+    const noConn = waitingList.some((o) => !o.stale && o.tries);  // one explanation under the whole run, not under each bubble
+    waitingList.forEach((o) => {
+      const iso = isoLocal(o.at);
+      if (iso.slice(0, 10) !== day) { day = iso.slice(0, 10); html += `<div class="ib-day">${esc(dayLabel(iso))}</div>`; }
+      html += outboxHtml(o, iso, noConn && o === lastWaiting);
+    });
     el.innerHTML = html || `<div class="ib-day">Сообщений пока нет</div>`;
     if (keepScroll === "older") el.scrollTop = el.scrollHeight - prevH + prevTop;
     else if (keepScroll === "bottom" || atBottom) el.scrollTop = el.scrollHeight;
@@ -435,6 +444,7 @@
   function mergeMsgs(list) {
     let changed = false;
     list.forEach((m) => {
+      if (m.client_id) dropOutbox(m.client_id);
       const i = S.msgs.findIndex((x) => x.id === m.id);
       if (i >= 0) S.msgs[i] = m;
       else S.msgs.push(m);
@@ -501,25 +511,127 @@
       finally { sending = false; $("send").disabled = false; }
       return;
     }
-    sending = true;
-    $("send").disabled = true;
     const chatId = S.open.id;
     const reply = S.reply;
     const quoted = reply && reply.wa_id && !reply.wa_id.startsWith("local-") ? reply.wa_id : null;
     ta.value = "";
     autosize();
     setReply(null);
+    // the reply goes to the outbox first: it is on the screen at once and survives a
+    // lost connection (the phone switching Wi-Fi ↔ mobile data used to end in a toast)
+    outbox.push({ cid: newCid(), chat: chatId, text, quoted, at: Date.now(), user: (S.me && S.me.name) || "", tries: 0 });
+    saveOutbox();
+    renderMsgs("bottom");
+    pumpOutbox();
+  }
+
+  // ---- outbox: replies wait here until the server has them ---------------------------
+  // Every reply carries its own id (client_id); the server answers a repeated request
+  // with the stored message, so retrying can never send the guest the same text twice.
+  const OUTBOX_KEY = "nh_outbox";
+  const OUTBOX_AUTO_MS = 10 * 60 * 1000;  // older than this nothing is sent silently: the operator decides
+  function loadOutbox() {
+    try { const a = JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); return Array.isArray(a) ? a.filter((o) => o && o.cid && o.chat && o.text) : []; } catch (e) { return []; }
+  }
+  let outbox = loadOutbox();
+  function saveOutbox() { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox)); } catch (e) { /* private mode: the queue lives until the page closes */ } }
+  function newCid() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, ""); } catch (e) { /* old WebView */ }
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+  }
+  const isoLocal = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`; };
+  const myOutbox = (o) => !o.user || !S.me || o.user === S.me.name;
+  function outboxFor(chatId) {
+    if (!chatId) return [];
+    return outbox.filter((o) => o.chat === chatId && myOutbox(o) && !S.msgs.some((m) => m.client_id === o.cid));
+  }
+  function dropOutbox(cid) {
+    const n = outbox.length;
+    outbox = outbox.filter((o) => o.cid !== cid);
+    if (outbox.length !== n) saveOutbox();
+    return outbox.length !== n;
+  }
+  function outboxHtml(o, iso, explain) {
+    const note = o.stale
+      ? `<div class="ib-m__err">Не отправлено${o.err ? ": " + esc(o.err) : " — не было связи"} · <button data-ob-retry="${esc(o.cid)}">отправить</button> · <button data-ob-cancel="${esc(o.cid)}">убрать</button></div>`
+      : explain
+        ? `<div class="ib-m__err ib-m__wait">${navigator.onLine === false ? "Нет интернета на этом устройстве" : "Нет связи"} — отправится само, как только связь появится · <button data-ob-cancel="${esc(o.cid)}">отменить</button></div>`
+        : "";
+    return `<div class="ib-m out queued" data-ob="${esc(o.cid)}"><div class="ib-m__b"><div class="ib-m__t">${linkify(o.text)}</div><div class="ib-m__meta">${esc(hm(iso))}${tick(o.stale ? "failed" : "pending")}</div></div></div>${note}`;
+  }
+  // no answer from the server at all (the phone's network, a timeout, the tunnel) — worth repeating;
+  // an answer with a reason (424 «WhatsApp не подключён», 403…) is final
+  function netError(e) {
+    if (!e) return false;
+    if (e.status === 0) return e.name !== "AbortError";
+    return !(e.data && e.data.detail) && ([502, 503, 504].includes(e.status) || (e.status >= 520 && e.status <= 530));
+  }
+  let pumping = false;
+  let pumpTimer = null;
+  async function pumpOutbox() {
+    if (pumping || stopped) return;
+    clearTimeout(pumpTimer);
+    const now = Date.now();
+    let dirty = false;
+    outbox.forEach((o) => { if (!o.stale && now - o.at > OUTBOX_AUTO_MS) { o.stale = true; dirty = true; } });
+    if (dirty) { saveOutbox(); if (S.open) renderMsgs(); }
+    const item = outbox.find((o) => !o.stale && myOutbox(o));  // strictly in the order typed
+    if (!item) return;
+    pumping = true;
+    let again = 0;
     try {
-      const m = await req(`/chats/${chatId}/send`, { method: "POST", json: { text, quoted_id: quoted } });
-      if (m && S.open && S.open.id === chatId) { mergeMsgs([m]); renderMsgs("bottom"); }
+      const m = await req(`/chats/${item.chat}/send`, { method: "POST", json: { text: item.text, quoted_id: item.quoted || null, client_id: item.cid } });
+      dropOutbox(item.cid);
+      if (m && S.open && S.open.id === item.chat) { mergeMsgs([m]); renderMsgs("bottom"); }
     } catch (e) {
-      toast(e.message);
-      restoreDraft(text, reply, chatId);
-      pollNow();
+      const still = outbox.includes(item);  // «отменить» was pressed while the request was on its way
+      if (netError(e)) {
+        if (still) { item.tries = (item.tries || 0) + 1; saveOutbox(); }
+        again = Math.min(12000, 1500 + (item.tries || 1) * 1500);
+        setNet(true);
+      } else if (still) {
+        if (e.status === 403) showDenied();
+        if (S.open && S.open.id === item.chat && e.status !== 403) {  // as before: the text goes back into the box
+          dropOutbox(item.cid);
+          toast(e.message);
+          restoreDraft(item.text, null, item.chat);
+        } else {  // another chat is on the screen: the text waits in its own chat, marked red
+          item.stale = true; item.err = e.message; saveOutbox();
+          toast("Не отправлено: " + e.message);
+        }
+        pollNow();
+      }
+      if (S.open && S.open.id === item.chat) renderMsgs();
     } finally {
-      sending = false;
-      $("send").disabled = false;
+      pumping = false;
     }
+    if (again) pumpTimer = setTimeout(pumpOutbox, again);
+    else pumpOutbox();
+  }
+  function cancelOutbox(cid) {
+    const o = outbox.find((x) => x.cid === cid);
+    if (!o) return;
+    dropOutbox(cid);
+    if (S.open && S.open.id === o.chat) { restoreDraft(o.text, null, o.chat); renderMsgs(); }
+  }
+  function retryOutbox(cid) {
+    const o = outbox.find((x) => x.cid === cid);
+    if (!o) return;
+    o.stale = false; o.err = ""; o.tries = 0; o.at = Date.now();
+    saveOutbox();
+    renderMsgs();
+    pumpOutbox();
+  }
+
+  // ---- connection strip: says why nothing moves, before the operator starts guessing ----
+  let netBad = false;
+  function setNet(bad) {
+    const off = navigator.onLine === false;
+    const text = off ? "Нет интернета на этом устройстве — проверьте Wi-Fi или мобильную сеть"
+      : "Нет связи с сервером — переподключаюсь…";
+    document.querySelectorAll(".ib-net").forEach((el) => { el.textContent = text; el.classList.toggle("hidden", !bad); });
+    if (netBad && !bad && outbox.length) pumpOutbox();
+    netBad = bad;
   }
 
   async function sendFile(file) {
@@ -660,9 +772,13 @@
       }
       if (ping) beep();
       pollFailed = false;
+      pollFails = 0;
+      setNet(false);
+      if (outbox.length && !pumping) pumpOutbox();
     } catch (e) {
       pollFailed = !(e && e.name === "AbortError");
       if (e.status === 403) showDenied();
+      else if (pollFailed && ++pollFails >= 2) setNet(true);  // one lost request is not news
     } finally {
       pollCtl = null;
       polling = false;
@@ -670,6 +786,7 @@
     }
   }
   let pollFailed = false;
+  let pollFails = 0;
 
   const EMBED = /[?&]embed=1/.test(location.search);
   function beep() {
@@ -1112,6 +1229,10 @@
         try { const m = await req(`/messages/${dl.dataset.del}`, { method: "DELETE" }); mergeMsgs([m]); renderMsgs(); toast("Удалено"); } catch (err) { dl.disabled = false; toast(err.message); }
         return;
       }
+      const obc = e.target.closest("[data-ob-cancel]");
+      if (obc) { cancelOutbox(obc.dataset.obCancel); return; }
+      const obr = e.target.closest("[data-ob-retry]");
+      if (obr) { retryOutbox(obr.dataset.obRetry); return; }
       const rt = e.target.closest("[data-retry]");
       if (rt) {
         req(`/messages/${rt.dataset.retry}/retry`, { method: "POST" })
@@ -1189,8 +1310,14 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         pollNow();
+        pumpOutbox();
       }
     });
+    // the network is back (or gone): do not wait for the next timer
+    window.addEventListener("online", () => { clearTimeout(pollTimer); pollNow(); pumpOutbox(); });
+    window.addEventListener("offline", () => setNet(true));
+    // the same queue in another tab / in the CRM frame: keep one picture
+    window.addEventListener("storage", (e) => { if (e.key === OUTBOX_KEY) { outbox = loadOutbox(); if (S.open) renderMsgs(); } });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal();
     });
@@ -1202,6 +1329,9 @@
       if (tg) { tg.ready(); tg.expand(); if (tg.setHeaderColor) tg.setHeaderColor("#FFFFFF"); }
     } catch (e) { /* not in Telegram */ }
     bind();
+    boot();
+  }
+  async function boot() {
     // everything the first screen needs goes out at once: over the tunnel each round trip is slow
     const chatsP = req("/chats?limit=300").catch((e) => e);
     const tplP = loadTpls().catch(() => null);
@@ -1213,9 +1343,11 @@
       $("me-name").textContent = "Вы: " + S.me.name;
     } catch (e) {
       if (e.status === 403) showDenied();
+      else if (netError(e)) { setNet(true); setTimeout(boot, 3000); }  // opened without a connection: keep trying, not an empty page until a reload
       else toast("Сервер недоступен: " + e.message);
       return;
     }
+    setNet(false);
     const d = await chatsP;
     if (d instanceof Error) toast(d.message);
     else {
@@ -1230,6 +1362,7 @@
     const m = /chat=(\d+)/.exec(location.hash);
     if (m) openChat(parseInt(m[1], 10));
     pollTimer = setTimeout(pollNow, 2500);
+    pumpOutbox();  // replies that were waiting when the page was closed
   }
   // Phone keyboard: the page lives in the visible box (js/keyboard.js); inside the CRM the
   // shell sizes the frame and this page only tells it about focus and keeps the thread at the bottom

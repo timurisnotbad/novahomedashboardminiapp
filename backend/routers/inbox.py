@@ -45,6 +45,7 @@ def _fail(exc: Exception):
 class SendIn(BaseModel):
     text: str = ""
     quoted_id: str | None = None
+    client_id: str | None = None  # the browser's id of this reply: a repeated request never sends twice
 
 
 class ChatPatch(BaseModel):
@@ -260,7 +261,8 @@ def patch_client(chat_id: int, payload: ClientPatch, user: dict = Depends(inbox_
 @router.post("/chats/{chat_id}/send")
 def send(chat_id: int, payload: SendIn, user: dict = Depends(inbox_user)):  # noqa: B008
     try:
-        r = inbox.send(chat_id, user["name"], payload.text[:4000], quoted_id=payload.quoted_id)
+        r = inbox.send(chat_id, user["name"], payload.text[:4000], quoted_id=payload.quoted_id,
+                       client_id=payload.client_id)
     except inbox.BridgeError as exc:
         _fail(exc)
     try:
