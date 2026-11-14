@@ -491,3 +491,10 @@ details summary { cursor:pointer; color:var(--blue-text); font-weight:600; }
 .ai-sec > summary::before { content:"▸"; color:var(--muted); font-size:12px; }
 .ai-sec[open] > summary::before { content:"▾"; }
 .ai-sec__body { margin-top:10px; }
+
+/* v120: a file on a quick command / stay step */
+.filebox { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.filebox a { flex:1; min-width:140px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-decoration:none; }
+.filebox__add { display:block; text-align:center; cursor:pointer; }
+.filebox .is-busy, .filebox__add.is-busy { opacity:.5; pointer-events:none; }
+.filetag { display:block; margin-top:3px; font-size:12.5px; font-weight:600; }

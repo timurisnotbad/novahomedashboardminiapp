@@ -46,6 +46,7 @@ class SendIn(BaseModel):
     text: str = ""
     quoted_id: str | None = None
     client_id: str | None = None  # the browser's id of this reply: a repeated request never sends twice
+    template_id: int | None = None  # the quick reply whose file (PDF, photo) goes with the text
 
 
 class ChatPatch(BaseModel):
@@ -65,6 +66,9 @@ class TemplateIn(BaseModel):
     title: str = ""
     text: str
     command: str = ""
+    media: str | None = None  # stored file from /upload: None = as it was, "" = no file
+    mime: str = ""
+    file_name: str = ""
 
 
 @router.get("/me")
@@ -260,9 +264,15 @@ def patch_client(chat_id: int, payload: ClientPatch, user: dict = Depends(inbox_
 
 @router.post("/chats/{chat_id}/send")
 def send(chat_id: int, payload: SendIn, user: dict = Depends(inbox_user)):  # noqa: B008
+    f = {}
+    if payload.template_id:
+        t = inbox.template(payload.template_id)
+        if not t or not t.get("media"):
+            raise HTTPException(status_code=400, detail="У шаблона больше нет файла — выберите шаблон заново")
+        f = {"media": t["media"], "mime": t["mime"], "file_name": t["file_name"]}
     try:
-        r = inbox.send(chat_id, user["name"], payload.text[:4000], quoted_id=payload.quoted_id,
-                       client_id=payload.client_id)
+        r = inbox.send_with_file(chat_id, user["name"], payload.text[:4000], quoted_id=payload.quoted_id,
+                                 client_id=payload.client_id, **f)
     except inbox.BridgeError as exc:
         _fail(exc)
     try:
@@ -349,18 +359,31 @@ async def send_file(chat_id: int, request: Request, user: dict = Depends(inbox_u
     if not body:
         raise HTTPException(status_code=400, detail="Пустой файл")
     name = unquote(request.headers.get("x-file-name", "") or "file")[:120]
-    mime = (request.headers.get("content-type") or "").split(";")[0].strip() \
-        or mimetypes.guess_type(name)[0] or "application/octet-stream"
     caption = unquote(request.headers.get("x-caption", "") or "")[:1000]
-    ext = re.sub(r"[^A-Za-z0-9]", "", name.rsplit(".", 1)[-1])[:8] if "." in name else "bin"
-    stored = f"up{uuid.uuid4().hex}.{ext or 'bin'}"
-    config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    (config.INBOX_MEDIA_DIR / stored).write_bytes(body)
+    f = inbox.store_upload(body, name, request.headers.get("content-type") or "")
     from starlette.concurrency import run_in_threadpool
     try:
-        return await run_in_threadpool(inbox.send, chat_id, user["name"], caption, stored, mime, name)
+        return await run_in_threadpool(inbox.send, chat_id, user["name"], caption, f["media"], f["mime"], f["file_name"])
     except inbox.BridgeError as exc:
         _fail(exc)
+
+
+async def read_upload(request: Request) -> dict:
+    """A raw file body (name in X-File-Name, URL-encoded) → stored file {media, mime, file_name, url}."""
+    from urllib.parse import unquote
+    if int(request.headers.get("content-length") or 0) > MAX_UPLOAD:
+        raise HTTPException(status_code=413, detail="Файл больше 30 МБ")
+    body = await _read_capped(request, MAX_UPLOAD)
+    if not body:
+        raise HTTPException(status_code=400, detail="Пустой файл")
+    f = inbox.store_upload(body, unquote(request.headers.get("x-file-name", "") or "file"), request.headers.get("content-type") or "")
+    return inbox.file_out(f["media"], f["mime"], f["file_name"])
+
+
+@router.post("/upload")
+async def upload(request: Request, user: dict = Depends(inbox_user)):  # noqa: B008
+    """Keep a file for a quick reply (the reply is saved with its `media` afterwards)."""
+    return await read_upload(request)
 
 
 @router.post("/chats/{chat_id}/documents")
@@ -440,9 +463,22 @@ def add_template(payload: TemplateIn, user: dict = Depends(inbox_user)):  # noqa
         raise HTTPException(status_code=400, detail="Пустой шаблон")
     from .. import crm
     try:
-        return {"id": crm.save_command(None, payload.command, payload.title, payload.text)["id"]}
+        return {"id": crm.save_command(None, payload.command, payload.title, payload.text,
+                                       file=payload.model_dump(include={"media", "mime", "file_name"}))["id"]}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/templates/{tid}/file")
+def set_template_file(tid: int, payload: dict, user: dict = Depends(inbox_user)):  # noqa: B008
+    """Attach / replace ({media, mime, file_name} from /upload) or take off ({}) the file of a quick reply."""
+    try:
+        t = inbox.set_template_file(tid, payload if payload.get("media") else None)
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not t:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    return t
 
 
 @router.delete("/templates/{tid}")

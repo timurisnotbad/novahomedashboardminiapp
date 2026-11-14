@@ -571,7 +571,7 @@
     const groups = [["Просрочено", (t) => t.due && t.due < now && t.status === "open"], ["Сегодня", (t) => t.due && t.due.slice(0, 10) === today && !(t.due < now)],
       ["В работе", (t) => t.status === "open" && (!t.due || t.due.slice(0, 10) > today)], ["Выполнено", (t) => t.status === "done"]];
     const row = (t) => `<div class="task ${t.status}" data-id="${t.id}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-done="${t.id}" />
-      <div class="task__body"><div class="task__title">${t.is_message ? '<span class="tag blue" title="Сообщение: CRM отправит гостю сама в назначенное время">✉ авто</span> ' : ""}${esc(t.title)}${t.is_message && t.status === "open" ? ` <button class="btn sm" data-tsend="${t.id}">Отправить сейчас</button>` : ""}</div>${t.is_message ? `<div class="task__msg">${esc(t.auto_text)}</div>` : ""}${t.auto_status && t.status === "open" ? `<div class="small bad">${esc(t.auto_status.replace(/^(skipped|failed):/, "не отправлено: "))}</div>` : ""}
+      <div class="task__body"><div class="task__title">${t.is_message ? '<span class="tag blue" title="Сообщение: CRM отправит гостю сама в назначенное время">✉ авто</span> ' : ""}${esc(t.title)}${t.is_message && t.status === "open" ? ` <button class="btn sm" data-tsend="${t.id}">Отправить сейчас</button>` : ""}</div>${t.is_message ? `<div class="task__msg">${esc(t.auto_text)}${t.file_name ? `<div class="filetag">📎 ${esc(t.file_name)}</div>` : ""}</div>` : ""}${t.auto_status && t.status === "open" ? `<div class="small bad">${esc(t.auto_status.replace(/^(skipped|failed):/, "не отправлено: "))}</div>` : ""}
         <div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.client_id ? `<a href="#clients/${t.client_id}">${esc(t.client_name || "клиент")}</a>` : ""}${t.deal_id ? `<a href="#" data-deal="${t.deal_id}">сделка</a>` : ""}${t.booking_id && !byBooking ? `<a href="#" data-bopen="${t.booking_id}" title="Открыть бронь">🏠 ${esc(t.booking ? t.booking.label : "бронь #" + t.booking_id)}</a>` : ""}</div></div>
       <button class="task__del" data-edit="${t.id}" title="Изменить">✎</button><button class="task__del" data-del="${t.id}" title="Удалить">✕</button></div>`;
     $("main").innerHTML = `
@@ -1069,6 +1069,36 @@
     })));
   }
 
+  // ---- a file on a quick command / a stay step (PDF instruction, photo) --------------
+  function uploadFile(file) {
+    if (file.size > 30 * 1024 * 1024) return Promise.reject(new Error("Файл больше 30 МБ"));
+    return api("/files", { method: "POST", body: file, timeoutMs: 180000,
+      headers: { "Content-Type": file.type || "application/octet-stream", "X-File-Name": encodeURIComponent(file.name || "file") } });
+  }
+  // puts the control into #id; .value() → {media, mime, file_name}: media null = as it was, "" = no file
+  function fileField(id, cur) {
+    let st = cur && cur.media ? { media: cur.media, mime: cur.mime || "", file_name: cur.file_name || "Файл", url: cur.url || cur.file_url || "" } : null;
+    let changed = false;
+    const el = $(id);
+    const draw = () => {
+      el.innerHTML = st
+        ? `<div class="filebox"><a href="${esc(st.url || "#")}" target="_blank" rel="noopener">📎 ${esc(st.file_name)}</a><label class="btn sm">Заменить<input type="file" hidden /></label><button class="btn sm" type="button" data-unfile>Убрать</button></div>`
+        : `<label class="btn filebox__add">📎 Прикрепить файл (PDF, фото)<input type="file" hidden /></label>`;
+      const inp = el.querySelector("input[type=file]");
+      inp.addEventListener("change", async () => {
+        const f = inp.files[0]; if (!f) return;
+        el.querySelectorAll("label,button").forEach((b) => b.classList.add("is-busy"));
+        toast("Загружаю файл…");
+        try { st = await uploadFile(f); changed = true; toast("Файл загружен — не забудьте «Сохранить»"); } catch (err) { toast(err.message); }
+        draw();
+      });
+      const un = el.querySelector("[data-unfile]"); if (un) un.addEventListener("click", () => { st = null; changed = true; draw(); });
+    };
+    draw();
+    return { value: () => (changed ? { media: st ? st.media : "", mime: st ? st.mime : "", file_name: st ? st.file_name : "" } : { media: null, mime: "", file_name: "" }),
+      current: () => st };
+  }
+
   // ---- quick commands ------------------------------------------------------------
   ROUTES.commands = async () => {
     const seq = S.navSeq;
@@ -1080,7 +1110,7 @@
       <div class="page-sub">В чате наберите / и начало команды — например /wifi — выберите стрелками и нажмите Enter. Готовый текст подставится в сообщение.</div>
       <div class="grid cmd-grid">
         <div><div class="toolbar"><input class="field grow" id="cmd-q" placeholder="Найти команду: /wifi, пароль, адрес…" value="${esc(S.cache.cmdQ || "")}" /><button class="btn primary" id="cmd-add">Новая команда</button></div>
-          <div class="list">${shown.map((t) => `<div class="list__row"><span class="mono">${t.command ? "/" + esc(t.command) : "—"}</span><div><b>${esc(t.title)}</b><small>${esc(t.text)}</small></div><div class="actions"><button data-edit="${t.id}">Изменить</button><button data-del="${t.id}" class="muted">Удалить</button></div></div>`).join("") || `<div class="empty">Команд нет</div>`}</div></div>
+          <div class="list">${shown.map((t) => `<div class="list__row"><span class="mono">${t.command ? "/" + esc(t.command) : "—"}</span><div><b>${esc(t.title)}</b><small>${esc(t.text)}</small>${t.file ? `<small class="filetag">📎 ${esc(t.file.file_name)}</small>` : ""}</div><div class="actions"><button data-edit="${t.id}">Изменить</button><button data-del="${t.id}" class="muted">Удалить</button></div></div>`).join("") || `<div class="empty">Команд нет</div>`}</div></div>
         <div class="card"><div class="card__title">Переменные</div><div class="muted small">Пишите их в тексте — при вставке заменятся на данные гостя из брони:</div>
           <div style="margin-top:10px"><span class="chip">{имя}</span><div class="muted small">имя гостя</div></div>
           <div style="margin-top:8px"><span class="chip">{объект}</span><div class="muted small">квартира из текущей или ближайшей брони</div></div>
@@ -1107,9 +1137,11 @@
         <div><label class="lbl">Название</label><input class="field" id="cm-title" value="${esc(t.title || "")}" placeholder="Пароль от Wi-Fi" /></div></div>
       <label class="lbl">Текст сообщения</label><textarea class="field" id="cm-text" rows="5">${esc(t.text || "")}</textarea>
       <div class="muted small" style="margin-top:6px">Переменные: {имя} {объект} {заезд} {выезд} {время заезда} {время выезда} {заезд время} {выезд время} {ночей} {сумма} {долг}</div>
+      <label class="lbl" style="margin-top:10px">Файл <span class="muted">— уйдёт гостю вместе с текстом (например, инструкция в PDF)</span></label><div id="cm-file"></div>
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="cm-go">Сохранить</button></div>`);
+    const cmFile = fileField("cm-file", t.file);
     $("cm-go").addEventListener("click", (e) => busy(e.currentTarget, async () => {
-      const body = { command: val("cm-cmd"), title: val("cm-title"), text: $("cm-text").value.trim() };
+      const body = Object.assign({ command: val("cm-cmd"), title: val("cm-title"), text: $("cm-text").value.trim() }, cmFile.value());
       if (t.id) await put(`/commands/${t.id}`, body); else await post("/commands", body);
       closeModal(); navigate();
     }));
@@ -1393,7 +1425,7 @@
     const late = open.filter((t) => t.due && t.due < now).length;
     const noChat = !(b.chats || []).length; // «Отправить сейчас» needs a chat to send to
     const row = (t) => `<div class="task ${t.status}"><input type="checkbox" ${t.status === "done" ? "checked" : ""} data-tdone="${t.id}" />
-      <div class="task__body"><div class="task__title">${t.is_message ? '<span class="tag blue" title="Сообщение: CRM отправит гостю сама в назначенное время">✉ авто</span> ' : ""}${esc(t.title)}${t.is_message && t.status === "open" ? ` <button class="btn sm" data-tsend="${t.id}" ${noChat ? `disabled title="Нет чата с гостем"` : ""}>Отправить сейчас</button>` : ""}</div>${t.is_message ? `<div class="task__msg">${esc(t.auto_text)}</div>` : ""}${t.auto_status && t.status === "open" ? `<div class="small bad">${esc(t.auto_status.replace(/^(skipped|failed):/, "не отправлено: "))}</div>` : ""}<div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.status === "done" && t.done_at ? `<span class="muted">✓ ${esc(dtShort(t.done_at))}</span>` : ""}</div></div>
+      <div class="task__body"><div class="task__title">${t.is_message ? '<span class="tag blue" title="Сообщение: CRM отправит гостю сама в назначенное время">✉ авто</span> ' : ""}${esc(t.title)}${t.is_message && t.status === "open" ? ` <button class="btn sm" data-tsend="${t.id}" ${noChat ? `disabled title="Нет чата с гостем"` : ""}>Отправить сейчас</button>` : ""}</div>${t.is_message ? `<div class="task__msg">${esc(t.auto_text)}${t.file_name ? `<div class="filetag">📎 ${esc(t.file_name)}</div>` : ""}</div>` : ""}${t.auto_status && t.status === "open" ? `<div class="small bad">${esc(t.auto_status.replace(/^(skipped|failed):/, "не отправлено: "))}</div>` : ""}<div class="task__meta">${t.due ? `<span class="${t.status === "open" && t.due < now ? "late" : ""}">${esc(dtShort(t.due))}</span>` : ""}<span>${esc(t.assignee_name || "—")}</span>${t.status === "done" && t.done_at ? `<span class="muted">✓ ${esc(dtShort(t.done_at))}</span>` : ""}</div></div>
       <button class="task__del" data-tedit="${t.id}" title="Изменить">✎</button><button class="task__del" data-tdel="${t.id}" title="Удалить">✕</button></div>`;
     const sum = box.parentElement && box.parentElement.tagName === "DETAILS" ? box.parentElement.querySelector("summary") : null;
     const title = `Задачи по брони ${list.length ? `<span class="tag ${late ? "red" : open.length ? "blue" : "green"}">${done.length}/${list.length}${late ? " · просрочено " + late : ""}</span>` : ""}`;
@@ -1536,7 +1568,7 @@
     const oldRules = d.rules.filter((r) => r.trigger !== "first_message" && r.trigger !== "off_hours" && r.enabled);
     const sw = (on, attrs) => `<div class="switch ${on ? "on" : ""}" ${attrs} ${admin ? "" : 'style="pointer-events:none;opacity:.6"'}></div>`;
     const stepRow = (x) => `<div class="rule ${x.enabled ? "" : "off"}">${sw(x.enabled, `data-stepon="${x.i}" data-on="${x.enabled ? 0 : 1}"`)}
-        <div><b>${esc(x.title)}</b><small>${esc(whenStep(x))}${x.message_en ? " · RU + EN" : ""}</small><div class="txt">${esc(x.message.length > 220 ? x.message.slice(0, 220) + "…" : x.message)}</div></div>
+        <div><b>${esc(x.title)}</b><small>${esc(whenStep(x))}${x.message_en ? " · RU + EN" : ""}${x.media ? " · 📎 " + esc(x.file_name || "файл") : ""}</small><div class="txt">${esc(x.message.length > 220 ? x.message.slice(0, 220) + "…" : x.message)}</div></div>
         <div class="actions">${admin ? `<button data-stepedit="${x.i}">Изменить</button>` : ""}</div></div>`;
     const ruleRow = (r) => `<div class="rule ${r.enabled ? "" : "off"}">${sw(r.enabled, `data-toggle="${r.id}" data-on="${r.enabled ? 0 : 1}"`)}
         <div><b>${esc(r.name)}</b><small>${r.trigger === "off_hours" ? `вне ${esc(r.hours_from || "09:00")}–${esc(r.hours_to || "22:00")}` : r.trigger === "first_message" ? "первое сообщение нового гостя" : esc(r.trigger_name || r.trigger)} · отправлено: ${r.sent}</small><div class="txt">${esc(r.text)}</div></div>
@@ -1597,14 +1629,16 @@
         <div><label class="lbl">Время</label><input class="field" id="sf-time" type="time" value="${esc(x.time || "")}" /></div></div>
       <label class="lbl">Текст гостю (RU) <span class="muted">— пусто: только задача менеджеру</span></label><textarea class="field" id="sf-ru" rows="5">${esc(x.message || "")}</textarea>
       <details ${x.message_en ? "open" : ""}><summary class="muted small">English — для гостей с другим языком</summary><textarea class="field" id="sf-en" rows="5" style="margin-top:6px">${esc(x.message_en || "")}</textarea></details>
+      <label class="lbl" style="margin-top:10px">Файл <span class="muted">— уйдёт гостю вместе с этим сообщением (например, инструкция в PDF)</span></label><div id="sf-file"></div>
       <div class="small" style="margin-top:8px"><button class="btn link sm" id="sf-prev">Как это прочитает гость →</button> <span class="muted" id="sf-prev-out"></span></div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="sf-on" ${x.enabled ? "checked" : ""} /> Включено</label>
       <div class="row-actions">${idx >= 0 ? `<button class="btn danger" id="sf-del">Удалить</button>` : ""}<span style="flex:1"></span><button class="btn" data-close>Отмена</button><button class="btn primary" id="sf-go">Сохранить</button></div>`, true);
+    const sfFile = fileField("sf-file", x.media ? { media: x.media, mime: x.mime, file_name: x.file_name, url: x.file_url } : null);
     const upd = () => { const k = $("sf-kind").value; $("sf-off").disabled = !/before|after/.test(k); $("sf-time").disabled = k === "now"; };
     $("sf-kind").addEventListener("change", upd); upd();
     $("sf-prev").addEventListener("click", async () => { try { const r = await post("/checklist/preview", { text: $("sf-ru").value }); $("sf-prev-out").textContent = (r.booking ? `[${r.booking.apartment}, ${r.booking.guest}] ` : "") + r.text; } catch (err) { toast(err.message); } });
-    const read = () => { const k = $("sf-kind").value; const n = Math.max(1, parseInt($("sf-off").value || "1", 10)); const [anchor, rel] = k === "now" ? ["now", "day"] : k.split(":"); return { title: val("sf-title") || ($("sf-ru").value.trim().slice(0, 40) || "Сообщение"), anchor, offset: rel === "before" ? -n : rel === "after" ? n : 0, time: k === "now" ? "" : val("sf-time"), enabled: $("sf-on").checked, message: $("sf-ru").value.trim(), message_en: $("sf-en").value.trim() }; };
-    $("sf-go").addEventListener("click", (e) => busy(e.currentTarget, async () => { const list = steps.map((s) => Object.assign({}, s)); if (idx >= 0) list[idx] = read(); else list.push(read()); await save(list); closeModal(); navigate(); }));
+    const read = () => { const k = $("sf-kind").value; const n = Math.max(1, parseInt($("sf-off").value || "1", 10)); const [anchor, rel] = k === "now" ? ["now", "day"] : k.split(":"); return { title: val("sf-title") || ($("sf-ru").value.trim().slice(0, 40) || "Сообщение"), anchor, offset: rel === "before" ? -n : rel === "after" ? n : 0, time: k === "now" ? "" : val("sf-time"), enabled: $("sf-on").checked, message: $("sf-ru").value.trim(), message_en: $("sf-en").value.trim(), ...(sfFile.current() ? { media: sfFile.current().media, mime: sfFile.current().mime, file_name: sfFile.current().file_name } : {}) }; };
+    $("sf-go").addEventListener("click", (e) => busy(e.currentTarget, async () => { if (sfFile.current() && !$("sf-ru").value.trim()) { toast("К файлу нужен текст гостю — хотя бы одна строка"); return; } const list = steps.map((s) => Object.assign({}, s)); if (idx >= 0) list[idx] = read(); else list.push(read()); await save(list); closeModal(); navigate(); }));
     const dl = $("sf-del"); if (dl) dl.addEventListener("click", (e) => busy(e.currentTarget, async () => { if (!confirm("Удалить это сообщение?")) return; const list = steps.filter((_, i) => i !== idx); await save(list); closeModal(); navigate(); }));
   }
   function replyRuleForm(r) {

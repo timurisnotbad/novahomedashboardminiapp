@@ -370,6 +370,7 @@
     S.msgs = [];
     S.noOlder = false;
     setReply(null);
+    setAttach(null);
     $("empty").classList.add("hidden");
     $("conv").classList.remove("hidden");
     $("ib").classList.add("show-conv");
@@ -470,6 +471,15 @@
       if (!S.reply) { $("text").value = ""; autosize(); }
     }
   }
+  // a quick reply with a file (PDF instruction): the file goes with the next message
+  function setAttach(a) {
+    S.attach = a || null;
+    const bar = $("attach-bar");
+    if (!bar) return;
+    bar.classList.toggle("hidden", !a);
+    if (a) { const l = $("attach-name"); l.textContent = "📎 " + (a.name || "Файл"); if (a.url) l.href = a.url; else l.removeAttribute("href"); }
+  }
+  const tplAttach = (t) => (t && t.file ? { tpl: t.id, name: t.file.file_name, url: t.file.url } : null);
   function setReply(m) {
     if (S.editing) setEdit(null);
     S.reply = m;
@@ -500,7 +510,7 @@
   async function sendText() {
     const ta = $("text");
     const text = ta.value.trim();
-    if (!text || !S.open || sending) return;
+    if ((!text && !(S.attach && !S.editing)) || !S.open || sending) return;
     if (!confirmUnfilled(text)) return;
     if (S.editing) {  // the same text box: save the change instead of sending a new message
       const ed = S.editing;
@@ -514,12 +524,15 @@
     const chatId = S.open.id;
     const reply = S.reply;
     const quoted = reply && reply.wa_id && !reply.wa_id.startsWith("local-") ? reply.wa_id : null;
+    const att = S.attach;
     ta.value = "";
     autosize();
     setReply(null);
+    setAttach(null);
     // the reply goes to the outbox first: it is on the screen at once and survives a
     // lost connection (the phone switching Wi-Fi ↔ mobile data used to end in a toast)
-    outbox.push({ cid: newCid(), chat: chatId, text, quoted, at: Date.now(), user: (S.me && S.me.name) || "", tries: 0 });
+    outbox.push({ cid: newCid(), chat: chatId, text, quoted, at: Date.now(), user: (S.me && S.me.name) || "", tries: 0,
+      tpl: att ? att.tpl : null, fname: att ? att.name : "", furl: att ? att.url : "" });
     saveOutbox();
     renderMsgs("bottom");
     pumpOutbox();
@@ -531,7 +544,7 @@
   const OUTBOX_KEY = "nh_outbox";
   const OUTBOX_AUTO_MS = 10 * 60 * 1000;  // older than this nothing is sent silently: the operator decides
   function loadOutbox() {
-    try { const a = JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); return Array.isArray(a) ? a.filter((o) => o && o.cid && o.chat && o.text) : []; } catch (e) { return []; }
+    try { const a = JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); return Array.isArray(a) ? a.filter((o) => o && o.cid && o.chat && (o.text || o.tpl)) : []; } catch (e) { return []; }
   }
   let outbox = loadOutbox();
   function saveOutbox() { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox)); } catch (e) { /* private mode: the queue lives until the page closes */ } }
@@ -557,7 +570,7 @@
       : explain
         ? `<div class="ib-m__err ib-m__wait">${navigator.onLine === false ? "Нет интернета на этом устройстве" : "Нет связи"} — отправится само, как только связь появится · <button data-ob-cancel="${esc(o.cid)}">отменить</button></div>`
         : "";
-    return `<div class="ib-m out queued" data-ob="${esc(o.cid)}"><div class="ib-m__b"><div class="ib-m__t">${linkify(o.text)}</div><div class="ib-m__meta">${esc(hm(iso))}${tick(o.stale ? "failed" : "pending")}</div></div></div>${note}`;
+    return `<div class="ib-m out queued" data-ob="${esc(o.cid)}"><div class="ib-m__b">${o.tpl ? `<div class="ib-m__doc">📄 <span>${esc(o.fname || "Файл")}</span></div>` : ""}${o.text ? `<div class="ib-m__t">${linkify(o.text)}</div>` : ""}<div class="ib-m__meta">${esc(hm(iso))}${tick(o.stale ? "failed" : "pending")}</div></div></div>${note}`;
   }
   // no answer from the server at all (the phone's network, a timeout, the tunnel) — worth repeating;
   // an answer with a reason (424 «WhatsApp не подключён», 403…) is final
@@ -580,9 +593,12 @@
     pumping = true;
     let again = 0;
     try {
-      const m = await req(`/chats/${item.chat}/send`, { method: "POST", json: { text: item.text, quoted_id: item.quoted || null, client_id: item.cid } });
+      const m = await req(`/chats/${item.chat}/send`, { method: "POST", json: { text: item.text, quoted_id: item.quoted || null, client_id: item.cid, template_id: item.tpl || null },
+        timeoutMs: item.tpl ? 120000 : undefined });  // a file takes the messenger longer than a line of text
       dropOutbox(item.cid);
       if (m && S.open && S.open.id === item.chat) { mergeMsgs([m]); renderMsgs("bottom"); }
+      if (m && m.file_error) toast("Текст отправлен, а файл — нет: " + m.file_error + ". Нажмите «повторить» под файлом");
+      if (item.tpl) repoll();  // a long text and its file are two messages: bring the other one
     } catch (e) {
       const still = outbox.includes(item);  // «отменить» was pressed while the request was on its way
       if (netError(e)) {
@@ -595,6 +611,7 @@
           dropOutbox(item.cid);
           toast(e.message);
           restoreDraft(item.text, null, item.chat);
+          if (item.tpl) setAttach({ tpl: item.tpl, name: item.fname, url: item.furl });
         } else {  // another chat is on the screen: the text waits in its own chat, marked red
           item.stale = true; item.err = e.message; saveOutbox();
           toast("Не отправлено: " + e.message);
@@ -612,7 +629,7 @@
     const o = outbox.find((x) => x.cid === cid);
     if (!o) return;
     dropOutbox(cid);
-    if (S.open && S.open.id === o.chat) { restoreDraft(o.text, null, o.chat); renderMsgs(); }
+    if (S.open && S.open.id === o.chat) { restoreDraft(o.text, null, o.chat); if (o.tpl) setAttach({ tpl: o.tpl, name: o.fname, url: o.furl }); renderMsgs(); }
   }
   function retryOutbox(cid) {
     const o = outbox.find((x) => x.cid === cid);
@@ -652,6 +669,7 @@
           "X-Caption": encodeURIComponent(caption),
         },
         body: file,
+        timeoutMs: 180000,  // a PDF or a video over mobile data does not fit into the usual 20 s
       });
       if (m && S.open && S.open.id === chatId) { mergeMsgs([m]); renderMsgs("bottom"); }
       toast("Отправлено");
@@ -660,6 +678,13 @@
       restoreDraft(caption, null, chatId);
       pollNow();
     }
+  }
+
+  // keep a file on the server for a quick reply → {media, mime, file_name, url}
+  function uploadFile(file) {
+    if (file.size > 30 * 1024 * 1024) return Promise.reject(new Error("Файл больше 30 МБ"));
+    return req("/upload", { method: "POST", body: file, timeoutMs: 180000,
+      headers: { "Content-Type": file.type || "application/octet-stream", "X-File-Name": encodeURIComponent(file.name || "file") } });
   }
 
   // ---- quick commands: «/wifi» in the composer → template with variables ----
@@ -705,6 +730,7 @@
     if (!t) return;
     const ta = $("text");
     ta.value = fillVars(t.text);
+    setAttach(tplAttach(t));
     const box = $("cmd-box");
     if (box) box.remove();
     autosize();
@@ -869,13 +895,27 @@
     try { list = await req("/templates"); tpls = list; } catch (e) { toast(e.message); }
     $("modal-card").innerHTML = `<h3>Шаблоны ответов</h3>
       <p>Нажмите на шаблон, чтобы вставить его. В поле сообщения можно набрать «/» и начало команды. Переменные {имя} {объект} {заезд} {выезд} подставляются из брони гостя.</p>
-      <div>${list.map((t) => `<div class="ib-tpl"><div class="ib-tpl__body" data-tpl-use="${t.id}"><b>${t.command ? '<i class="ib-cmdtag">/' + esc(t.command) + '</i> ' : ""}${esc(t.title)}</b><span>${esc(t.text)}</span></div>
+      <div>${list.map((t) => `<div class="ib-tpl"><div class="ib-tpl__body" data-tpl-use="${t.id}"><b>${t.command ? '<i class="ib-cmdtag">/' + esc(t.command) + '</i> ' : ""}${esc(t.title)}</b><span>${esc(t.text)}</span>${t.file ? `<em class="ib-tpl__file">📎 ${esc(t.file.file_name)}</em>` : ""}</div>
+        <button class="ib-icon" data-tpl-file="${t.id}" title="${t.file ? "Заменить файл" : "Прикрепить файл (PDF, фото) — уйдёт гостю вместе с текстом"}"><svg viewBox="0 0 24 24"><path d="M19 11.5l-7.2 7.2a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.4 7.4a1.5 1.5 0 0 1-2.1-2.1l6.6-6.6"/></svg></button>
+        ${t.file ? `<button class="ib-icon" data-tpl-unfile="${t.id}" title="Убрать файл из шаблона">📄✕</button>` : ""}
         <button class="ib-icon" data-tpl-del="${t.id}" title="Удалить"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>`).join("") || '<p>Пока нет шаблонов.</p>'}</div>
+      <input type="file" id="tpl-file-input" class="hidden" />
       <h3 style="margin-top:14px;font-size:16px">Новый шаблон</h3>
       <input class="ib-field" id="tpl-cmd" placeholder="Команда, например wifi (необязательно)" maxlength="30" />
       <input class="ib-field" id="tpl-title" placeholder="Название (например: Инструкция заезда)" maxlength="60" />
       <textarea class="ib-field" id="tpl-text" placeholder="Текст сообщения"></textarea>
+      <label class="ib-btn ib-filebtn"><input type="file" id="tpl-new-file" class="hidden" /><span id="tpl-new-file-name">📎 Прикрепить файл (PDF, фото)</span></label>
       <div class="ib-row"><button class="ib-btn" data-close>Закрыть</button><button class="ib-btn primary" data-tpl-add>Сохранить</button></div>`;
+    const nf = $("tpl-new-file");
+    nf.addEventListener("change", () => { $("tpl-new-file-name").textContent = nf.files[0] ? "📎 " + nf.files[0].name : "📎 Прикрепить файл (PDF, фото)"; });
+    const fi = $("tpl-file-input");
+    fi.addEventListener("change", async () => {
+      const file = fi.files[0], tid = fi.dataset.tid;
+      if (!file || !tid) return;
+      toast("Загружаю файл…");
+      try { const f = await uploadFile(file); await req(`/templates/${tid}/file`, { method: "POST", json: f }); toast("Файл прикреплён к шаблону"); openTemplates(); }
+      catch (err) { toast(err.message); }
+    });
     $("modal-card").dataset.tpls = JSON.stringify(list);
   }
 
@@ -1150,6 +1190,7 @@
     $("file").addEventListener("change", (e) => { sendFile(e.target.files[0]); e.target.value = ""; });
     $("tpl-btn").addEventListener("click", openTemplates);
     $("reply-cancel").addEventListener("click", () => { if (S.editing) setEdit(null); else setReply(null); });
+    $("attach-cancel").addEventListener("click", () => setAttach(null));
     $("wa-state").addEventListener("click", openConn);
     $("new-chat").addEventListener("click", openNewChat);
     $("ai-mode").addEventListener("change", async (e) => {
@@ -1266,9 +1307,18 @@
           const txt = fillVars(t.text);
           ta.value = ta.value ? ta.value + "\n" + txt : txt;
           autosize();
+          if (t.file) setAttach(tplAttach(t));
           closeModal();
           ta.focus();
         }
+        return;
+      }
+      const tf = e.target.closest("[data-tpl-file]");
+      if (tf) { const fi = $("tpl-file-input"); fi.dataset.tid = tf.dataset.tplFile; fi.value = ""; fi.click(); return; }
+      const tu = e.target.closest("[data-tpl-unfile]");
+      if (tu) {
+        if (!confirm("Убрать файл из шаблона? Текст останется.")) return;
+        try { await req(`/templates/${tu.dataset.tplUnfile}/file`, { method: "POST", json: {} }); openTemplates(); } catch (err) { toast(err.message); }
         return;
       }
       const del = e.target.closest("[data-tpl-del]");
@@ -1280,10 +1330,15 @@
       if (e.target.closest("[data-tpl-add]")) {
         const text = $("tpl-text").value.trim();
         if (!text) { toast("Введите текст шаблона"); return; }
+        const add = e.target.closest("[data-tpl-add]");
+        const file = $("tpl-new-file").files[0];
+        add.disabled = true;
         try {
-          await req("/templates", { method: "POST", json: { title: $("tpl-title").value.trim(), text, command: $("tpl-cmd").value.trim() } });
+          let f = {};
+          if (file) { toast("Загружаю файл…"); f = await uploadFile(file); }
+          await req("/templates", { method: "POST", json: { title: $("tpl-title").value.trim(), text, command: $("tpl-cmd").value.trim(), media: f.media || null, mime: f.mime || "", file_name: f.file_name || "" } });
           openTemplates();
-        } catch (err) { toast(err.message); }
+        } catch (err) { add.disabled = false; toast(err.message); }
         return;
       }
       if (e.target.closest("[data-nc-go]")) {

@@ -888,7 +888,8 @@ def guest_chats(b: dict, first: dict | None = None) -> list[dict]:
     return out
 
 
-def _send_everywhere(b: dict | None, first: dict, text_for: "callable", author: str) -> tuple[str, str | None, list[str]]:
+def _send_everywhere(b: dict | None, first: dict, text_for: "callable", author: str,
+                     file: dict | None = None) -> tuple[str, str | None, list[str]]:
     """Send to the primary chat and, when «auto_all_channels» is on, to every other
     chat of the same guest. Returns (status, error, titles of the chats reached)."""
     chats = [first] if not b or crm.get_setting("auto_all_channels", "1") != "1" else guest_chats(b, first)
@@ -898,7 +899,12 @@ def _send_everywhere(b: dict | None, first: dict, text_for: "callable", author: 
     sent, errors = [], []
     for c in chats:
         try:
-            inbox.send(c["id"], author, text_for(c))
+            if file:  # the step's file (PDF instruction) goes with the text
+                r = inbox.send_with_file(c["id"], author, text_for(c), file["media"], file.get("mime"), file.get("file_name"))
+                if r.get("file_error"):
+                    errors.append(f"{c.get('title')}: текст ушёл, файл «{file.get('file_name')}» — нет ({r['file_error']})")
+            else:
+                inbox.send(c["id"], author, text_for(c))
             sent.append(f"{c.get('title')} ({c.get('channel_name') or c.get('channel')})")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{c.get('title')}: {exc}")
@@ -1043,7 +1049,7 @@ def send_task_message(tid: int, who: str = "", force: bool = False) -> dict:
                 return fill(t["auto_text"], b, c, "ru") + "\n\n" + fill(t["auto_text_en"], b, c, "en")
             src, lg = (t["auto_text_en"], "en") if t["auto_text_en"] and guest_lang(c) not in ("RU", "UZ", "") else (t["auto_text"], "ru")
             return fill(src, b, c, lg)
-        status, error, reached = _send_everywhere(b, chat, text_for, who or AUTHOR)
+        status, error, reached = _send_everywhere(b, chat, text_for, who or AUTHOR, file=crm.task_file(dict(t)))
     with database.get_conn() as conn:
         if status == "sent":
             conn.execute("UPDATE crm_tasks SET status = 'done', done_at = ?, auto_status = ? WHERE id = ?",

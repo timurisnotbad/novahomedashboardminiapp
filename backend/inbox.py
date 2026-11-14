@@ -17,6 +17,7 @@ link from the bot (/chats), so every reply is signed with their name.
 import hashlib
 import hmac
 import logging
+import mimetypes
 import re
 import sqlite3
 import time
@@ -143,6 +144,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox_messages ADD COLUMN edited_at TEXT")  # the guest (or we) edited the message in the messenger
         if "deleted_at" not in mcols:
             conn.execute("ALTER TABLE inbox_messages ADD COLUMN deleted_at TEXT")  # we deleted it for the guest; the row stays
+        tcols = [r[1] for r in conn.execute("PRAGMA table_info(inbox_templates)").fetchall()]
+        for col in ("media", "mime", "file_name"):  # a file (PDF instruction, photo) that goes with the quick reply
+            if col not in tcols:
+                conn.execute(f"ALTER TABLE inbox_templates ADD COLUMN {col} TEXT")
         if "client_id" not in mcols:
             # the id the browser gave this reply: a repeat of the same request (the phone
             # lost the network before the answer came) finds the row instead of sending twice
@@ -243,6 +248,35 @@ def personal_key(uid: int) -> str:
 
 def media_sig(name: str) -> str:
     return _sig("media:" + name, 32)
+
+
+# ---- stored files: a PDF instruction on a quick reply or on a stay step ------------
+CAPTION_MAX = 900  # Telegram cuts a caption at 1024: a longer text goes as its own message, the file after it
+
+
+def store_upload(body: bytes, name: str, mime: str = "") -> dict:
+    """Keep an uploaded file next to the chat media; returns what `send` needs."""
+    name = (name or "").strip()[:120] or "file"
+    mime = (mime or "").split(";")[0].strip()
+    if not mime or mime == "application/octet-stream":  # phones often send no type for a PDF
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    ext = re.sub(r"[^A-Za-z0-9]", "", name.rsplit(".", 1)[-1])[:8] if "." in name else "bin"
+    stored = f"up{uuid.uuid4().hex}.{ext or 'bin'}"
+    config.INBOX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    (config.INBOX_MEDIA_DIR / stored).write_bytes(body)
+    return {"media": stored, "mime": mime, "file_name": name}
+
+
+def valid_media(media: str | None) -> bool:
+    return bool(media) and bool(re.fullmatch(r"[A-Za-z0-9._-]{1,120}", media)) and (config.INBOX_MEDIA_DIR / media).is_file()
+
+
+def file_out(media: str | None, mime: str | None = "", file_name: str | None = "") -> dict | None:
+    """An attachment as the pages show it (name + a link to open it)."""
+    if not media:
+        return None
+    return {"media": media, "mime": mime or "", "file_name": file_name or "Файл",
+            "url": f"{config.API_PREFIX}/inbox/media/{media}?s={media_sig(media)}"}
 
 
 def _uid_from_key(key: str):
@@ -1182,6 +1216,30 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
     return _msg_out(row)
 
 
+def send_with_file(chat_id: int, author: str, text: str = "", media: str | None = None, mime: str | None = None,
+                   file_name: str | None = None, quoted_id: str | None = None, client_id: str | None = None) -> dict:
+    """A text with a stored file (quick reply / stay step with a PDF). A short text
+    is the file's caption — one message; a long one goes first, the file right after
+    it (a caption that long is cut or refused by the messengers).
+
+    When the text is with the guest and the file is not, nothing is raised: the
+    answer carries «file_error», and the file sits in the chat with the red mark
+    and «повторить»."""
+    text = (text or "").strip()
+    if not media:
+        return send(chat_id, author, text, quoted_id=quoted_id, client_id=client_id)
+    if len(text) <= CAPTION_MAX:
+        return send(chat_id, author, text, media, mime, file_name, quoted_id=quoted_id, client_id=client_id)
+    first = send(chat_id, author, text, quoted_id=quoted_id, client_id=client_id)
+    if first.get("status") == "failed":  # a repeat of a text the channel refused: do not send the file alone
+        return first
+    try:
+        return send(chat_id, author, "", media, mime, file_name, client_id=(client_id + "-f") if client_id else None)
+    except BridgeError as exc:
+        first["file_error"] = str(exc)
+        return first
+
+
 def send_album(chat_id: int, author: str, caption: str, items: list) -> list[dict]:
     """Several photos at once: one Telegram album per 10 (the guest sees a
     gallery, not twenty separate messages); other channels get them one by one,
@@ -1493,9 +1551,32 @@ def start_chat(phone: str, name: str = "", channel: str = "wa") -> dict:
 
 def templates() -> list[dict]:
     with database.get_conn() as conn:
-        return [dict(r) for r in conn.execute(
+        return [_tpl_out(r) for r in conn.execute(
             "SELECT * FROM inbox_templates ORDER BY CASE WHEN command IS NULL OR command = '' THEN 1 ELSE 0 END, command, title, id"
         ).fetchall()]
+
+
+def template(tid: int) -> dict | None:
+    with database.get_conn() as conn:
+        r = conn.execute("SELECT * FROM inbox_templates WHERE id = ?", (tid,)).fetchone()
+    return _tpl_out(r) if r else None
+
+
+def _tpl_out(r) -> dict:
+    t = dict(r)
+    t["file"] = file_out(t.get("media"), t.get("mime"), t.get("file_name"))
+    return t
+
+
+def set_template_file(tid: int, f: dict | None) -> dict | None:
+    """f = {media, mime, file_name} from store_upload, or None to take the file off."""
+    if f and not valid_media(f.get("media")):
+        raise BridgeError("Файл не найден — прикрепите его ещё раз")
+    f = f or {}
+    with database.get_conn() as conn:
+        conn.execute("UPDATE inbox_templates SET media = ?, mime = ?, file_name = ? WHERE id = ?",
+                     (f.get("media") or None, f.get("mime") or None, (f.get("file_name") or "")[:120] or None, tid))
+    return template(tid)
 
 
 def delete_template(tid: int) -> None:

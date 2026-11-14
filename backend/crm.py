@@ -1278,6 +1278,8 @@ def _task_out(r, names, cmap, bmap=None) -> dict:
     t["booking"] = {"id": b["id"], "apartment": b.get("apartment_name"), "checkin": b.get("begin_date"), "checkout": b.get("end_date"),
                     "guest": b.get("client_name"), "label": _booking_label(b)} if b else None
     t["is_message"] = bool(t.get("auto_text"))
+    f = task_file(t)
+    t["file_name"] = f["file_name"] if f else None  # «📎 Инструкция.pdf» next to the message task
     return t
 
 
@@ -1540,13 +1542,41 @@ def _step_norm(x: dict) -> dict:
         off = int(x.get("offset") or 0)
     except (TypeError, ValueError):
         off = 0
-    return {"title": str(x.get("title") or "").strip()[:200], "anchor": anchor, "offset": max(-30, min(30, off)), "time": t,
-            "enabled": bool(x.get("enabled", True)), "message": str(x.get("message") or "").strip()[:3000], "message_en": str(x.get("message_en") or "").strip()[:3000]}
+    out = {"title": str(x.get("title") or "").strip()[:200], "anchor": anchor, "offset": max(-30, min(30, off)), "time": t,
+           "enabled": bool(x.get("enabled", True)), "message": str(x.get("message") or "").strip()[:3000], "message_en": str(x.get("message_en") or "").strip()[:3000]}
+    media = str(x.get("media") or "")
+    if media and out["message"]:  # a file goes with the step's message (PDF instruction); a task for a manager has none
+        from . import inbox
+        if inbox.valid_media(media):
+            f = inbox.file_out(media, str(x.get("mime") or ""), str(x.get("file_name") or "")[:120])
+            out.update(media=media, mime=f["mime"], file_name=f["file_name"], file_url=f["url"])
+    return out
+
+
+def step_key(title: str) -> str:
+    return hashlib.sha1((title or "").lower().encode()).hexdigest()[:10]
+
+
+_step_files_cache: dict = {"at": 0.0, "raw": None, "map": {}}
+
+
+def task_file(t: dict) -> dict | None:
+    """The file of the stay step this task was made from. Looked up when asked, not
+    copied into the task: a replaced PDF applies to the tasks of bookings made earlier."""
+    key = t.get("src_key") or ""
+    if not key.startswith("cl:") or not t.get("auto_text"):
+        return None
+    now = time.time()
+    if now - _step_files_cache["at"] > 5:
+        _step_files_cache.update(at=now, map={step_key(s["title"]): {"media": s["media"], "mime": s.get("mime"), "file_name": s.get("file_name")}
+                                              for s in steps() if s.get("media")})
+    return _step_files_cache["map"].get(key.rsplit(":", 1)[-1])
 
 
 def save_steps(items: list) -> list[dict]:
     norm = [_step_norm(x) for x in items if isinstance(x, dict) and (x.get("title") or "").strip()]
     set_setting("booking_steps", json.dumps(norm, ensure_ascii=False))
+    _step_files_cache["at"] = 0.0
     return norm
 
 
@@ -1615,7 +1645,7 @@ def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force:
         bo = _booking_out(b)
         stale = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
         for it in items:
-            key = f"cl:{bid}:{hashlib.sha1(it['title'].lower().encode()).hexdigest()[:10]}"
+            key = f"cl:{bid}:{step_key(it['title'])}"
             title = crm_ext.fill(it["title"], bo, None)
             due = _cl_due(it, b)
             # a «right away» step for a booking we have known for more than a
@@ -1923,17 +1953,21 @@ def bookings_grid(start: str, days: int = 30) -> dict:
 # Quick commands (inbox templates with /command + variables)
 # ---------------------------------------------------------------------------
 def commands() -> list[dict]:
-    with database.get_conn() as conn:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM inbox_templates ORDER BY CASE WHEN command IS NULL OR command = '' THEN 1 ELSE 0 END, command, title").fetchall()]
+    from . import inbox
+    return inbox.templates()
 
 
-def save_command(tid: int | None, command: str, title: str, text: str) -> dict:
+def save_command(tid: int | None, command: str, title: str, text: str, file: dict | None = None) -> dict:
+    """file: {media, mime, file_name} — media None = leave the attachment as it is, "" = take it off."""
+    from . import inbox
     command = re.sub(r"[^\w\-]", "", command.strip().lstrip("/").lower())[:30]
     text = text.strip()
     if not text:
         raise ValueError("Текст команды")
     title = title.strip() or (("/" + command) if command else text[:40])
+    media = (file or {}).get("media")
+    if media and not inbox.valid_media(media):
+        raise ValueError("Файл не найден — прикрепите его ещё раз")
     with database.get_conn() as conn:
         if command and conn.execute("SELECT 1 FROM inbox_templates WHERE command = ? AND id != ?", (command, tid or 0)).fetchone():
             raise ValueError(f"Команда /{command} уже есть")
@@ -1942,7 +1976,11 @@ def save_command(tid: int | None, command: str, title: str, text: str) -> dict:
         else:
             tid = conn.execute("INSERT INTO inbox_templates (command, title, text, created_at) VALUES (?, ?, ?, ?)",
                                (command or None, title, text, _now())).lastrowid
-        return dict(conn.execute("SELECT * FROM inbox_templates WHERE id = ?", (tid,)).fetchone())
+        if media is not None:
+            conn.execute("UPDATE inbox_templates SET media = ?, mime = ?, file_name = ? WHERE id = ?",
+                         (media or None, (file.get("mime") or None) if media else None,
+                          ((file.get("file_name") or "")[:120] or None) if media else None, tid))
+    return inbox.template(tid)
 
 
 def delete_command(tid: int) -> None:

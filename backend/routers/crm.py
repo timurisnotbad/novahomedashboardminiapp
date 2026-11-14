@@ -1186,6 +1186,21 @@ class CommandIn(BaseModel):
     command: str = ""
     title: str = ""
     text: str
+    media: str | None = None  # stored file from /files: None = as it was, "" = no file
+    mime: str = ""
+    file_name: str = ""
+
+
+def _cmd_file(payload: "CommandIn") -> dict:
+    return payload.model_dump(include={"media", "mime", "file_name"})
+
+
+@router.post("/files")
+async def upload_file(request: Request, user: dict = Depends(current_user)):  # noqa: B008
+    """Keep a file (PDF instruction, photo) for a quick command or a stay step; the
+    command / step is then saved with its `media`."""
+    from .inbox import read_upload
+    return await read_upload(request)
 
 
 @router.get("/commands")
@@ -1196,7 +1211,7 @@ def get_commands(user: dict = Depends(current_user)):  # noqa: B008
 @router.post("/commands")
 def add_command(payload: CommandIn, user: dict = Depends(current_user)):  # noqa: B008
     try:
-        return crm.save_command(None, payload.command, payload.title, payload.text)
+        return crm.save_command(None, payload.command, payload.title, payload.text, file=_cmd_file(payload))
     except ValueError as exc:
         _bad(exc)
 
@@ -1204,7 +1219,7 @@ def add_command(payload: CommandIn, user: dict = Depends(current_user)):  # noqa
 @router.put("/commands/{tid}")
 def put_command(tid: int, payload: CommandIn, user: dict = Depends(current_user)):  # noqa: B008
     try:
-        return crm.save_command(tid, payload.command, payload.title, payload.text)
+        return crm.save_command(tid, payload.command, payload.title, payload.text, file=_cmd_file(payload))
     except ValueError as exc:
         _bad(exc)
 
