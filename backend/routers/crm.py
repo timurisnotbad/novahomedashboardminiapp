@@ -1451,15 +1451,36 @@ def analytics_view(days: int = 30, start: str = "", end: str = "", user: dict = 
 
 
 @router.post("/integrations/rc_probe")
-async def rc_probe(user: dict = Depends(admin_user)):  # noqa: B008
-    """Which booking statuses RealtyCalendar answers to (and with how many events for the past 45 days)."""
+def rc_probe(user: dict = Depends(admin_user)):  # noqa: B008
+    """Which booking statuses RealtyCalendar answers to (and with how many events for the past 45 days).
+    32 requests + a sync take longer than a browser waits (and Cloudflare's 100 s): it runs in the
+    background, the page asks GET /integrations/rc_probe until the report is there."""
+    import json
+    from .. import bg
+
+    def go():
+        crm.set_setting("rc_probe_report", json.dumps({"state": "running", "at": crm._now()}))
+        try:
+            rep = rc_sync.probe_statuses()
+            rep["synced"] = rc_sync.sync_to_db()
+            rep["state"] = "done"
+        except Exception as exc:  # noqa: BLE001
+            rep = {"state": "error", "error": config.redact(str(exc))[:300]}
+        rep["at"] = crm._now()
+        crm.set_setting("rc_probe_report", json.dumps(rep, ensure_ascii=False, default=str))
+
+    if not bg.run(go, key="rc-probe"):
+        return {"state": "running"}
+    return {"state": "running"}
+
+
+@router.get("/integrations/rc_probe")
+def rc_probe_report(user: dict = Depends(admin_user)):  # noqa: B008
+    import json
     try:
-        rep = await asyncio.get_event_loop().run_in_executor(None, rc_sync.probe_statuses)
-        n = await asyncio.get_event_loop().run_in_executor(None, rc_sync.sync_to_db)
-        rep["synced"] = n
-        return rep
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
+        return json.loads(crm.get_setting("rc_probe_report", "") or '{"state": "none"}')
+    except ValueError:
+        return {"state": "none"}
 
 
 @router.post("/integrations/sync")

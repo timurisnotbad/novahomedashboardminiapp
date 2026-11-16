@@ -1278,12 +1278,14 @@ def log_sync(bookings_count: int, success: bool, error: str | None = None) -> No
 
 
 def last_sync() -> str | None:
+    """Local time of the last successful sync. sync_log.synced_at is SQLite's
+    CURRENT_TIMESTAMP — UTC: shown as is, the data always looked 5 hours old."""
     with get_conn() as conn:
         cur = conn.execute(
             "SELECT synced_at FROM sync_log WHERE success = 1 ORDER BY id DESC LIMIT 1"
         )
         row = cur.fetchone()
-        return row["synced_at"] if row else None
+        return _utc_to_local(row["synced_at"]) if row else None
 
 
 def sync_state() -> dict:

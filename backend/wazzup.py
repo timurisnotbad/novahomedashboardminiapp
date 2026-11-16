@@ -236,7 +236,7 @@ STATUS = {"sent": "sent", "delivered": "delivered", "read": "read", "error": "fa
 
 def handle_webhook(data: dict) -> None:
     from . import bg
-    bg.run(_handle, data)
+    bg.run(_handle, data, lane="in")
 
 
 def _handle(data: dict) -> None:

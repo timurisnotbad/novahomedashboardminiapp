@@ -104,7 +104,7 @@ def is_owner(raw: str, owner_key: str = "") -> bool:
 
 
 # FastAPI dependency for owner-only endpoints (finance, guests, prices).
-async def owner_guard(
+def owner_guard(
     x_telegram_init_data: str = Header(default=""),  # noqa: B008
     x_owner_key: str = Header(default=""),  # noqa: B008
 ):
@@ -173,7 +173,7 @@ def has_access(raw: str, key: str = "") -> bool:
 
 
 # FastAPI dependency applied to every data endpoint.
-async def access_guard(
+def access_guard(
     x_telegram_init_data: str = Header(default=""),  # noqa: B008
     x_owner_key: str = Header(default=""),  # noqa: B008
 ):
@@ -182,7 +182,7 @@ async def access_guard(
 
 
 # FastAPI dependency for the payments reconciliation endpoints.
-async def pay_guard(
+def pay_guard(
     x_telegram_init_data: str = Header(default=""),  # noqa: B008
     x_owner_key: str = Header(default=""),  # noqa: B008
 ):

@@ -8,13 +8,18 @@ from concurrent.futures import ThreadPoolExecutor
 logger = logging.getLogger("nova.bg")
 
 _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="nova-bg")
+# incoming guest messages (Wazzup / Meta webhooks) have their own lane: they must
+# never wait behind slow outgoing work (Telegram alerts when Telegram is down,
+# web pushes, AI drafts, voice transcription)
+_in_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="nova-in")
 _inflight: set = set()
 _lock = threading.Lock()
 
 
-def run(fn, *args, key=None, **kwargs) -> bool:
+def run(fn, *args, key=None, lane: str = "", **kwargs) -> bool:
     """Queue fn(*args, **kwargs). With `key`, a job with the same key that is
-    still queued or running is not added again (returns False)."""
+    still queued or running is not added again (returns False).
+    lane="in": incoming messages, a pool of their own."""
     if key is not None:
         with _lock:
             if key in _inflight:
@@ -31,7 +36,7 @@ def run(fn, *args, key=None, **kwargs) -> bool:
                 with _lock:
                     _inflight.discard(key)
 
-    _pool.submit(wrapped)
+    (_in_pool if lane == "in" else _pool).submit(wrapped)
     return True
 
 

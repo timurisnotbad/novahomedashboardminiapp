@@ -699,7 +699,7 @@
       const s = e.target.closest("[data-step]");
       if (s) { const k = st.view === "day" ? "date" : "start"; const d = new Date(st[k] + "T00:00"); const n = parseInt(s.dataset.step, 10); d.setDate(d.getDate() + (Math.abs(n) === 4 ? Math.sign(n) * (st.view === "day" ? 7 : 28) : n * (st.view === "day" ? 1 : 7))); st[k] = iso(d); navigate(); return; }
       if (e.target.id === "bk-today") { st.date = st.start = todayIso(); navigate(); return; }
-      if (e.target.id === "bk-sync") { busy(e.target, async () => { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); navigate(); }); return; }
+      if (e.target.id === "bk-sync") { busy(e.target, async () => { const r = await api("/integrations/sync", { method: "POST", json: {}, timeoutMs: 120000 }); toast(`Обновлено: ${r.bookings} броней`); navigate(); }); return; }
       const bd = e.target.closest("[data-bdeal]"); if (bd) { e.preventDefault(); try { await loadPipelines(); const d = await post(`/bookings/${bd.dataset.bdeal}/deal`); openDeal(d.id); } catch (err) { toast(err.message); } return; }
       const tm = e.target.closest("[data-time]"); if (tm) { e.preventDefault(); quickTime(parseInt(tm.dataset.time, 10), tm.dataset.kind); return; }
       const bo = e.target.closest("[data-bopen]"); if (bo) { e.preventDefault(); openBooking(parseInt(bo.dataset.bopen, 10)); }
@@ -905,7 +905,7 @@
     showTab(tab);
     $("itabs").addEventListener("click", (e) => { const b = e.target.closest("[data-itab]"); if (b) showTab(b.dataset.itab); });
     const lb = $("i-leads"); if (lb) lb.addEventListener("click", (e) => busy(e.currentTarget, async () => { const r = await post("/leads/backfill"); const t = r.telegram || {}; toast(`Чатов: ${r.chats}, телефонов найдено в переписках: ${r.phones_found}${t.ok ? `, Telegram-профилей обновлено: ${t.updated} из ${t.checked}` : t.error ? ` · Telegram: ${t.error}` : ""}`); }));
-    $("i-sync").addEventListener("click", (e) => { const btn = e.currentTarget; busy(btn, async () => { btn.textContent = "Синхронизация…"; try { const r = await post("/integrations/sync"); toast(`Обновлено: ${r.bookings} броней`); } finally { btn.textContent = "Синхронизировать сейчас"; } navigate(); }); });
+    $("i-sync").addEventListener("click", (e) => { const btn = e.currentTarget; busy(btn, async () => { btn.textContent = "Синхронизация…"; try { const r = await api("/integrations/sync", { method: "POST", json: {}, timeoutMs: 120000 }); toast(`Обновлено: ${r.bookings} броней`); } finally { btn.textContent = "Синхронизировать сейчас"; } navigate(); }); });
     const rb = $("i-rates"); if (rb) rb.addEventListener("click", (e) => busy(e.currentTarget, async () => {
       const r = await post("/rc/rates/sync");
       $("i-rates-line").textContent = ratesLine(r.status); $("i-rates-line").className = "small " + (r.status && r.status.rows ? "ok" : "warn");
@@ -932,7 +932,16 @@
         ${u.outages.length ? `<div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th>Не работал</th><th>Сколько</th><th>Что это было</th><th>Причина</th></tr></thead><tbody>${u.outages.map((o) => `<tr><td class="small">${esc(dtShort(o.down_from))} – ${esc(dtShort(o.up_at))}</td><td>${o.minutes < 60 ? o.minutes + " мин" : Math.floor(o.minutes / 60) + " ч " + (o.minutes % 60) + " мин"}</td><td><span class="tag ${(K[o.kind] || K.unknown)[1]}">${(K[o.kind] || K.unknown)[0]}</span></td><td class="small" style="white-space:normal">${esc(o.reason || "")}${o.details ? `<details><summary class="muted">журнал</summary><div class="muted" style="white-space:pre-wrap">${esc(o.details.replace(/ \| /g, "\n"))}</div></details>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<div style="margin-top:6px">Перерывов пока не зафиксировано. Учёт идёт с момента установки этой версии: при каждом запуске сервер сравнивает время с последней отметкой и записывает причину из журнала Windows.</div>`}`;
     }).catch(() => { if ($("up-body")) $("up-body").textContent = "Не удалось загрузить"; });
     const pr = $("i-probe"); if (pr) pr.addEventListener("click", (e) => busy(e.currentTarget, async () => {
-      const r = await post("/integrations/rc_probe");
+      await post("/integrations/rc_probe");  // runs in the background: 32 requests to the calendar take a few minutes
+      toast("Проверяю статусы в RealtyCalendar — это займёт до пары минут…");
+      let r = null;
+      for (let i = 0; i < 90; i++) {
+        await new Promise((ok) => setTimeout(ok, 3000));
+        try { r = await get("/integrations/rc_probe"); } catch (err) { continue; }
+        if (r.state !== "running") break;
+      }
+      if (!r || r.state === "running") { toast("Проверка ещё идёт — нажмите кнопку ещё раз через минуту"); return; }
+      if (r.state === "error") { toast("Проверка не удалась: " + (r.error || "")); return; }
       modal(`<h2>Статусы броней в RealtyCalendar</h2><p class="muted small">Запросы за ${esc(dShort(r.from))} – ${esc(dShort(r.to))}. Теперь CRM запрашивает статусы: <b>${esc((r.request || []).join(", "))}</b>. Синхронизировано броней: ${r.synced}.</p>
         <div class="table-wrap"><table class="table"><thead><tr><th>Статус в запросе</th><th>Ответ</th><th>Броней</th><th>Статусы в ответе</th></tr></thead><tbody>${r.rows.map((x) => `<tr class="${x.events ? "" : "muted"}"><td>${esc(x.status)}</td><td>${x.error ? `<span class="bad">${esc(x.error)}</span>` : x.http}</td><td>${x.events}</td><td class="small">${esc(Object.entries(x.seen || {}).map(([k, v]) => `${k}: ${v}`).join(", "))}</td></tr>`).join("")}</tbody></table></div>
         <div class="row-actions"><button class="btn primary" data-close>Закрыть</button></div>`, true);

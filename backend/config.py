@@ -19,8 +19,10 @@ def _clean_value(raw: str) -> str:
     """'15   # comment' -> '15'; '"abc"' -> 'abc'. A .env copied from
     .env.example keeps the inline comments — they must not become values."""
     v = raw.strip()
-    if len(v) >= 2 and v[0] in "\"'" and v.endswith(v[0]):
-        return v[1:-1]
+    if len(v) >= 2 and v[0] in "\"'":
+        end = v.find(v[0], 1)  # '"abc"   # comment' → abc (the comment after the quotes was kept with them)
+        if end > 0 and (end == len(v) - 1 or v[end + 1:].lstrip().startswith("#")):
+            return v[1:end]
     v = re.split(r"\s+#", v, maxsplit=1)[0].strip()
     return "" if v.startswith("#") else v
 
@@ -397,7 +399,8 @@ def redact(text: str) -> str:
     an error shown in the UI (bot tokens travel inside Bot API URLs)."""
     out = str(text or "")
     for sec in (BOT_TOKEN, TG_GUEST_BOT_TOKEN, WAZZUP_API_KEY, INBOX_SECRET, APP_SECRET, RC_TOKEN, OWNER_KEY, PAY_KEY,
-                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY, OPENAI_API_KEY):
+                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY, OPENAI_API_KEY,
+                CRM_BOT_TOKEN):
         if sec and len(sec) >= 8:
             out = out.replace(sec, "***")
     return out

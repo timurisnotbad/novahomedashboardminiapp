@@ -12,6 +12,7 @@ collecting a "🔄 График изменился" message every 15 minutes.
 """
 import hashlib
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -40,26 +41,46 @@ def split_text(text: str, limit: int = _LIMIT) -> list[str]:
     return parts or [""]
 
 
+_tls = threading.local()  # the last Bot API refusal, per thread (6 workers send at once)
+_net = {"fails": 0, "down_until": 0.0}  # Telegram unreachable: stop waiting on it for a minute
+
+
+def _last_err() -> str:
+    return getattr(_tls, "err", "")
+
+
 def _call(method: str, payload: dict, token: str | None = None):
-    """One Bot API call with up to 3 attempts; honours Telegram's retry_after.
-    Returns the `result` object on success, None on failure (the description is
-    logged; `_last_error` carries it for callers that need to branch)."""
-    global _last_error
-    _last_error = ""
+    """One Bot API call; honours Telegram's retry_after. Returns the `result`
+    object on success, None on failure (the description is logged; `_last_err()`
+    carries it for callers that need to branch).
+
+    Telegram unreachable (no internet, blocked): one quick retry, then for a
+    minute every call fails at once. Three slow attempts per chat used to hold
+    a background worker ~40 s each, and incoming guest messages queued behind them."""
+    _tls.err = ""
+    if time.time() < _net["down_until"]:
+        _tls.err = "telegram unreachable"
+        return None
     url = _API.format(token=token or config.BOT_TOKEN, method=method)
     for attempt in range(3):
         try:
             resp = requests.post(url, json=payload, timeout=10)
         except requests.RequestException as exc:
             logger.warning("%s to %s failed (%s), attempt %d", method, payload.get("chat_id"), exc, attempt + 1)
-            time.sleep(2 * (attempt + 1))
+            _net["fails"] += 1
+            if _net["fails"] >= 2:
+                _net["down_until"] = time.time() + 60
+                _tls.err = "telegram unreachable"
+                return None
+            time.sleep(1)
             continue
+        _net["fails"] = 0
         if resp.status_code == 200:
             try:
                 return resp.json().get("result", True)
             except ValueError:
                 return True
-        if resp.status_code == 429:
+        if resp.status_code == 429 and attempt < 2:
             try:
                 wait = int(resp.json().get("parameters", {}).get("retry_after", 3))
             except Exception:  # noqa: BLE001
@@ -68,16 +89,13 @@ def _call(method: str, payload: dict, token: str | None = None):
             time.sleep(min(wait, 30))
             continue
         try:
-            _last_error = str(resp.json().get("description", ""))
+            _tls.err = str(resp.json().get("description", ""))
         except ValueError:
-            _last_error = resp.text[:200]
+            _tls.err = resp.text[:200]
         logger.warning("%s to %s rejected: %s %s", method, payload.get("chat_id"),
-                       resp.status_code, _last_error[:200])
+                       resp.status_code, _tls.err[:200])
         return None  # 400/403 (blocked bot, bad chat) — retrying won't help
     return None
-
-
-_last_error = ""
 
 
 def _thread_for(chat_id: int, topic: str | None):
@@ -207,7 +225,7 @@ def send_replacing(key: str, text: str, targets=None, topic: str | None = None,
                 "chat_id": chat_id, "message_id": prev["message_id"],
                 "text": chunks[0], "disable_web_page_preview": True,
             })
-            if res is not None or "not modified" in _last_error.lower():
+            if res is not None or "not modified" in _last_err().lower():
                 try:
                     database.set_bot_message(key, chat_id, prev["message_id"], digest)
                 except Exception:  # noqa: BLE001

@@ -209,7 +209,10 @@ async def wait_for_change(since: int, timeout: float) -> None:
             # (duplicate wa_id) the DB is behind it and every poll would
             # return at once with nothing — confirm against the DB first
             try:
-                real = await asyncio.get_running_loop().run_in_executor(None, current_rev)
+                # one indexed read; WAL readers never wait for writers. Through the shared
+                # thread pool it queued behind minute-long syncs and price scrapes and the
+                # long-poll overran the browser's 40 s → «Нет связи с сервером»
+                real = current_rev()
             except Exception:  # noqa: BLE001
                 return
             if real > since:

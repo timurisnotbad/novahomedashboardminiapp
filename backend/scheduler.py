@@ -174,7 +174,9 @@ def start() -> None:
     global _scheduler
     if _scheduler is not None:
         return
-    _scheduler = BackgroundScheduler(daemon=True)
+    # misfire grace: the default 1 s silently dropped the 22:00 plan and the nightly
+    # backup whenever the laptop slept or the scheduler woke a little late
+    _scheduler = BackgroundScheduler(daemon=True, job_defaults={"misfire_grace_time": 3600, "coalesce": True})
     _scheduler.add_job(
         _job,
         "interval",

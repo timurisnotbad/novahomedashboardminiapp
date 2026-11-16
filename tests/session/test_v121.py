@@ -77,14 +77,22 @@ config.OWNER_TELEGRAM_IDS = [555]
 t0 = datetime(2026, 11, 16, 10, 0); watchdog._STARTED = t0 - timedelta(hours=1)
 HB = [(t0, "ok")]; watchdog.read_heartbeat = lambda: HB[0]
 CALLS.clear()
-assert watchdog.check_bot(t0 + timedelta(minutes=1)) is None
-assert watchdog.check_bot(t0 + timedelta(minutes=30)).startswith("🔴")            # dead: first alert
-assert watchdog.check_bot(t0 + timedelta(minutes=41)) is None
-assert watchdog.check_bot(t0 + timedelta(minutes=52)).startswith("⚠️")             # after three revives
+LAST = [t0]
+def upto(t):  # the watchdog runs every minute: walk there minute by minute, return what was sent
+    out = [];
+    while LAST[0] < t:
+        LAST[0] += timedelta(minutes=1); r = watchdog.check_bot(LAST[0]); out += [r] if r else []
+    return out
+assert upto(t0 + timedelta(minutes=1)) == []
+r = upto(t0 + timedelta(minutes=52))
+assert len(r) == 2 and r[0].startswith("🔴") and r[1].startswith("⚠️"), r   # dead: first alert, then after three revives
+# the computer slept: no check for 2 hours → no revive / alert at once, a few minutes of grace
+
+
 sends = [c for c in CALLS if c[0] == "sendMessage" and c[1] == 555]; dels = [c for c in CALLS if c[0] == "deleteMessage" and c[1] == 555]
 assert len(sends) == 2 and len(dels) == 1, CALLS                                   # the second replaced the first
-HB[0] = (t0 + timedelta(minutes=70), "ok"); CALLS.clear()
-assert watchdog.check_bot(t0 + timedelta(minutes=71)).startswith("🟢")
+upto(t0 + timedelta(minutes=70)); HB[0] = (t0 + timedelta(minutes=70), "ok"); CALLS.clear()
+r = upto(t0 + timedelta(minutes=71)); assert r and r[0].startswith("🟢"), r
 assert [c[0] for c in CALLS if c[1] == 555] == ["editMessageText"] and "до 11:11" in CALLS[0][4], CALLS
 SS = [{"minutes": 90, "fails": 4, "last_ok": "2026-11-16T08:00:00", "error": "401"}]
 services.sync_staleness = lambda: SS[0]; services.fmt_local = lambda v: "16.11 08:00"
@@ -96,3 +104,12 @@ print("v121 tests OK")
 if "-v" in sys.argv:
     CALLS.clear(); clock[0] = datetime(2026, 11, 17, 2, 20); ping("notab"); print(CALLS[-1][4])
     CALLS.clear(); clock[0] = datetime(2026, 11, 17, 3, 5); ping("ok"); print(CALLS[-1][4])
+# the computer slept 2 hours: the first check after waking neither revives nor alerts; a few minutes of grace
+watchdog._state.update(alerted=False, revived_at=None, revives=0, second_alert=False, checked_at=datetime(2026, 11, 16, 20, 0))
+HB[0] = (datetime(2026, 11, 16, 20, 0), "ok"); CALLS.clear()
+assert watchdog.check_bot(datetime(2026, 11, 16, 22, 0)) is None and watchdog.revive_bot  # woke
+LAST[0] = datetime(2026, 11, 16, 22, 0)
+assert upto(datetime(2026, 11, 16, 22, 3)) == [] and not CALLS
+HB[0] = (datetime(2026, 11, 16, 22, 10), "ok")     # the bot writes its mark every minute after waking
+assert upto(datetime(2026, 11, 16, 22, 10)) == [] and not CALLS
+print("v121 sleep test OK")

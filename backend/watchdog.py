@@ -197,6 +197,15 @@ def check_bot(now: datetime | None = None) -> str | None:
     owners = config.OWNER_TELEGRAM_IDS or None
     if (now - _STARTED).total_seconds() < START_GRACE_MIN * 60:
         return None
+    prev, _state["checked_at"] = _state.get("checked_at"), now
+    if prev is not None and (now - prev).total_seconds() > 180:
+        # this check itself did not run for minutes: the whole computer slept. The bot's
+        # mark is as old as the sleep, but the bot is waking up too — give it a few
+        # minutes instead of killing it mid-backlog with a false red alert
+        _state["woke_at"] = now
+        return None
+    if _state.get("woke_at") and (now - _state["woke_at"]).total_seconds() < START_GRACE_MIN * 60:
+        return None
     ts, state = read_heartbeat()
     if ts is None:
         ts, state = _STARTED, "MISSING"  # the bot has not written a single mark since the server started

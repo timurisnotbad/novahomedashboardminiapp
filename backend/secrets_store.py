@@ -6,6 +6,7 @@ derived from BOT_TOKEN — and from the constant «dev-inbox» when the bot was
 not configured. Now a random root is generated once and kept in
 data/secrets.json (0600); env variables still win when set explicitly."""
 import json
+import time
 import logging
 import os
 import secrets
@@ -19,12 +20,21 @@ KEYS = ("app_secret", "inbox_secret")
 def load(data_dir: Path) -> dict:
     path = data_dir / "secrets.json"
     data: dict = {}
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except Exception:  # noqa: BLE001
-        logger.exception("secrets.json unreadable — regenerating")
-        data = {}
+    unreadable = False
+    for attempt in range(6):  # the other process may be replacing the file / an antivirus holds it
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8") or "{}")
+            unreadable = False
+            break
+        except Exception:  # noqa: BLE001
+            unreadable = True
+            time.sleep(0.5)
+    if unreadable:
+        # never overwrite: a fresh set of keys logs everyone out, breaks the WhatsApp
+        # bridge's hook key and loses the stored API keys. Run on temporary keys instead.
+        logger.error("secrets.json unreadable — using temporary keys for this run, the file is left as it is")
+        return {k: secrets.token_hex(32) for k in KEYS}
     changed = False
     for k in KEYS:
         if not isinstance(data.get(k), str) or len(data[k]) < 32:

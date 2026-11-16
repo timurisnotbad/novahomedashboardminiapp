@@ -317,7 +317,7 @@ def ig_status() -> dict:
 def handle_webhook(data: dict) -> None:
     """Runs in the background pool: Meta expects a fast 200, media downloads can be slow."""
     from . import bg
-    bg.run(_handle, data)
+    bg.run(_handle, data, lane="in")
 
 
 def _handle(data: dict) -> None:

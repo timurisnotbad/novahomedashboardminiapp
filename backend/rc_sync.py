@@ -7,6 +7,7 @@ import json
 import logging
 import random
 import re
+import threading
 from datetime import date, datetime, timedelta
 
 import requests
@@ -308,7 +309,22 @@ def fetch_bookings(date_from: date, date_to: date, apartment_ids: list | None = 
     return [merged[k] for k in order]
 
 
+_sync_lock = threading.Lock()
+
+
 def sync_to_db() -> int:
+    """One sync at a time in this process: the scheduler, the startup sync, the
+    «Синхронизировать» buttons and the probe used to run side by side and double
+    the load on RealtyCalendar. A caller that finds one running waits for it."""
+    if not _sync_lock.acquire(timeout=240):
+        raise RuntimeError("предыдущая синхронизация ещё идёт")
+    try:
+        return _sync_to_db()
+    finally:
+        _sync_lock.release()
+
+
+def _sync_to_db() -> int:
     """Main sync entry point — called on startup and every N minutes.
 
     Both the demo seeder and the live RC fetch return the *complete* set of
@@ -350,7 +366,10 @@ def sync_to_db() -> int:
             logger.info("sync: %d written, %d removed, %d missing (pending)", stats["written"], stats["removed"], stats["missing"])
         database.log_sync(len(bookings), True)
         if not config.DEMO_MODE:
-            _sync_history(today)
+            # the 3-year history and the daily status probe (dozens of RC requests) run
+            # in the background: the sync itself — and every button waiting on it — stays short
+            from . import bg
+            bg.run(_sync_history, today, key="rc-history")
         return len(bookings)
     except Exception as exc:  # noqa: BLE001 - log failure, keep the app alive
         database.log_sync(0, False, f"{type(exc).__name__}: {exc}")
@@ -378,21 +397,44 @@ def _sync_history(today: date) -> None:
     key = "rc_history_synced"
     if (crm.get_setting(key) or "")[:10] == today.isoformat():
         return
+    # the bot process syncs too: whoever started the history first today does it
+    claim = crm.get_setting("rc_history_claim", "") or ""
+    now = datetime.now()
+    if claim[:10] == today.isoformat():
+        try:
+            if (now - datetime.fromisoformat(claim[:19])).total_seconds() < 1800:
+                return
+        except ValueError:
+            pass
+    crm.set_setting("rc_history_claim", now.isoformat(timespec="seconds"))
+    # chunks that came through today are not asked again: one failing old range used
+    # to repeat all 18 chunks on every 15-minute sync
+    try:
+        state = json.loads(crm.get_setting("rc_history_chunks", "") or "{}")
+    except ValueError:
+        state = {}
+    done = set(state.get("done") or []) if state.get("day") == today.isoformat() else set()
     end = today - timedelta(days=config.SYNC_DAYS_BACK + 1)
     start = today - timedelta(days=HISTORY_DAYS)
     total, ok = 0, True
     cur = start
     while cur <= end:
         nxt = min(cur + timedelta(days=HISTORY_CHUNK - 1), end)
-        try:
-            rows = fetch_bookings(cur, nxt)
-            if rows:
-                database.upsert_bookings(rows)
-            total += len(rows)
-        except Exception as exc:  # noqa: BLE001
-            ok = False
-            logger.warning("history sync %s..%s failed: %s", cur, nxt, exc)
+        if cur.isoformat() not in done:
+            try:
+                rows = fetch_bookings(cur, nxt)
+                if rows:
+                    database.upsert_bookings(rows)
+                total += len(rows)
+                done.add(cur.isoformat())
+                crm.set_setting("rc_history_chunks", json.dumps({"day": today.isoformat(), "done": sorted(done)}))
+            except Exception as exc:  # noqa: BLE001
+                ok = False
+                logger.warning("history sync %s..%s failed: %s", cur, nxt, exc)
         cur = nxt + timedelta(days=1)
+    if not ok:
+        # a failed range is tried again in an hour, not on every sync
+        crm.set_setting("rc_history_claim", (now + timedelta(minutes=30)).isoformat(timespec="seconds"))
     if ok:
         crm.set_setting(key, today.isoformat())
         logger.info("history sync: %d past bookings", total)
