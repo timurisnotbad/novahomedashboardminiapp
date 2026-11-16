@@ -114,8 +114,8 @@ def ping(info: dict) -> None:
         _state["errors"] = ([str(info["error"])[:200]] + _state["errors"])[:5]
     if _state["session"] in ("login", "notab"):
         _alert_session(_state["session"])
-    else:
-        _state["alerted"] = ""
+    elif session == "ok" and _state.get("alerted"):  # «expired» = the extension is reloading the page: not over yet
+        _resolve_session()
     if session == "ok" and _state.get("gap_since"):
         start_catchup(_state["gap_since"], "после сбоя связи")
         _state["gap_since"] = None
@@ -170,19 +170,52 @@ def catchup_progress(found_more: bool, deep: bool) -> None:
             _finish_catchup("всё прочитано")
 
 
+ALERT_KEY = "booking_session"
+ALERT_EVERY_S = 3600
+
+
 def _alert_session(kind: str) -> None:
-    """Telegram to the owner, once per hour, while a person is needed at the extranet."""
-    from . import config as _cfg, notify
+    """Telegram to the owner while a person is needed at the extranet: at once, then a
+    reminder every hour. Each reminder deletes the previous one (the phone still rings),
+    so the chat holds one warning, not a column of them."""
     stamp = _state.get("alerted") or ""
-    if stamp.startswith(kind) and (datetime.now() - datetime.fromisoformat(stamp.split("|", 1)[1])).total_seconds() < 3600:
+    if stamp.startswith(kind + "|") and (datetime.now() - datetime.fromisoformat(stamp.split("|", 1)[1])).total_seconds() < ALERT_EVERY_S:
         return
-    _state["alerted"] = f"{kind}|{datetime.now().isoformat(timespec='seconds')}"
+    now = datetime.now()
+    _state["alerted"] = f"{kind}|{now.isoformat(timespec='seconds')}"
+    if not stamp:
+        _state["alert_since"] = now.isoformat(timespec="seconds")
+    since = datetime.fromisoformat(_state.get("alert_since") or now.isoformat(timespec="seconds"))
+    mins = int((now - since).total_seconds() // 60)
+    lasting = f" (с {since:%H:%M}{', уже ' + _dur(mins) if mins >= 60 else ''})" if mins >= 1 else ""
     try:
-        if _cfg.BOT_TOKEN and _cfg.notify_targets():
-            from . import alerts
-            alerts.broadcast("system", f"⚠️ Booking.com: {SESSION_TEXT[kind]}. Пока это не сделано, сообщения гостей Booking не приходят в CRM.")
+        from . import alerts, config as _cfg
+        if _cfg.BOT_TOKEN:
+            alerts.broadcast("system", f"⚠️ Booking.com: {SESSION_TEXT[kind]}{lasting}. Пока это не сделано, сообщения гостей Booking не приходят в CRM.",
+                             replace=ALERT_KEY)
     except Exception:  # noqa: BLE001
         logger.exception("session alert failed")
+
+
+def _dur(mins: int) -> str:
+    h, m = divmod(mins, 60)
+    return f"{h} ч {m} мин" if h and m else f"{h} ч" if h else f"{m} мин"
+
+
+def _resolve_session() -> None:
+    """The extranet answers again: the last warning becomes «✅ снова на связи» (an edit, no ring)."""
+    since = _state.get("alert_since")
+    _state["alerted"] = ""
+    _state["alert_since"] = None
+    try:
+        from . import alerts, config as _cfg
+        if not _cfg.BOT_TOKEN:
+            return
+        now = datetime.now()
+        was = f" Перерыв: {datetime.fromisoformat(since):%H:%M}–{now:%H:%M}." if since else ""
+        alerts.resolve(ALERT_KEY, f"✅ Booking.com снова на связи ({now:%d.%m %H:%M}).{was} Сообщения гостей, пришедшие за это время, CRM дочитывает сама.")
+    except Exception:  # noqa: BLE001
+        logger.exception("session resolve failed")
 
 
 def status() -> dict:

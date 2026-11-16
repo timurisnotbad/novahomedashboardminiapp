@@ -132,6 +132,50 @@ def _hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
+def repost(key: str, text: str, targets=None, topic: str | None = None, token: str | None = None) -> None:
+    """A status that repeats (Booking.com disconnected, …): the previous message for
+    `key` is deleted and a new one sent — the phone rings as with any message, and the
+    chat keeps one line instead of a column of identical warnings."""
+    token = token or config.BOT_TOKEN
+    ids = targets if targets is not None else config.notify_targets()
+    if not token or not ids or not text:
+        return
+    chunks = split_text(text)
+
+    def _run():
+        for chat_id in ids:
+            try:
+                prev = database.get_bot_message(key, chat_id)
+                if prev and prev.get("message_id"):
+                    _call("deleteMessage", {"chat_id": chat_id, "message_id": prev["message_id"]}, token)
+                mid = _deliver(chat_id, chunks, _thread_for(chat_id, topic), token)
+                if mid:
+                    database.set_bot_message(key, chat_id, mid, _hash(text))
+            except Exception:  # noqa: BLE001
+                logger.exception("repost %s to %s failed", key, chat_id)
+
+    from . import bg
+    bg.run(_run)
+
+
+def edit_posted(key: str, text: str, token: str | None = None) -> None:
+    """Rewrite the last message posted by `repost(key)` everywhere (silently — an edit
+    does not ring): «⚠️ отключён» becomes «✅ снова на связи». The row stays, so the
+    next `repost` removes this line too."""
+    token = token or config.BOT_TOKEN
+    if not token or not text:
+        return
+
+    def _run():
+        for row in database.bot_messages_for(key):
+            if _call("editMessageText", {"chat_id": row["chat_id"], "message_id": row["message_id"], "text": text,
+                                         "disable_web_page_preview": True}, token) is not None:
+                database.set_bot_message(key, row["chat_id"], row["message_id"], _hash(text))
+
+    from . import bg
+    bg.run(_run)
+
+
 def send_replacing(key: str, text: str, targets=None, topic: str | None = None,
                    dedupe: str | None = None) -> None:
     """Deliver `text` as THE message for `key` in each chat.

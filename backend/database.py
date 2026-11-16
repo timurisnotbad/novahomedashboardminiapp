@@ -862,6 +862,11 @@ def set_bot_message(key: str, chat_id: int, message_id: int, text_hash: str) -> 
         )
 
 
+def bot_messages_for(key: str) -> list[dict]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM bot_messages WHERE key = ?", (key,)).fetchall()]
+
+
 def prune_bot_messages(before_iso: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM bot_messages WHERE sent_at < ?", (before_iso,))

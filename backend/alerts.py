@@ -59,16 +59,33 @@ def targets(kind: str, uids=None) -> list[int]:
     return out
 
 
-def broadcast(kind: str, text: str, base=None, uids=None, topic: str | None = None) -> None:
+def broadcast(kind: str, text: str, base=None, uids=None, topic: str | None = None, replace: str | None = None) -> None:
     """The usual targets (base: the owner's chats by default) get it from the dashboard bot; the users who
-    chose this kind get it from the CRM bot — one copy per person."""
+    chose this kind get it from the CRM bot — one copy per person.
+
+    replace=key: a repeating status — each new copy deletes the previous one with the
+    same key (notify.repost), so the chat does not fill up; `resolve(key, …)` later
+    turns the last copy into the «всё в порядке» line."""
     from . import notify
     personal = list(dict.fromkeys(targets(kind, uids)))
     base_list = [t for t in dict.fromkeys(list(base) if base is not None else list(config.notify_targets())) if t not in personal]
+    if replace:
+        if base_list:
+            notify.repost(replace, text, targets=base_list, topic=topic)
+        if personal:
+            notify.repost(replace + ":crm", text, targets=personal, token=config.crm_bot_token())
+        return
     if base_list:
         notify.send(text, targets=base_list, topic=topic)
     if personal:
         notify.send(text, targets=personal, token=config.crm_bot_token())
+
+
+def resolve(key: str, text: str) -> None:
+    """The problem behind broadcast(..., replace=key) is gone: its last message is edited into `text`."""
+    from . import notify
+    notify.edit_posted(key, text)
+    notify.edit_posted(key + ":crm", text, token=config.crm_bot_token())
 
 
 def task_reminders() -> int:
