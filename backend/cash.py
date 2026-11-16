@@ -16,6 +16,7 @@ before/after, and the owner is told about each one in Telegram.
 """
 import json
 import logging
+import threading
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -267,6 +268,9 @@ def _bookings_for(apartments: list[str], stay: dict | None) -> dict:
             rows = [b for b in database.get_bookings(ci, ci, apartment=a) if (b.get("status") or "") not in ("cancelled", "canceled")]
         except Exception:  # noqa: BLE001
             rows = []
+        # a turnover day has two bookings: the guest leaving that morning is not this payment's stay
+        rows = [b for b in rows if (b.get("end_date") or "9999") > ci] or rows
+        rows.sort(key=lambda b: (b.get("begin_date") != ci, b.get("begin_date") or ""))
         if rows:
             b = rows[0]
             out[a] = {"id": b["id"], "amount": float(b.get("amount") or 0), "begin": b.get("begin_date"), "end": b.get("end_date")}
@@ -306,8 +310,25 @@ def _clean_lines(lines: list) -> list[dict]:
     return out
 
 
+_add_lock = threading.Lock()
+
+
 def add(data: dict, who: dict, source: str = "crm", push: bool = True) -> dict:
-    """data: {apartments:[...], receiver?, lines:[{amount, method}], stay?, note?, day?, raw_text?, channel_ref?}."""
+    """data: {apartments:[...], receiver?, lines:[{amount, method}], stay?, note?, day?, raw_text?, channel_ref?, client_id?}.
+    client_id: the form's own id — the page repeats «Записать» after a timeout (the sheet can take
+    40 s), and the repeat returns the payment already stored instead of recording it twice."""
+    cid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("client_id") or ""))[:64]
+    if cid:
+        with _add_lock:
+            known = by_ref("web:" + cid)
+            if known:
+                return known
+            data = {**data, "channel_ref": "web:" + cid}
+            return _add(data, who, source, push)
+    return _add(data, who, source, push)
+
+
+def _add(data: dict, who: dict, source: str = "crm", push: bool = True) -> dict:
     apts = []
     for a in data.get("apartments") or []:
         n = norm_apartment(str(a))
@@ -350,17 +371,38 @@ def add(data: dict, who: dict, source: str = "crm", push: bool = True) -> dict:
     return p
 
 
+_pay_locks: dict = {}
+_pay_locks_guard = threading.Lock()
+
+
+def _lock_for(pid: int) -> threading.Lock:
+    """One sheet operation per payment at a time: add() pushing inline and the 10-minute
+    retry used to append the same lines together."""
+    with _pay_locks_guard:
+        return _pay_locks.setdefault(pid, threading.Lock())
+
+
 def push_payment(pid: int) -> dict:
-    """Write the payment's lines into «Операции» (rows that are not there yet)."""
+    """Write the payment's lines into «Операции»: rows that are not there yet are appended,
+    rows that are there but changed (edit, cancel, a failed earlier rewrite) are rewritten."""
+    with _lock_for(pid):
+        _rewrite_rows(pid)
+        _append_rows(pid)
+    return get(pid)
+
+
+def _append_rows(pid: int) -> None:
     p = get(pid)
     if not p or p["status"] == "cancelled":
-        return p or {}
-    todo = [ln for ln in p["lines"] if ln["sheet_status"] != "ok"]
+        return
+    # only lines without a row: a line that has one is rewritten, never appended again
+    todo = [ln for ln in p["lines"] if not ln.get("sheet_row") and ln["sheet_status"] != "ok" and not ln.get("void")]
     if not todo:
-        return p
+        return
     rows = [sheet_row(p, ln) for ln in todo]
     try:
-        res = _sheet_call("cash_add", {"sheet": SHEET_NAME, "rows": rows})
+        # keys: the script skips lines it already wrote (the answer was lost → the retry sends them again)
+        res = _sheet_call("cash_add", {"sheet": SHEET_NAME, "rows": rows, "keys": [f"L{ln['id']}" for ln in todo]})
         nums = res.get("rows") or []
         with database.get_conn() as conn:
             for ln, n in zip(todo, nums):
@@ -373,16 +415,38 @@ def push_payment(pid: int) -> dict:
         with database.get_conn() as conn:
             for ln in todo:
                 conn.execute("UPDATE cash_lines SET sheet_status = 'error', sheet_error = ? WHERE id = ?", (err, ln["id"]))
-    return get(pid)
+
+
+def _rewrite_rows(pid: int) -> None:
+    """Rows already in the sheet whose values must change (edit / cancel / void, or a
+    rewrite that failed before): rewrite them in place."""
+    p = get(pid)
+    if not p:
+        return
+    for ln in p["lines"]:
+        if ln["sheet_status"] in ("dirty", "error") and ln.get("sheet_row"):
+            values = sheet_row(p, ln)
+            if p["status"] == "cancelled" or ln.get("void"):
+                values[5], values[6] = 0, 0
+                values[9] = f"ОТМЕНА ({p.get('cancel_reason') or 'правка'}) · было {ln['amount']} {ln['currency']} · " + str(values[9])
+            try:
+                _sheet_call("cash_update", {"sheet": SHEET_NAME, "row": int(ln["sheet_row"]), "values": values})
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE cash_lines SET sheet_status = 'ok', sheet_error = NULL, sheet_at = ? WHERE id = ?", (util.now(), ln["id"]))
+            except Exception as exc:  # noqa: BLE001
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE cash_lines SET sheet_status = 'error', sheet_error = ? WHERE id = ?", (config.redact(str(exc))[:200], ln["id"]))
 
 
 def retry_pending(limit: int = 50) -> int:
-    """Scheduler: rows the sheet did not take yet (unreachable, quota) — try again."""
+    """Scheduler: rows the sheet did not take yet (unreachable, quota) — try again. Cancelled
+    payments too: a cancel whose rewrite failed left the full amount in the sheet for good."""
     if not config.FINANCE_ENABLED:
         return 0
     with database.get_conn() as conn:
         ids = [r[0] for r in conn.execute("SELECT DISTINCT p.id FROM cash_payments p JOIN cash_lines l ON l.payment_id = p.id "
-                                          "WHERE p.status != 'cancelled' AND l.sheet_status != 'ok' ORDER BY p.id LIMIT ?", (limit,)).fetchall()]
+                                          "WHERE l.sheet_status != 'ok' AND (p.status != 'cancelled' OR l.sheet_row IS NOT NULL) "
+                                          "ORDER BY p.id LIMIT ?", (limit,)).fetchall()]
     n = 0
     for pid in ids:
         p = push_payment(pid)
@@ -459,22 +523,6 @@ def edit(pid: int, data: dict, who: dict) -> dict:
 
 def _sync_dirty(pid: int) -> None:
     """Rows already in the sheet whose values changed: rewrite them; new lines: append."""
-    p = get(pid)
-    if not p:
-        return
-    for ln in p["lines"]:
-        if ln["sheet_status"] == "dirty" and ln["sheet_row"]:
-            values = sheet_row(p, ln)
-            if p["status"] == "cancelled" or ln.get("void"):
-                values[5], values[6] = 0, 0
-                values[9] = f"ОТМЕНА ({p.get('cancel_reason') or 'правка'}) · было {ln['amount']} {ln['currency']} · " + str(values[9])
-            try:
-                _sheet_call("cash_update", {"sheet": SHEET_NAME, "row": int(ln["sheet_row"]), "values": values})
-                with database.get_conn() as conn:
-                    conn.execute("UPDATE cash_lines SET sheet_status = 'ok', sheet_error = NULL, sheet_at = ? WHERE id = ?", (util.now(), ln["id"]))
-            except Exception as exc:  # noqa: BLE001
-                with database.get_conn() as conn:
-                    conn.execute("UPDATE cash_lines SET sheet_status = 'error', sheet_error = ? WHERE id = ?", (config.redact(str(exc))[:200], ln["id"]))
     push_payment(pid)
 
 
@@ -494,19 +542,7 @@ def cancel(pid: int, reason: str, who: dict) -> dict:
         conn.execute("UPDATE cash_payments SET status = 'cancelled', cancel_reason = ?, updated_at = ? WHERE id = ?", (reason[:300], util.now(), pid))
         conn.execute("UPDATE cash_lines SET sheet_status = CASE WHEN sheet_row IS NULL THEN 'ok' ELSE 'dirty' END WHERE payment_id = ?", (pid,))
         _audit(conn, pid, who, "cancel", {"reason": reason, "lines": [{"amount": x["amount"], "method": x["method"]} for x in p["lines"]]})
-    p2 = get(pid)
-    for ln in p2["lines"]:
-        if ln["sheet_status"] == "dirty" and ln["sheet_row"]:
-            values = sheet_row(p2, ln)
-            values[5], values[6] = 0, 0
-            values[9] = f"ОТМЕНА ({reason}) · было {ln['amount']} {ln['currency']} · " + str(values[9])
-            try:
-                _sheet_call("cash_update", {"sheet": SHEET_NAME, "row": int(ln["sheet_row"]), "values": values})
-                with database.get_conn() as conn:
-                    conn.execute("UPDATE cash_lines SET sheet_status = 'ok', sheet_at = ? WHERE id = ?", (util.now(), ln["id"]))
-            except Exception as exc:  # noqa: BLE001
-                with database.get_conn() as conn:
-                    conn.execute("UPDATE cash_lines SET sheet_status = 'error', sheet_error = ? WHERE id = ?", (config.redact(str(exc))[:200], ln["id"]))
+    push_payment(pid)  # rows get amount 0 and «ОТМЕНА (…)»; a failure is retried every 10 minutes
     p3 = get(pid)
     _notify(p3, who, "cancel")
     return p3
@@ -519,15 +555,24 @@ def resolve_review(pid: int, who: dict, as_debt: bool) -> dict:
     p = get(pid)
     if not p:
         raise ValueError("Платёж не найден")
+    with database.get_conn() as conn:  # claimed first: a double tap wrote the debt rows twice
+        if not conn.execute("UPDATE cash_payments SET status = 'resolving' WHERE id = ? AND status = 'review'", (pid,)).rowcount:
+            raise ValueError("Этот платёж уже проверен")
     written = []
-    if as_debt:
-        for a, usd in (p["shares"] or {}).items():
-            if a == p["receiver"] or not usd:
-                continue
-            row = [date.fromisoformat(p["day"]).strftime("%d.%m.%Y"), _apt_num(p["receiver"]), _apt_num(a), round(float(usd), 2),
-                   f"платёж №{pid} · {p.get('stay_label') or ''}".strip(" ·")]
-            _sheet_call("cash_debt", {"sheet": DEBT_SHEET, "row": row})
-            written.append(row)
+    try:
+        if as_debt:
+            for a, usd in (p["shares"] or {}).items():
+                if a == p["receiver"] or not usd:
+                    continue
+                row = [date.fromisoformat(p["day"]).strftime("%d.%m.%Y"), _apt_num(p["receiver"]), _apt_num(a), round(float(usd), 2),
+                       f"платёж №{pid} · {p.get('stay_label') or ''}".strip(" ·")]
+                # key: after a failure the owner presses again — shares already written are not written twice
+                _sheet_call("cash_debt", {"sheet": DEBT_SHEET, "row": row, "key": f"D{pid}:{a}"})
+                written.append(row)
+    except Exception:
+        with database.get_conn() as conn:
+            conn.execute("UPDATE cash_payments SET status = 'review' WHERE id = ? AND status = 'resolving'", (pid,))
+        raise
     with database.get_conn() as conn:
         conn.execute("UPDATE cash_payments SET status = 'ok', updated_at = ? WHERE id = ?", (util.now(), pid))
         _audit(conn, pid, who, "debt" if as_debt else "reviewed", {"rows": written})

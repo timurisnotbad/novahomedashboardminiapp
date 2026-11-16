@@ -29,26 +29,26 @@ user = Obj(id=777, full_name="Диёр Х", first_name="Диёр", username="diy
 ctx = Obj(user_data={}, bot=Obj(username="novabot", id=42))
 
 # 1. plain text that is not a payment: nothing happens
-upd = Obj(effective_message=Msg(text="привет, как дела", chat=Obj(type="private")), effective_user=user)
+upd = Obj(effective_message=Msg(text="привет, как дела", chat=Obj(type="private"), message_id=9), effective_user=user)
 asyncio.run(bot.on_cash_text(upd, ctx)); assert not sent and "cash_pending" not in ctx.user_data
-upd = Obj(effective_message=Msg(text="5", chat=Obj(type="private")), effective_user=user)  # cleaning report number
+upd = Obj(effective_message=Msg(text="5", chat=Obj(type="private"), message_id=10), effective_user=user)  # cleaning report number
 asyncio.run(bot.on_cash_text(upd, ctx)); assert not sent
 # 2. a payment line -> preview with buttons, handler stops the update
-upd = Obj(effective_message=Msg(text="110 400$ 480 000 19.10-23.10", chat=Obj(type="private")), effective_user=user)
+upd = Obj(effective_message=Msg(text="110 400$ 480 000 19.10-23.10", chat=Obj(type="private"), message_id=11), effective_user=user)
 try:
     asyncio.run(bot.on_cash_text(upd, ctx)); raise AssertionError("no stop")
 except bot.ApplicationHandlerStop:
     pass
 assert sent[-1][0] == "reply" and "Квартира: 110" in sent[-1][1] and "400 $ (Нал USD) + 480 000 сум (Нал UZS)" in sent[-1][1] and "≈ 440 $" in sent[-1][1], sent[-1][1]
-assert ctx.user_data["cash_pending"]["q"]["stay"] == "19.10-23.10"
+assert ctx.user_data["cash_pending"][11]["q"]["stay"] == "19.10-23.10"  # v121: one preview per message
 # 3. ✅ -> recorded
-cq = CQ(data="cash:ok", message=Obj(text="x"))
+cq = CQ(data="cash:ok:11", message=Obj(text="x"))
 asyncio.run(bot.on_cash_callback(Obj(callback_query=cq, effective_user=user), ctx))
 assert sent[-1][0] == "edit" and "записана" in sent[-1][1] and "строки 500, 501" in sent[-1][1], sent[-1]
 p = cash.list_payments()[0]
 assert p["source"] == "bot" and p["who_uid"] == 777 and p["who_name"] == "Диёр Х" and p["total_usd"] == 440.0 and p["raw_text"] == "110 400$ 480 000 19.10-23.10"
 # 4. ✖ / stale
-cq = CQ(data="cash:no", message=Obj(text="x"))
+cq = CQ(data="cash:no:11", message=Obj(text="x"))
 asyncio.run(bot.on_cash_callback(Obj(callback_query=cq, effective_user=user), ctx)); assert sent[-1] == ("edit", "x\n\n✖ Не записано") or sent[-1][0] == "edit"
 # 5. channel post -> payment with the post date; edit -> edit
 database.all_active_bookings = lambda: []

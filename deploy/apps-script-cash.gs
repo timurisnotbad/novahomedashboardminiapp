@@ -34,9 +34,9 @@ function cashHandle(body) {
   try {
     switch (body.action) {
       case "cash_meta": return _json(cashMeta());
-      case "cash_add": return _json(cashAdd(body.sheet || OPS_SHEET, body.rows || []));
+      case "cash_add": return _json(cashAdd(body.sheet || OPS_SHEET, body.rows || [], body.keys || []));
       case "cash_update": return _json(cashUpdate(body.sheet || OPS_SHEET, body.row, body.values || []));
-      case "cash_debt": return _json(cashDebt(body.sheet || DEBT_SHEET, body.row || []));
+      case "cash_debt": return _json(cashDebt(body.sheet || DEBT_SHEET, body.row || [], body.key || ""));
       default: return _json({ error: "unknown action " + body.action });
     }
   } catch (err) {
@@ -81,14 +81,30 @@ function _prepare(values, rowNum) {
   return v;
 }
 
+/** Rows already written for a CRM key («L123» = payment line 123): when the CRM did not get
+ *  the answer (timeout) and sends the same rows again, they are not appended a second time. */
+function _written(key) {
+  return key ? PropertiesService.getScriptProperties().getProperty("row:" + key) : null;
+}
+function _remember(key, row) {
+  if (key) PropertiesService.getScriptProperties().setProperty("row:" + key, String(row));
+}
+
 /** Append rows after the last filled one; returns their row numbers. */
-function cashAdd(sheetName, rows) {
+function cashAdd(sheetName, rows, keys) {
   var sh = _sheet(sheetName);
   var start = _lastDataRow(sh) + 1;
-  var out = [];
-  var data = rows.map(function (r, i) { out.push(start + i); return _prepare(r, start + i); });
+  var out = [], data = [], fresh = [];
+  rows.forEach(function (r, i) {
+    var had = _written(keys[i]);
+    if (had) { out.push(Number(had)); return; }
+    var n = start + data.length;
+    out.push(n); fresh.push([keys[i], n]);
+    data.push(_prepare(r, n));
+  });
   if (data.length) sh.getRange(start, 1, data.length, 10).setValues(data);
   SpreadsheetApp.flush();
+  fresh.forEach(function (k) { _remember(k[0], k[1]); });
   return { rows: out };
 }
 
@@ -101,13 +117,16 @@ function cashUpdate(sheetName, row, values) {
 }
 
 /** «Долг между Аппартами»: дата | кв. с деньгами | кв., которой должны | $ | комментарий. */
-function cashDebt(sheetName, row) {
+function cashDebt(sheetName, row, key) {
+  var had = _written(key);
+  if (had) return { ok: true, row: Number(had) };
   var sh = _sheet(sheetName);
   var start = _lastDataRow(sh) + 1;
   var v = row.slice();
   v[0] = _toDate(v[0]);
   sh.getRange(start, 1, 1, v.length).setValues([v]);
   SpreadsheetApp.flush();
+  _remember(key, start);
   return { ok: true, row: start };
 }
 

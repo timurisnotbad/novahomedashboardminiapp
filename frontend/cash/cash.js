@@ -209,8 +209,12 @@
     const go = $("go");
     go.classList.add("busy"); go.innerHTML = `<span class="spin"></span><span>${S.editing ? "Сохраняю…" : "Записываю…"}</span>`;
     const body = { apartments: f.apartments, receiver: f.receiver || f.apartments[0], lines: f.lines.filter((ln) => parseAmt(ln.amount)).map((ln) => ({ amount: parseAmt(ln.amount), method: ln.method })), stay: (f.stay || "").trim(), note: (f.note || "").trim(), day: f.day };
+    // the form's own id: a repeat after «Сервер не ответил» returns the payment already recorded
+    if (!f.cid) f.cid = Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+    if (!S.editing) body.client_id = f.cid;
     try {
-      const p = S.editing ? await patch(`/payments/${S.editing}`, body) : await post("/payments", body);
+      const p = S.editing ? await req(`/payments/${S.editing}`, { method: "PATCH", json: body, timeoutMs: 60000 })
+        : await req("/payments", { method: "POST", json: body, timeoutMs: 60000 });  // the sheet may take 40 s
       haptic("ok");
       S.form = null; S.editing = null;
       showDone(p);
@@ -306,8 +310,9 @@
         card.querySelector("#c-yes").addEventListener("click", async (e) => {
           const reason = card.querySelector("#c-reason").value.trim();
           if (reason.length < 3) { card.querySelector("#c-reason").classList.add("bad"); card.querySelector("#c-reason").focus(); return; }
-          e.currentTarget.disabled = true;
-          try { const r = await post(`/payments/${p.id}/cancel`, { reason }); closeSheet(); haptic("ok"); toast("Отменено"); refreshToday(); if (S.tab === "stats") renderStats(); void r; } catch (err) { toast(err.message); e.currentTarget.disabled = false; }
+          const btn = e.currentTarget;  // null after the await: the button stayed disabled for good after a failure
+          btn.disabled = true;
+          try { await post(`/payments/${p.id}/cancel`, { reason }); closeSheet(); haptic("ok"); toast("Отменено"); refreshToday(); if (S.tab === "stats") renderStats(); } catch (err) { toast(err.message); btn.disabled = false; }
         });
         setTimeout(() => card.querySelector("#c-reason").focus(), 250);
       });
@@ -328,8 +333,10 @@
     const main = $("main");
     main.innerHTML = `<div class="view"><div class="empty">Загрузка…</div></div>`;
     let st, rv, au, list;
-    try { [st, rv, au, list] = await Promise.all([get("/stats?month=" + S.month), get("/review"), get("/audit?limit=60"), get("/payments?month=" + S.month)]); }
-    catch (e) { main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    const seq = (renderStats.seq = (renderStats.seq || 0) + 1), month = S.month;
+    try { [st, rv, au, list] = await Promise.all([get("/stats?month=" + month), get("/review"), get("/audit?limit=60"), get("/payments?month=" + month)]); }
+    catch (e) { if (seq === renderStats.seq && S.tab === "stats") main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    if (seq !== renderStats.seq || S.tab !== "stats") return;  // a newer month / another tab is on the screen now
     const [y, mo] = S.month.split("-").map(Number);
     $("review-n").textContent = rv.payments.length; $("review-n").classList.toggle("hidden", !rv.payments.length);
     const byDay = Object.entries(st.by_day || {}).sort((a, b) => b[0].localeCompare(a[0]));
