@@ -1066,13 +1066,15 @@ MAX_TASK_TRIES = 3
 
 
 def run_task_messages() -> int:
-    """Every 5 minutes: due message-tasks go out; tasks overdue by more than a day
+    """Every 5 minutes: due message-tasks go out; tasks overdue by more than 3 hours
     are left to people (no late spam). A task that could not be sent is retried
     at most MAX_TASK_TRIES times, an hour apart, then stays open for a person."""
     if crm.get_setting("auto_step_messages", "0") != "1":
         return 0  # the switch in Интеграции → «Этапы заезда гостя»; off: steps are tasks for people only
     now = crm._now()[:16]
-    cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+    # a message more than 3 hours late is left to a person: after the laptop was off from 9 to 19,
+    # «инструкция по заселению» used to reach a guest who had already arrived
+    cutoff = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M")
     retry_before = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
     with database.get_conn() as conn:
         ids = [r["id"] for r in conn.execute(

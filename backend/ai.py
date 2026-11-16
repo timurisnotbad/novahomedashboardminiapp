@@ -1079,6 +1079,16 @@ def handle(chat_id: int, force: bool = False, want_draft: bool = False, nudge: b
     mode = "draft" if force else chat_mode(chat)
     if mode == "off":
         return {"status": "off"}
+    if not force:
+        try:
+            spent_out = float(setting("ai_budget") or 0) > 0 and budget_left() <= 0
+        except ValueError:
+            spent_out = False
+        if spent_out:
+            # the month's budget is used up: draft mode still ran triage + a full reply on every
+            # guest message. Only the «Ответить с ИИ» button (force) spends now
+            _status(chat_id, "бюджет ИИ на месяц исчерпан — ответьте сами или нажмите «Ответить с ИИ»")
+            return {"status": "budget"}
     if force and not ctx["history"]:
         _status(chat_id, "в чате ещё нет сообщений")
         return {"status": "nothing new"}

@@ -1662,9 +1662,40 @@ def create_checklist(bid: int, uid: int, assignee_uid: int | None = None, force:
     return {"created": n, "already": False}
 
 
+def redate_checklists() -> int:
+    """The booking's dates moved in RealtyCalendar: open stay-step tasks follow them.
+    They were created once and never updated — with step messages on, the check-in
+    instruction went out on the old date (days early, or never when moved earlier)."""
+    by_key = {step_key(s["title"]): s for s in steps()}
+    n = 0
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t.id AS task_id, t.due AS task_due, t.src_key, b.* FROM crm_tasks t JOIN bookings b ON b.id = t.booking_id "
+            "WHERE t.status = 'open' AND t.src_key LIKE 'cl:%' AND (t.auto_status IS NULL OR t.auto_status LIKE 'skipped:%' "
+            "OR t.auto_status LIKE 'failed:%')").fetchall()
+        for r in rows:
+            it = by_key.get((r["src_key"] or "").rsplit(":", 1)[-1])
+            if not it or it["anchor"] in ("now", "today"):
+                continue
+            try:
+                due = _cl_due(it, dict(r))
+            except (ValueError, TypeError):
+                continue
+            if due != r["task_due"]:
+                conn.execute("UPDATE crm_tasks SET due = ?, auto_tries = 0 WHERE id = ?", (due, r["task_id"]))
+                n += 1
+    return n
+
+
 def auto_checklists(days_ahead: int = 30) -> int:
     """Setting «auto_checklist»: every new booking (check-in within N days)
     gets the checklist automatically, assigned to the first admin."""
+    try:
+        moved = redate_checklists()
+        if moved:
+            logger.info("stay steps: %d tasks follow new booking dates", moved)
+    except Exception:  # noqa: BLE001
+        logger.exception("redate checklists failed")
     if get_setting("auto_checklist", "1") != "1":
         return 0
     admins = [u for u in list_users() if u["role"] == "admin" and u["active"]]
