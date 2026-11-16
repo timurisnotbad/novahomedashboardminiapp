@@ -233,6 +233,9 @@ async def cash_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+_MONEY_WORD_RE = re.compile(r"(?iu)[$€₽]|usd|uzs|eur|rub|сум|sum\b|долл|евро|руб|нал|cash|карт|хумо|humo|visa|uzcard|click|клик|payme|пейми|uzum|перевод|оплат")
+
+
 def _cash_preview(q: dict) -> str:
     apts = ", ".join(str(cash._apt_num(a)) for a in q["apartments"]) or "—"  # noqa: SLF001
     lines = " + ".join(f"{cash._fmt(x['amount'], x['currency'])} ({x['method']})" for x in q["lines"]) or "—"  # noqa: SLF001
@@ -255,17 +258,32 @@ async def on_cash_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if not re.search(r"\d", msg.text) or len(msg.text) > 300:
         return
+    # a cleaning report is not a payment: «до 103 в 15:30», «после 051 готово», or the number
+    # for a кружок just sent («103») — those went to the payment preview and the cleaning was lost
+    if _START_RE.search(msg.text) or re.search(rf"(?iu)(?<![a-zа-яё])(?:{_FINISH_WORDS})(?![a-zа-яё])", msg.text) \
+            or _pending_media.get(user.id) or _pending_apt.get(user.id):
+        return
     try:
         q = await asyncio.to_thread(cash.parse_quick, msg.text)
     except Exception:  # noqa: BLE001
         return
     if q["missing"]:
         return
+    # money looks like money: a currency / account word, or a sum of 1 000 and more
+    # («103 2 полотенца» parsed as «2 $» to apartment 103)
+    if not (_MONEY_WORD_RE.search(msg.text) or any(x["amount"] >= 1000 for x in q["lines"])):
+        return
     if not await asyncio.to_thread(inbox.may_use, user.id):
         return
-    context.user_data["cash_pending"] = {"q": q, "text": msg.text}
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Записать", callback_data="cash:ok"),
-                                    InlineKeyboardButton("✖ Нет", callback_data="cash:no")]])
+    # one preview per message: ✅ under an older preview records THAT payment, not the latest one
+    pend = context.user_data.setdefault("cash_pending", {})
+    if not isinstance(pend, dict) or "q" in pend:
+        pend = context.user_data["cash_pending"] = {}
+    pend[msg.message_id] = {"q": q, "text": msg.text}
+    for old in sorted(pend)[:-10]:
+        pend.pop(old, None)
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Записать", callback_data=f"cash:ok:{msg.message_id}"),
+                                    InlineKeyboardButton("✖ Нет", callback_data=f"cash:no:{msg.message_id}")]])
     await msg.reply_text(_cash_preview(q), reply_markup=markup)
     raise ApplicationHandlerStop
 
@@ -274,8 +292,11 @@ async def on_cash_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     cq = update.callback_query
     if not cq or not update.effective_user:
         return
-    pend = context.user_data.pop("cash_pending", None)
-    if cq.data == "cash:no" or not pend:
+    parts = (cq.data or "").split(":")
+    store = context.user_data.get("cash_pending")
+    key = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+    pend = store.pop(key, None) if isinstance(store, dict) and key is not None else None
+    if parts[1:2] == ["no"] or not pend:
         await cq.answer("Отменено" if pend else "Устарело")
         try:
             await cq.edit_message_text((cq.message.text or "") + "\n\n✖ Не записано" if cq.message else "✖ Не записано")
@@ -448,7 +469,7 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     loc = msg.location
     user = update.effective_user
-    _register(user, msg.chat)
+    await asyncio.to_thread(_register, user, msg.chat)
     await _report_auto_activated(context.bot)
     is_live = bool(loc.live_period) or update.edited_message is not None
 
@@ -1291,8 +1312,10 @@ async def _observe_topic(msg, context) -> None:
         return
     if len(_topic_seen) > 500:
         _topic_seen.clear()
-    _topic_seen.add(key)
     name = _topic_name_of(msg)
+    if not name:
+        return  # a reply carries no topic name: look again at the next message instead of giving up
+    _topic_seen.add(key)
     role = _role_for_topic_name(name)
     if not role:
         return
@@ -1385,7 +1408,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not msg or not user:
         return
-    _register(user, msg.chat)
+    await asyncio.to_thread(_register, user, msg.chat)
     await _report_auto_activated(context.bot)
     kind, file_id = _media_of(msg)
     if not kind:
@@ -1492,7 +1515,7 @@ async def on_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception:  # noqa: BLE001
                 pass
         return
-    _register(user, msg.chat)
+    await asyncio.to_thread(_register, user, msg.chat)
     phase = _report_phase(msg.text)
     if waiting:
         _pending_media.pop(uid, None)
@@ -1608,7 +1631,7 @@ async def on_supplies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if not private and not supplies.looks_like_list(apt, items):
         return  # "нужно перезвонить гостю" in the group is not a shopping list
-    _register(user, msg.chat)
+    await asyncio.to_thread(_register, user, msg.chat)
     who = _display_name(user)
     now = _when(msg).isoformat(timespec="minutes")
     for item, qty in items:
@@ -1639,7 +1662,7 @@ async def on_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     items = issues.parse_lines(msg.text, lambda t: _match_apartment(t, allow_bare=True))
     if not items:
         raise ApplicationHandlerStop  # chatter in «Поломки» is nobody else's business either
-    _register(user, msg.chat)
+    await asyncio.to_thread(_register, user, msg.chat)
     who = _display_name(user)
     now = _when(msg, update.edited_message is not None).isoformat(timespec="minutes")
     added_buy: list[str] = []
@@ -1748,7 +1771,7 @@ async def on_channel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # the same post as a cash receipt for the sheet («110 / 400$ / 480 000 / 19.10-23.10»)
     try:
         ref = f"{msg.chat_id}:{msg.message_id}"
-        q = cash.parse_quick(text, post_date)
+        q = await asyncio.to_thread(cash.parse_quick, text, post_date)
         if q["missing"]:
             return
         who = {"uid": 0, "name": "канал Оплаты", "owner": True}
@@ -1813,11 +1836,12 @@ async def attendance_deadline(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     today = datetime.date.today().isoformat()
     try:
-        if await asyncio.to_thread(database.job_done, "attendance_deadline", today):
-            return  # already ran today (startup catch-up + scheduled run)
+        # claimed BEFORE posting: the startup catch-up and the scheduled run can overlap
+        if not await asyncio.to_thread(database.mark_job, "attendance_deadline", today):
+            return  # already ran today
     except Exception:  # noqa: BLE001
         pass
-    rows = {r["staff_id"]: r for r in database.attendance_for(today)}
+    rows = {r["staff_id"]: r for r in await asyncio.to_thread(database.attendance_for, today)}
     dh, dm = config.ATTEND_DEADLINE_T
     lines = [f"📋 Явка на {datetime.date.today().strftime('%d.%m')}:"]
     absent = 0
@@ -1846,10 +1870,6 @@ async def attendance_deadline(context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append("Все на месте 💪")
     notify.send("\n".join(lines), topic="attendance")
     _loc_status.clear()  # tomorrow starts fresh
-    try:
-        await asyncio.to_thread(database.mark_job, "attendance_deadline", today)
-    except Exception:  # noqa: BLE001
-        logger.exception("mark_job failed")
 
 
 async def cleaning_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1969,8 +1989,13 @@ def _poll_request():
     class _PollRequest(HTTPXRequest):
         async def do_request(self, *args, **kwargs):
             res = await super().do_request(*args, **kwargs)
-            _last_poll[0] = _time.time()
-            _conflict_state["count"] = 0
+            # only a 2xx counts: a 409 (another copy polls this token) is an answer too,
+            # and stamping it reset the conflict counter — two copies split the кружки
+            # and locations between them while the heartbeat said «ok»
+            code = res[0] if isinstance(res, tuple) and res else 200
+            if 200 <= int(code) < 300:
+                _last_poll[0] = _time.time()
+                _conflict_state["count"] = 0
             return res
 
     return _PollRequest(connection_pool_size=1)
@@ -2302,6 +2327,12 @@ def _self_repair_ptb() -> None:
                      f"Запустите install.bat в папке проекта, затем restart_all.bat.")
 
 
+def _cmd(name, callback, **kw):
+    """A command handler for NEW messages only: by default PTB also feeds it edits
+    (an edited /sync ran again; /staff on an edit crashed on update.message = None)."""
+    return CommandHandler(name, callback, filters=filters.UpdateType.MESSAGE, **kw)
+
+
 def main() -> None:
     _self_repair_ptb()
     if not config.BOT_TOKEN:
@@ -2322,24 +2353,24 @@ def main() -> None:
         builder = Application.builder().token(config.BOT_TOKEN).post_init(_set_commands)
     app = builder.build()
     app.add_error_handler(on_error)
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("today", today_cmd))
-    app.add_handler(CommandHandler("sync", sync_cmd))
-    app.add_handler(CommandHandler("chatid", chatid_cmd))
-    app.add_handler(CommandHandler("topic", topic_cmd))
-    app.add_handler(CommandHandler("attendance", attendance_cmd))
-    app.add_handler(CommandHandler("myid", myid_cmd))
-    app.add_handler(CommandHandler("staff", staff_cmd))
-    app.add_handler(CommandHandler("staff_del", staff_del_cmd))
-    app.add_handler(CommandHandler("staff_ok", staff_ok_cmd))
-    app.add_handler(CommandHandler("update", update_cmd))
-    app.add_handler(CommandHandler("autoupdate", autoupdate_cmd))
-    app.add_handler(CommandHandler("link", link_cmd))
-    app.add_handler(CommandHandler("prices", prices_cmd))
-    app.add_handler(CommandHandler("reset", reset_cmd))
-    app.add_handler(CommandHandler("supplies", supplies_cmd))
-    app.add_handler(CommandHandler("chats", chats_cmd))
-    app.add_handler(CommandHandler("cash", cash_cmd))
+    app.add_handler(_cmd("start", start))
+    app.add_handler(_cmd("today", today_cmd))
+    app.add_handler(_cmd("sync", sync_cmd, block=False))
+    app.add_handler(_cmd("chatid", chatid_cmd))
+    app.add_handler(_cmd("topic", topic_cmd))
+    app.add_handler(_cmd("attendance", attendance_cmd))
+    app.add_handler(_cmd("myid", myid_cmd))
+    app.add_handler(_cmd("staff", staff_cmd))
+    app.add_handler(_cmd("staff_del", staff_del_cmd))
+    app.add_handler(_cmd("staff_ok", staff_ok_cmd))
+    app.add_handler(_cmd("update", update_cmd))
+    app.add_handler(_cmd("autoupdate", autoupdate_cmd))
+    app.add_handler(_cmd("link", link_cmd))
+    app.add_handler(_cmd("prices", prices_cmd, block=False))
+    app.add_handler(_cmd("reset", reset_cmd))
+    app.add_handler(_cmd("supplies", supplies_cmd))
+    app.add_handler(_cmd("chats", chats_cmd))
+    app.add_handler(_cmd("cash", cash_cmd))
     app.add_handler(CallbackQueryHandler(on_cash_callback, pattern=r"^cash:"))
     # Telegram only detects latin /commands, so accept typed Cyrillic ones too
     # (slash required — a plain «цены» in the group is just conversation).
@@ -2357,7 +2388,7 @@ def main() -> None:
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS
         & (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE), on_issue_text), group=-1)
-    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/цены\b") & _msg, prices_cmd))
+    app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/цены\b") & _msg, prices_cmd, block=False))
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/сброс\b") & _msg, reset_cmd))
     app.add_handler(MessageHandler(filters.Regex(r"(?iu)^/(нужно|закупки|список)\b") & _msg, supplies_cmd))
     # shopping list requests: "нужно 103 полотенца 2, шампунь" (any chat)
@@ -2390,6 +2421,13 @@ def main() -> None:
         logger.error("%s", msg)
         print("\n" + "!" * 70 + f"\n⚠️  {msg}\n" + "!" * 70 + "\n", flush=True)
     if app.job_queue:
+        # APScheduler's default grace is 1 s: after the laptop slept through 14:00 (or the
+        # loop was busy for a few seconds) the roll call was silently skipped for the day.
+        # The job_runs marks keep a late run from repeating.
+        try:
+            app.job_queue.scheduler.configure(job_defaults={"misfire_grace_time": 3 * 3600, "coalesce": True})
+        except Exception:  # noqa: BLE001
+            logger.exception("job defaults not set")
         app.job_queue.run_daily(daily_summary, time=datetime.time(hour=8, minute=0, tzinfo=LOCAL_TZ))
         app.job_queue.run_daily(daily_prices, time=datetime.time(hour=9, minute=0, tzinfo=LOCAL_TZ))
         # attendance workflow: morning reminder + roll call (server local time)
@@ -2453,6 +2491,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("bot stopped: Ctrl+C or the window was closed")
     except SystemExit as exc:  # noqa: PERF203 — configuration problem, show it and wait
+        if exc.code == EXIT_RESTART:
+            sys.exit(EXIT_RESTART)  # asked for a restart on purpose (library upgraded): the loop starts us again
         if exc.code not in (0, None):
             print(f"\n❌ {exc.code}\n", flush=True)
             _pause()
