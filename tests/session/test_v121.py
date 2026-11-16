@@ -69,6 +69,29 @@ CALLS.clear(); clock[0] = datetime(2026, 11, 17, 0, 15); ping("notab")
 assert len([c for c in CALLS if c[0] == "sendMessage"]) == 3
 # the usual broadcast (no replace) is unchanged: plain sends, nothing stored
 CALLS.clear(); alerts.broadcast("system", "обычное"); assert [c[0] for c in CALLS] == ["sendMessage"] * 3
+
+# ---- the same for «bot down» and «calendar sync down»
+from backend import watchdog, services
+watchdog.revive_bot = lambda: "перезапустил"; watchdog.log_tail = lambda *a, **k: ""
+config.OWNER_TELEGRAM_IDS = [555]
+t0 = datetime(2026, 11, 16, 10, 0); watchdog._STARTED = t0 - timedelta(hours=1)
+HB = [(t0, "ok")]; watchdog.read_heartbeat = lambda: HB[0]
+CALLS.clear()
+assert watchdog.check_bot(t0 + timedelta(minutes=1)) is None
+assert watchdog.check_bot(t0 + timedelta(minutes=30)).startswith("🔴")            # dead: first alert
+assert watchdog.check_bot(t0 + timedelta(minutes=41)) is None
+assert watchdog.check_bot(t0 + timedelta(minutes=52)).startswith("⚠️")             # after three revives
+sends = [c for c in CALLS if c[0] == "sendMessage" and c[1] == 555]; dels = [c for c in CALLS if c[0] == "deleteMessage" and c[1] == 555]
+assert len(sends) == 2 and len(dels) == 1, CALLS                                   # the second replaced the first
+HB[0] = (t0 + timedelta(minutes=70), "ok"); CALLS.clear()
+assert watchdog.check_bot(t0 + timedelta(minutes=71)).startswith("🟢")
+assert [c[0] for c in CALLS if c[1] == 555] == ["editMessageText"] and "до 11:11" in CALLS[0][4], CALLS
+SS = [{"minutes": 90, "fails": 4, "last_ok": "2026-11-16T08:00:00", "error": "401"}]
+services.sync_staleness = lambda: SS[0]; services.fmt_local = lambda v: "16.11 08:00"
+CALLS.clear(); assert watchdog.check_sync().startswith("🔴") and [c[0] for c in CALLS] == ["sendMessage"] * 2   # owner 555 + the CRM user
+assert watchdog.check_sync() is None
+SS[0] = {"minutes": 3, "fails": 0, "last_ok": "x", "error": ""}; CALLS.clear()
+assert watchdog.check_sync().startswith("🟢") and {c[0] for c in CALLS} == {"editMessageText"}, CALLS
 print("v121 tests OK")
 if "-v" in sys.argv:
     CALLS.clear(); clock[0] = datetime(2026, 11, 17, 2, 20); ping("notab"); print(CALLS[-1][4])

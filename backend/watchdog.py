@@ -176,6 +176,8 @@ def check_update_result() -> str | None:
     return msg
 
 
+BOT_ALERT_KEY = "bot_down"  # one message per outage: later alerts replace it, «снова в сети» edits it
+
 _STATE_TEXT = {
     "NO_NETWORK": "бот не может достучаться до Telegram (нет интернета или Telegram заблокирован у провайдера)",
     "CONFLICT": "токен бота опрашивает ещё одна программа — запущена вторая копия (второе окно «Nova Bot» или старый компьютер, "
@@ -206,8 +208,8 @@ def check_bot(now: datetime | None = None) -> str | None:
         if _state["alerted"]:
             since = _state["bot_down_since"]
             _state.update(alerted=False, revived_at=None, revives=0, second_alert=False)
-            text = "🟢 Бот снова в сети" + (f" (не работал с {since:%H:%M})." if since else ".")
-            alerts.broadcast("system", text, base=owners)
+            text = "🟢 Бот снова в сети" + (f" (не работал с {since:%H:%M} до {now:%H:%M})." if since else ".")
+            alerts.resolve(BOT_ALERT_KEY, text)  # the red warning becomes this line: no new message, no clutter
             logger.info("bot is back — owners told")
             return text
         return None
@@ -218,7 +220,7 @@ def check_bot(now: datetime | None = None) -> str | None:
             return None
         _state.update(alerted=True, bot_down_since=now)
         text = f"🔴 Бот не принимает сообщения: {_STATE_TEXT[state]}."
-        alerts.broadcast("system", text, base=owners)
+        alerts.broadcast("system", text, base=owners, replace=BOT_ALERT_KEY)
         logger.warning("bot deaf (%s) — owners alerted", state)
         return text
 
@@ -240,7 +242,7 @@ def check_bot(now: datetime | None = None) -> str | None:
         tail = log_tail()
         if tail:
             text += f"\n\nПоследнее из лога бота:\n{tail}"
-        alerts.broadcast("system", text, base=owners)
+        alerts.broadcast("system", text, base=owners, replace=BOT_ALERT_KEY)
         return text
     if _state["revives"] == 3 and not _state["second_alert"]:
         _state["second_alert"] = True
@@ -249,7 +251,7 @@ def check_bot(now: datetime | None = None) -> str | None:
         tail = log_tail()
         if tail:
             text += f"\n\nПоследнее из лога бота:\n{tail}"
-        alerts.broadcast("system", text, base=owners)
+        alerts.broadcast("system", text, base=owners, replace=BOT_ALERT_KEY)
         return text
     return None
 
@@ -322,6 +324,7 @@ def tick() -> None:
 
 
 _sync_state = {"alerted": False}
+SYNC_ALERT_KEY = "rc_sync_down"
 SYNC_ALERT_AFTER_MIN = 60
 
 
@@ -344,12 +347,14 @@ def check_sync(now: datetime | None = None) -> str | None:
                 f"Бот и дашборд показывают брони на момент {when}; новые заезды и выезды не видны.\n"
                 f"Если в ошибке 401/403 или «не JSON» — истекли RC_TOKEN или cookies в .env: "
                 f"войдите в RealtyCalendar в браузере, скопируйте новые значения, затем restart_all.bat.")
-        notify.send(text, targets=owners)
+        from . import alerts
+        alerts.broadcast("system", text, base=owners, replace=SYNC_ALERT_KEY)
         logger.warning("RC sync stale for %s min — owners alerted", s["minutes"])
         return text
     if s["minutes"] < SYNC_ALERT_AFTER_MIN and _sync_state["alerted"]:
         _sync_state["alerted"] = False
-        text = "🟢 Синхронизация с RealtyCalendar восстановлена, брони снова актуальные."
-        notify.send(text, targets=owners)
+        text = f"🟢 Синхронизация с RealtyCalendar восстановлена ({datetime.now():%d.%m %H:%M}), брони снова актуальные."
+        from . import alerts
+        alerts.resolve(SYNC_ALERT_KEY, text)  # the red warning becomes this line
         return text
     return None
