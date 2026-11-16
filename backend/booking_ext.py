@@ -589,8 +589,13 @@ def outbox() -> list[dict]:
         rows = [dict(r) for r in conn.execute("SELECT * FROM inbox_ext_outbox WHERE status = 'pending' ORDER BY id LIMIT 5").fetchall()]
         for r in rows:
             conn.execute("UPDATE inbox_ext_outbox SET status = 'taken', taken_at = ? WHERE id = ?", (datetime.now().isoformat(timespec="seconds"), r["id"]))
-        # anything taken but not confirmed in 3 minutes goes back to pending
-        conn.execute("UPDATE inbox_ext_outbox SET status = 'pending' WHERE status = 'taken' AND taken_at < ?", (_minutes_ago(3),))
+        # taken but not confirmed in 3 minutes: the extension may well have pressed «Отправить» and lost
+        # only its answer — offering it again typed the reply to the guest twice. Mark it failed instead:
+        # the operator sees red «Не отправлено · повторить» and checks the extranet first
+        stale = [r["id"] for r in conn.execute("SELECT id FROM inbox_ext_outbox WHERE status = 'taken' AND taken_at < ?",
+                                               (_minutes_ago(3),)).fetchall()]
+    for oid in stale:
+        outbox_done(oid, False, "расширение не подтвердило отправку — проверьте в экстранете Booking, дошло ли сообщение")
     return rows
 
 

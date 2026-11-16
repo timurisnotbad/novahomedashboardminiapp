@@ -227,6 +227,16 @@ async function parse(m, { download }) {
 const STATUS = { 0: "failed", 1: "pending", 2: "sent", 3: "delivered", 4: "read", 5: "read" };
 
 // ---- WhatsApp connection ------------------------------------------------------
+// a reconnect that itself fails (e.g. Windows still holds a file in auth/) must be
+// tried again, not left in «reconnecting» forever; one pending reconnect at a time
+function scheduleConnect(ms) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect().catch((e) => { log("reconnect failed:", e && e.message); scheduleConnect(15000); });
+  }, ms);
+}
+
 async function connect() {
   clearTimeout(reconnectTimer);
   const { state: auth, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -277,11 +287,11 @@ async function connect() {
         state.me = null;
         fs.rmSync(AUTH_DIR, { recursive: true, force: true });
         post({ event: "status", status: "logged_out" });
-        reconnectTimer = setTimeout(connect, 2000);
+        scheduleConnect(2000);
       } else {
         state.status = "reconnecting";
         post({ event: "status", status: "reconnecting" });
-        reconnectTimer = setTimeout(connect, code === DisconnectReason.restartRequired ? 500 : 5000);
+        scheduleConnect(code === DisconnectReason.restartRequired ? 500 : 5000);
       }
     }
   });
@@ -458,7 +468,7 @@ const server = http.createServer(async (req, res) => {
       fs.rmSync(AUTH_DIR, { recursive: true, force: true });
       state.status = "logged_out";
       state.me = null;
-      setTimeout(connect, 1500);
+      scheduleConnect(1500);  // the loggedOut close event schedules the same one: no second socket
       return reply(res, 200, { ok: true });
     }
     return reply(res, 404, { error: "not found" });
@@ -482,7 +492,7 @@ server.listen(PORT, "127.0.0.1", () => {
     state.status = "error";
     state.error = e.message;
     log("connect failed:", e.message);
-    reconnectTimer = setTimeout(connect, 10000);
+    scheduleConnect(10000);
   });
 });
 

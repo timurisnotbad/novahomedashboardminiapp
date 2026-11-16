@@ -44,10 +44,17 @@ def user_configured() -> bool:
 
 
 def _run(coro, timeout: float = 60):
-    """Run a coroutine on the server loop from a worker thread."""
+    """Run a coroutine on the server loop from a worker thread. On timeout the
+    coroutine is cancelled: left running, a «failed» send still reached the guest
+    later and «повторить» sent it twice."""
     if _loop is None:
         raise inbox.BridgeError("Telegram-клиент ещё не запущен")
-    return asyncio.run_coroutine_threadsafe(coro, _loop).result(timeout)
+    fut = asyncio.run_coroutine_threadsafe(coro, _loop)
+    try:
+        return fut.result(timeout)
+    except TimeoutError:
+        fut.cancel()
+        raise inbox.BridgeError("Telegram не ответил вовремя — сообщение не отправлено") from None
 
 
 async def start() -> None:
@@ -65,21 +72,34 @@ async def start() -> None:
         return
     _loop = asyncio.get_event_loop()
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _client = TelegramClient(str(SESSION), config.TG_API_ID, config.TG_API_HASH, connection_retries=2, retry_delay=2,
-                             device_model="Nova Home CRM", system_version="1.0", app_version=config.APP_VERSION)
+    # connection_retries=None: after a short network drop (Wi-Fi, sleep) Telethon keeps
+    # reconnecting — with 2 retries it disconnected for good and guest messages stopped
+    # until a server restart. catch_up: messages that came while the server was off are fetched.
+    _client = TelegramClient(str(SESSION), config.TG_API_ID, config.TG_API_HASH, connection_retries=None, retry_delay=5,
+                             catch_up=True, device_model="Nova Home CRM", system_version="1.0", app_version=config.APP_VERSION)
     _loop.create_task(_connect_loop())
 
 
 async def _connect_loop() -> None:
+    """Connect, and stay connected: when the connection is lost anyway, connect
+    again and fetch what was missed (the loop used to end after the first success)."""
     global _error
     while True:
         try:
             if not _client.is_connected():
                 await asyncio.wait_for(_client.connect(), 25)
+                if _me:
+                    try:
+                        await asyncio.wait_for(_client.catch_up(), 60)  # messages from the time we were away
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("telegram catch-up failed: %s", exc)
             if not _me and await _client.is_user_authorized():
                 await _after_login()
             _error = None
-            return
+            await _client.disconnected  # returns only when the connection is gone for good
+            logger.warning("telegram account disconnected — reconnecting")
+            _error = "Telegram: соединение потеряно — переподключаюсь"
+            continue
         except asyncio.TimeoutError:
             _error = "Telegram не отвечает (нет доступа к серверам Telegram?) — пробую снова"
         except Exception as exc:  # noqa: BLE001

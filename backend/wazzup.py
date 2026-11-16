@@ -303,10 +303,16 @@ def send(payload: dict) -> dict:
     mid = (data or {}).get("messageId") or uuid.uuid4().hex
     if payload.get("media") and (payload.get("text") or "").strip():
         # Wazzup takes either a file or a text in one message: the caption follows as a second message
-        try:
-            _api("POST", "/message", timeout=30, json={"channelId": channel_id, "chatType": chat_type, "chatId": ext, "text": payload["text"].strip()})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("wazzup caption after file failed: %s", exc)
+        for attempt in range(3):
+            try:
+                _api("POST", "/message", timeout=30, json={"channelId": channel_id, "chatType": chat_type, "chatId": ext, "text": payload["text"].strip()})
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("wazzup caption after file failed (%d): %s", attempt + 1, exc)
+                if attempt == 2:
+                    # silently «sent» lost the text (e.g. the check-in instruction): say so, the operator repeats it
+                    raise inbox.BridgeError("файл доставлен, а текст к нему — нет (Wazzup не принял). Нажмите «повторить»") from exc
+                time.sleep(2)
     if chat and not wz:
         _remember(chat["id"], {"channel_id": channel_id, "chat_type": chat_type, "ext_chat_id": ext})
     return {"id": "wz:" + mid}

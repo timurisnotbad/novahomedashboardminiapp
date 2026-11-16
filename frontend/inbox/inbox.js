@@ -331,6 +331,7 @@
     let day = "";
     let lastAuthor = null;
     S.msgs.forEach((m) => {
+      if (m.status === "retried") return;  // replaced by its «повторить» copy
       const d = (m.at || "").slice(0, 10);
       if (d !== day) {
         day = d;

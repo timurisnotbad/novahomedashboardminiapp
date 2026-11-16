@@ -132,12 +132,17 @@ def _loop() -> None:
                 _me = {"username": me.get("username"), "name": me.get("first_name")}
                 _error = None
                 logger.info("CRM bot @%s is polling", _me["username"])
+                try:  # a webhook left on the token makes every getUpdates fail with 409: the bot never answered /start
+                    _api("deleteWebhook", json={"drop_pending_updates": False})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("CRM bot deleteWebhook: %s", exc)
                 try:
                     _api("setMyCommands", json={"commands": [{"command": "start", "description": "Что умеет бот"}, {"command": "link", "description": "Привязать к CRM: /link КОД"},
                                                              {"command": "chats", "description": "Чаты с гостями"}, {"command": "cash", "description": "Записать оплату"}]})
                 except Exception:  # noqa: BLE001
                     pass
             updates = _api("getUpdates", json={"timeout": 30, "offset": offset, "allowed_updates": ["message"]})
+            _error = None  # polling works: an old network blip must not stay on the CRM page as «bot_error»
             for u in updates or []:
                 offset = u["update_id"] + 1
                 msg = u.get("message")

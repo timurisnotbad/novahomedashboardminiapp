@@ -20,6 +20,7 @@ import logging
 import mimetypes
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -754,7 +755,7 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
             conn.execute("UPDATE inbox_chats SET username = ? WHERE id = ?", (username, r["id"]))
             changed = True
         if changed:
-            _lead_updates.append((r["id"], phone or r["phone"] or "", push_name or r["push_name"] or r["name"] or "", CHANNELS.get(channel, channel), channel, username or r["username"] or ""))
+            _leads().append((r["id"], phone or r["phone"] or "", push_name or r["push_name"] or r["name"] or "", CHANNELS.get(channel, channel), channel, username or r["username"] or ""))
         return r["id"]
     phone = phone if phone is not None else phone_of_jid(jid)
     cur = conn.execute(
@@ -762,19 +763,27 @@ def _ensure_chat(conn, jid: str, lid: str | None = None, push_name: str | None =
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
         (channel, jid, lid, phone, push_name, username, _now(), _bump(conn)),
     )
-    _lead_updates.append((cur.lastrowid, phone or "", push_name or "", CHANNELS.get(channel, channel), channel, username or ""))
+    _leads().append((cur.lastrowid, phone or "", push_name or "", CHANNELS.get(channel, channel), channel, username or ""))
     return cur.lastrowid
 
 
-_lead_updates: list = []  # (chat_id, phone, name, source, channel, username): new chats and chats that just got a phone / handle
-_new_chat_ids = _lead_updates  # old name
+_lead_tls = threading.local()  # per thread: hook threads, Telethon, the bg pool and the guest bot store messages at once
+
+
+def _leads() -> list:
+    """(chat_id, phone, name, source, channel, username): new chats and chats that just got a phone /
+    handle, of THIS thread's message. One shared list let a failed message drop another thread's leads."""
+    lst = getattr(_lead_tls, "items", None)
+    if lst is None:
+        lst = _lead_tls.items = []
+    return lst
 
 
 def _flush_new_clients() -> None:
     """Every lead gets a client card the moment it writes (outside the chat's
     transaction); a phone or @handle learned later lands on the same card."""
-    while _lead_updates:
-        chat_id, phone, name, source, channel, username = _lead_updates.pop()
+    while _leads():
+        chat_id, phone, name, source, channel, username = _leads().pop()
         try:
             from . import crm
             crm.register_lead(chat_id, phone, name, source, channel, username)
@@ -817,7 +826,7 @@ def store_message(m: dict, notify: bool = False, history: bool = False) -> dict 
     try:
         return _store_message(m, notify, history)
     except Exception:
-        _new_chat_ids.clear()  # the transaction rolled back: those chats do not exist
+        _leads().clear()  # the transaction rolled back: those chats do not exist
         raise
     finally:
         _flush_new_clients()
@@ -900,15 +909,18 @@ def _store_message(m: dict, notify: bool, history: bool) -> dict | None:
             # (the channel may trim or re-wrap the text: compare without whitespace)
             key = _tkey(m.get("text"))
             pend = None
-            for r in conn.execute("SELECT id, wa_id, text, at FROM inbox_messages WHERE chat_id = ? AND direction = 'out' "
+            for r in conn.execute("SELECT id, wa_id, text, at, author, media FROM inbox_messages WHERE chat_id = ? AND direction = 'out' "
                                   "ORDER BY id DESC LIMIT 8", (chat_id,)).fetchall():
                 if _tkey(r["text"]) != key:
                     continue
                 if (r["wa_id"] or "").startswith("local-"):
                     pend = r
                     break
-                if (r["at"] or "") >= (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S"):
-                    return None  # the same text was just sent from the CRM under another id: an echo, not a new message
+                # «the same text was just sent from the CRM under another id» = an echo. Only for a real
+                # text sent by us: two «Ок» or two photos without a caption typed on the phone are two messages
+                if key and (r["author"] or "") not in ("", "Телефон") and bool(r["media"]) == bool(m.get("media")) \
+                        and (r["at"] or "") >= (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S"):
+                    return None
             if pend:
                 conn.execute("UPDATE inbox_messages SET wa_id = ?, status = 'sent', rev = ? WHERE id = ?",
                              (m["id"], _bump(conn), pend["id"]))
@@ -1149,6 +1161,8 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
         known = _by_client_id(client_id)
         if known:
             return known
+    with database.get_conn() as conn:  # to put back if the channel refuses: a failed reply is not an answer
+        before = conn.execute("SELECT unread, notify_stage, receipt_pending FROM inbox_chats WHERE id = ?", (chat_id,)).fetchone()
     try:
         send_receipt(chat_id, "reply")  # answering = we have read it
     except Exception:  # noqa: BLE001
@@ -1201,7 +1215,22 @@ def send(chat_id: int, author: str, text: str = "", media: str | None = None, mi
             conn.execute("UPDATE inbox_messages SET status = 'failed', error = ?, rev = ? WHERE id = ?",
                          (str(exc), rev, mid))
             conn.execute("UPDATE inbox_chats SET last_status = 'failed', rev = ? WHERE id = ?", (rev, chat_id))
+            if before and before["unread"]:
+                # the guest still waits: back to «нужен ответ», the unanswered alerts keep running
+                conn.execute("UPDATE inbox_chats SET unread = MAX(unread, ?), receipt_pending = ?, "
+                             "notify_stage = CASE WHEN notify_stage = 9 THEN ? ELSE notify_stage END WHERE id = ?",
+                             (before["unread"], before["receipt_pending"], before["notify_stage"], chat_id))
         raise
+    for attempt in range(4):  # the guest already has it: a «database is locked» here must not turn into a resend
+        try:
+            return _mark_sent(chat_id, mid, res)
+        except sqlite3.OperationalError:
+            if attempt == 3:
+                raise
+            time.sleep(1 + attempt)
+
+
+def _mark_sent(chat_id: int, mid: int, res: dict) -> dict:
     with database.get_conn() as conn:
         rev = _bump(conn)
         dup = conn.execute("SELECT id FROM inbox_messages WHERE wa_id = ? AND id != ?", (res["id"], mid)).fetchone()
@@ -1461,13 +1490,19 @@ def delete_sent(message_id: int, who: dict) -> dict:
 
 
 def retry(message_id: int, author: str) -> dict:
+    """«повторить» under a red message. The failed row is kept as a «replaced» mark
+    with its client_id moved to the new message: a phone repeating the same reply
+    (outbox) then finds it instead of sending the guest a second copy, and other
+    open browsers see the red bubble go away instead of keeping it forever."""
     with database.get_conn() as conn:
         r = conn.execute("SELECT * FROM inbox_messages WHERE id = ? AND status = 'failed'", (message_id,)).fetchone()
         if not r:
             raise BridgeError("Сообщение не найдено")
-        conn.execute("DELETE FROM inbox_messages WHERE id = ?", (message_id,))
-        _bump(conn)
-    return send(r["chat_id"], author, r["text"] or "", r["media"], r["mime"], r["file_name"], r["quoted_wa_id"])
+        conn.execute("UPDATE inbox_messages SET status = 'retried', client_id = NULL, rev = ? WHERE id = ?", (_bump(conn), message_id))
+    # the row stays as «retried» (the chat pages hide it): deleting it could not reach the
+    # other open browsers — they kept showing the red bubble
+    return send(r["chat_id"], author, r["text"] or "", r["media"], r["mime"], r["file_name"], r["quoted_wa_id"],
+                client_id=r["client_id"])
 
 
 def _norm_phone(phone: str) -> str:
