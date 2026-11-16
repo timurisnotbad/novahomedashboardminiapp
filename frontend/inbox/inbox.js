@@ -324,6 +324,17 @@
 
   function renderMsgs(keepScroll) {
     const el = $("msgs");
+    // a voice note / video being played would be destroyed by the rebuild (a delivery tick is enough
+    // to trigger one): wait until it stops, then repaint once
+    const playing = Array.from(el.querySelectorAll("audio, video")).find((x) => !x.paused && !x.ended);
+    if (playing && keepScroll !== "bottom" && keepScroll !== "older") {
+      if (!playing.dataset.waitRender) {
+        playing.dataset.waitRender = "1";
+        const again = () => { playing.removeEventListener("pause", again); playing.removeEventListener("ended", again); renderMsgs(); };
+        playing.addEventListener("pause", again); playing.addEventListener("ended", again);
+      }
+      return;
+    }
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     const prevH = el.scrollHeight;
     const prevTop = el.scrollTop;
@@ -365,8 +376,16 @@
   const isPhone = () => window.innerWidth <= 760;
   let histPushed = false;  // the open chat's history entry is ours: ← does history.back()
 
+  const drafts = {};  // unsent text per chat: a reply typed for one guest must never be left in the box for another
   async function openChat(id) {
     const c = S.chats.get(id);
+    const prevId = S.open && S.open.id;
+    if (prevId !== id) {
+      if (prevId) drafts[prevId] = $("text").value;
+      $("text").value = drafts[id] || "";
+      delete drafts[id];
+      autosize();
+    }
     S.open = c || { id };
     S.msgs = [];
     S.noOlder = false;

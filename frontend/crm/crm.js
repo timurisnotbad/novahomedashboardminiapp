@@ -94,6 +94,7 @@
   function showAuth(setup) {
     setupMode = !!setup;
     if (inboxFrame) { inboxFrame.remove(); inboxFrame = null; } // no chats behind the login form
+    if (cashFrame) { cashFrame.remove(); cashFrame = null; } // nor the previous user's payments page
     $("tabbar").classList.add("hidden");
     $("app").classList.add("hidden");
     $("auth").classList.remove("hidden");
@@ -629,7 +630,10 @@
 
   // ---- bookings ---------------------------------------------------------------
   ROUTES.bookings = async (id) => {
-    if (id) setTimeout(() => openBooking(parseInt(id, 10)), 50);
+    if (id) setTimeout(() => {
+      openBooking(parseInt(id, 10));
+      try { history.replaceState(null, "", "#bookings"); } catch (e) { /* old WebView */ }  // a repaint (day arrows, sync) must not reopen it
+    }, 50);
     const seq = S.navSeq;
     const st = S.cache.bk || { view: "day", date: todayIso(), start: todayIso() };
     S.cache.bk = st;
@@ -812,6 +816,8 @@
       on("tg-off", (e) => { if (!confirm("Выйти из Telegram-аккаунта? Чаты останутся, новые сообщения приходить перестанут.")) return; busy(e.currentTarget, async () => { await post("/channels/telegram/logout"); tgStep = null; render(); }); });
     };
     await render();
+    if (S.route !== "channels" || stale(seq)) return;  // left (and maybe came back) meanwhile: that visit owns the timer
+    clearInterval(chTimer);
     // the page fans out to the bridge, Wazzup, Meta and Telegram on every render: not more often
     // than every 30 s, not while the tab is hidden, and not while the user is typing or reading an opened <details>
     chTimer = setInterval(() => {
@@ -1087,7 +1093,7 @@
   // puts the control into #id; .value() → {media, mime, file_name}: media null = as it was, "" = no file
   function fileField(id, cur) {
     let st = cur && cur.media ? { media: cur.media, mime: cur.mime || "", file_name: cur.file_name || "Файл", url: cur.url || cur.file_url || "" } : null;
-    let changed = false;
+    let changed = false, uploading = false;
     const el = $(id);
     const draw = () => {
       el.innerHTML = st
@@ -1098,14 +1104,16 @@
         const f = inp.files[0]; if (!f) return;
         el.querySelectorAll("label,button").forEach((b) => b.classList.add("is-busy"));
         toast("Загружаю файл…");
+        uploading = true;
         try { st = await uploadFile(f); changed = true; toast("Файл загружен — не забудьте «Сохранить»"); } catch (err) { toast(err.message); }
+        uploading = false;
         draw();
       });
       const un = el.querySelector("[data-unfile]"); if (un) un.addEventListener("click", () => { st = null; changed = true; draw(); });
     };
     draw();
     return { value: () => (changed ? { media: st ? st.media : "", mime: st ? st.mime : "", file_name: st ? st.file_name : "" } : { media: null, mime: "", file_name: "" }),
-      current: () => st };
+      current: () => st, busy: () => uploading };
   }
 
   // ---- quick commands ------------------------------------------------------------
@@ -1150,6 +1158,7 @@
       <div class="row-actions"><button class="btn" data-close>Отмена</button><button class="btn primary" id="cm-go">Сохранить</button></div>`);
     const cmFile = fileField("cm-file", t.file);
     $("cm-go").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+      if (cmFile.busy()) { toast("Файл ещё загружается — подождите пару секунд"); return; }
       const body = Object.assign({ command: val("cm-cmd"), title: val("cm-title"), text: $("cm-text").value.trim() }, cmFile.value());
       if (t.id) await put(`/commands/${t.id}`, body); else await post("/commands", body);
       closeModal(); navigate();
@@ -1647,7 +1656,7 @@
     $("sf-kind").addEventListener("change", upd); upd();
     $("sf-prev").addEventListener("click", async () => { try { const r = await post("/checklist/preview", { text: $("sf-ru").value }); $("sf-prev-out").textContent = (r.booking ? `[${r.booking.apartment}, ${r.booking.guest}] ` : "") + r.text; } catch (err) { toast(err.message); } });
     const read = () => { const k = $("sf-kind").value; const n = Math.max(1, parseInt($("sf-off").value || "1", 10)); const [anchor, rel] = k === "now" ? ["now", "day"] : k.split(":"); return { title: val("sf-title") || ($("sf-ru").value.trim().slice(0, 40) || "Сообщение"), anchor, offset: rel === "before" ? -n : rel === "after" ? n : 0, time: k === "now" ? "" : val("sf-time"), enabled: $("sf-on").checked, message: $("sf-ru").value.trim(), message_en: $("sf-en").value.trim(), ...(sfFile.current() ? { media: sfFile.current().media, mime: sfFile.current().mime, file_name: sfFile.current().file_name } : {}) }; };
-    $("sf-go").addEventListener("click", (e) => busy(e.currentTarget, async () => { if (sfFile.current() && !$("sf-ru").value.trim()) { toast("К файлу нужен текст гостю — хотя бы одна строка"); return; } const list = steps.map((s) => Object.assign({}, s)); if (idx >= 0) list[idx] = read(); else list.push(read()); await save(list); closeModal(); navigate(); }));
+    $("sf-go").addEventListener("click", (e) => busy(e.currentTarget, async () => { if (sfFile.busy()) { toast("Файл ещё загружается — подождите пару секунд"); return; } if (sfFile.current() && !$("sf-ru").value.trim()) { toast("К файлу нужен текст гостю — хотя бы одна строка"); return; } const list = steps.map((s) => Object.assign({}, s)); if (idx >= 0) list[idx] = read(); else list.push(read()); await save(list); closeModal(); navigate(); }));
     const dl = $("sf-del"); if (dl) dl.addEventListener("click", (e) => busy(e.currentTarget, async () => { if (!confirm("Удалить это сообщение?")) return; const list = steps.filter((_, i) => i !== idx); await save(list); closeModal(); navigate(); }));
   }
   function replyRuleForm(r) {
@@ -1681,11 +1690,11 @@
     $("popup-text").textContent = m.text || "";
     $("popup-sub").textContent = "Нажмите, чтобы открыть чат";
     el.classList.remove("hidden");
-    el.onclick = (ev) => { el.classList.add("hidden"); if (ev && ev.target && ev.target.id === "popup-x") return; location.hash = `#messages/${m.chat_id}`; };
+    el.onclick = (ev) => { el.classList.add("hidden"); if (ev && ev.target && ev.target.id === "popup-x") return; goHash(`#messages/${m.chat_id}`); };
     clearTimeout(showPopup.t);
     showPopup.t = setTimeout(() => el.classList.add("hidden"), 8000);
     if ("Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") {
-      try { const n = new Notification(`${m.channel} · ${m.title}`, { body: m.text || "", tag: "nh-" + m.chat_id }); n.onclick = () => { window.focus(); location.hash = `#messages/${m.chat_id}`; n.close(); }; } catch (e) { /* ignore */ }
+      try { const n = new Notification(`${m.channel} · ${m.title}`, { body: m.text || "", tag: "nh-" + m.chat_id }); n.onclick = () => { window.focus(); goHash(`#messages/${m.chat_id}`); n.close(); }; } catch (e) { /* ignore */ }
     }
   }
   // ---- push notifications on this device (phone or computer) ------------------------------
@@ -1741,7 +1750,10 @@
   try { $("notif-sound").checked = localStorage.getItem("nh_sound") !== "0"; } catch (e) { /* ignore */ }
   $("notif-sound").addEventListener("change", (e) => { try { localStorage.setItem("nh_sound", e.target.checked ? "1" : "0"); } catch (err) { /* ignore */ } });
   // ---- boot --------------------------------------------------------------------------
+  // the same hash does not fire «hashchange»: the chat would not open (the operator switched chats inside the frame)
+  function goHash(h) { if (location.hash === h) navigate(); else location.hash = h; }
   async function badges() {
+    if (!S.me) return;  // logged out / session expired: no 401 every 5 s on the login screen (boot starts it again)
     try {
       // long-poll: answered at once on a new message, otherwise held ~25 s
       // the very first call answers at once (the counters must show up); after that every
@@ -1791,7 +1803,10 @@
     $("auth").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("tabbar").classList.toggle("hidden", window.innerWidth > 760);
-    window.addEventListener("resize", () => $("tabbar").classList.toggle("hidden", window.innerWidth > 760));
+    if (!boot.resizeBound) {  // boot runs again on every login: one listener, not one per login
+      boot.resizeBound = true;
+      window.addEventListener("resize", () => $("tabbar").classList.toggle("hidden", window.innerWidth > 760));
+    }
     document.body.classList.toggle("is-admin", S.me.role === "admin");
     $("me-name").textContent = S.me.name;
     $("me-mail").textContent = S.me.email;

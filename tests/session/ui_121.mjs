@@ -1,0 +1,30 @@
+// v121: the text box belongs to its chat; booking card does not reopen; no polling on the login screen
+import { createRequire } from "module";
+const { chromium } = createRequire(import.meta.url)("playwright");
+const B = "http://127.0.0.1:8000";
+const ok = (name, cond, extra) => { console.log((cond ? "PASS " : "FAIL ") + name + (extra ? " | " + extra : "")); if (!cond) process.exitCode = 1; };
+const browser = await chromium.launch();
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+const page = await ctx.newPage(); const errors = []; page.on("pageerror", (e) => errors.push(e.message)); page.on("dialog", (d) => d.accept());
+await page.goto(B + "/crm/"); await page.fill("#auth-email", "admin@novahome.uz"); await page.fill("#auth-pass", "secret123"); await page.click("#auth-btn"); await page.waitForSelector("#app:not(.hidden)");
+await page.goto(B + "/inbox/"); await page.waitForSelector(".ib-chat");
+const chats = page.locator(".ib-chat");
+await chats.nth(0).click(); await page.waitForSelector(".ib-m.in");
+await page.fill("#text", "Код двери 4321 — только для этого гостя");
+await chats.nth(1).click(); await page.waitForTimeout(400);
+ok("another chat: empty box", (await page.inputValue("#text")) === "", await page.inputValue("#text"));
+await page.fill("#text", "черновик второго");
+await chats.nth(0).click(); await page.waitForTimeout(400);
+ok("back: own draft returns", (await page.inputValue("#text")) === "Код двери 4321 — только для этого гостя");
+await chats.nth(1).click(); await page.waitForTimeout(400);
+ok("second chat keeps its draft", (await page.inputValue("#text")) === "черновик второго");
+// login screen: no /badges polling
+const page2 = await ctx.newPage(); let badges = 0;
+page2.on("request", (r) => { if (r.url().includes("/badges")) badges++; });
+await page2.goto(B + "/crm/"); await page2.waitForSelector("#app:not(.hidden)");
+await page2.evaluate(() => fetch("/api/crm/logout", { method: "POST", credentials: "include" }));
+await page2.reload(); await page2.waitForSelector("#auth:not(.hidden)");
+badges = 0; await page2.waitForTimeout(12000);
+ok("no badge polling on the login screen", badges === 0, "requests " + badges);
+ok("no page errors", errors.length === 0, errors.join("; "));
+await browser.close();
