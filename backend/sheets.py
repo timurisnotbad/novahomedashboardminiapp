@@ -46,6 +46,3 @@ def fetch_balances(force: bool = False) -> dict:
     return data
 
 
-def invalidate() -> None:
-    _cache["data"] = None
-    _cache["at"] = 0.0

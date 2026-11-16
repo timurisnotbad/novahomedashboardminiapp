@@ -3,7 +3,7 @@ attached to deals; a chat nobody attached yet is «Неразобранное» 
 the deal card is a timeline — messages, notes, tasks — with a composer.
 """
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from . import crm, database, inbox
 
@@ -184,11 +184,6 @@ def backfill_deals() -> int:
     return n
 
 
-def reject(chat_id: int) -> None:
-    with database.get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO crm_unsorted_rejected (chat_id, at) VALUES (?, ?)", (chat_id, crm._now()))
-
-
 # ---------------------------------------------------------------------------
 # Deal ↔ chats
 # ---------------------------------------------------------------------------
@@ -197,11 +192,6 @@ def link_chat(did: int, chat_id: int) -> None:
         conn.execute("INSERT OR IGNORE INTO crm_deal_chats (deal_id, chat_id, linked_at) VALUES (?, ?, ?)", (did, chat_id, crm._now()))
         conn.execute("DELETE FROM crm_unsorted_rejected WHERE chat_id = ?", (chat_id,))
         conn.execute("UPDATE crm_deals SET updated_at = ? WHERE id = ?", (crm._now(), did))
-
-
-def unlink_chat(did: int, chat_id: int) -> None:
-    with database.get_conn() as conn:
-        conn.execute("DELETE FROM crm_deal_chats WHERE deal_id = ? AND chat_id = ?", (did, chat_id))
 
 
 def autolink(did: int) -> int:
@@ -235,32 +225,9 @@ def deal_chats(did: int) -> list[dict]:
     return out
 
 
-def deal_for_chat(chat_id: int) -> int | None:
-    with database.get_conn() as conn:
-        r = conn.execute("SELECT deal_id FROM crm_deal_chats WHERE chat_id = ? ORDER BY linked_at DESC LIMIT 1", (chat_id,)).fetchone()
-    return r["deal_id"] if r else None
-
-
 # ---------------------------------------------------------------------------
 # Notes & timeline
 # ---------------------------------------------------------------------------
-def add_note(text: str, author: str, deal_id: int | None = None, client_id: int | None = None) -> dict:
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("Пустое примечание")
-    with database.get_conn() as conn:
-        nid = conn.execute("INSERT INTO crm_notes (deal_id, client_id, text, author, at) VALUES (?, ?, ?, ?, ?)",
-                           (deal_id, client_id, text, author, crm._now())).lastrowid
-        if deal_id:
-            conn.execute("UPDATE crm_deals SET updated_at = ? WHERE id = ?", (crm._now(), deal_id))
-        return dict(conn.execute("SELECT * FROM crm_notes WHERE id = ?", (nid,)).fetchone())
-
-
-def delete_note(nid: int) -> None:
-    with database.get_conn() as conn:
-        conn.execute("DELETE FROM crm_notes WHERE id = ?", (nid,))
-
-
 def timeline(did: int, client_id: int | None, chat_ids: list[int], limit: int = 150) -> list[dict]:
     items: list[dict] = []
     with database.get_conn() as conn:
@@ -315,42 +282,6 @@ def deal_full(did: int) -> dict | None:
 # ---------------------------------------------------------------------------
 # Kanban with activity
 # ---------------------------------------------------------------------------
-def kanban(pipeline_id: int, q: str = "") -> dict:
-    deals = crm.deals(pipeline_id, q=q)
-    ids = [d["id"] for d in deals]
-    last: dict = {}
-    nxt: dict = {}
-    unread: dict = {}
-    chan: dict = {}
-    if ids:
-        qs = ",".join("?" * len(ids))
-        with database.get_conn() as conn:
-            for r in conn.execute(f"SELECT l.deal_id, c.last_at, c.last_text, c.last_dir, c.unread, c.channel FROM crm_deal_chats l "  # noqa: S608
-                                  f"JOIN inbox_chats c ON c.id = l.chat_id WHERE l.deal_id IN ({qs})", ids).fetchall():
-                did = r["deal_id"]
-                unread[did] = unread.get(did, 0) + (r["unread"] or 0)
-                chan.setdefault(did, set()).add(r["channel"] or "wa")
-                if (r["last_at"] or "") > (last.get(did, {}).get("at") or ""):
-                    last[did] = {"at": r["last_at"], "text": r["last_text"], "dir": r["last_dir"]}
-            for r in conn.execute(f"SELECT deal_id, MIN(due) AS due FROM crm_tasks WHERE status = 'open' AND deal_id IN ({qs}) GROUP BY deal_id",  # noqa: S608
-                                  ids).fetchall():
-                nxt[r["deal_id"]] = r["due"]
-    now = datetime.now().isoformat(timespec="minutes")
-    today = date.today().isoformat()
-    for d in deals:
-        d["last_message"] = last.get(d["id"])
-        d["unread"] = unread.get(d["id"], 0)
-        d["channels"] = sorted(chan.get(d["id"], set()))
-        due = nxt.get(d["id"])
-        d["task_due"] = due
-        d["task_state"] = None if due is None else "overdue" if due < now else "today" if due[:10] == today else "later"
-        if due is None and d["id"] in nxt:
-            d["task_state"] = "later"
-        d["activity_at"] = max(d["updated_at"] or "", (d["last_message"] or {}).get("at") or "")
-    deals.sort(key=lambda d: d["activity_at"], reverse=True)
-    return {"deals": deals, "unsorted": unsorted() if not q else []}
-
-
 def home(uid: int) -> dict:
     """Рабочий стол: what needs attention today."""
     base = crm.home(uid)

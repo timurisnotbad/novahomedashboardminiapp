@@ -159,18 +159,6 @@
         body: JSON.stringify({ status }),
       }),
     deleteTask: (id) => req(`/tasks/${id}`, { method: "DELETE" }),
-    updateCleaningStatus: (apartment, status, date) =>
-      req(`/cleaning/${encodeURIComponent(apartment)}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, date }),
-      }),
     sync: () => req("/sync", { method: "POST", timeoutMs: 90000 }),  // RC pull can be slow
-    addPayment: (payload) =>
-      req("/payments", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }),
   };
 })();

@@ -5,6 +5,7 @@ synchronous; FastAPI runs sync path operations in a threadpool, which is more
 than enough for a single-property operations dashboard.
 """
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -385,17 +386,6 @@ def upsert_bookings(bookings: Iterable[dict]) -> int:
 
 def _num(value):
     return util.num(value, 0)
-
-
-def replace_all_bookings(bookings: list[dict]) -> int:
-    """Full refresh: clear the table then insert, in a single transaction.
-    Kept for tests / demo resets; the regular sync uses the window variant."""
-    rows = _booking_rows(bookings)
-    with get_conn() as conn:
-        conn.execute("DELETE FROM bookings")
-        conn.execute("DELETE FROM bookings_missing")
-        conn.executemany(_insert_sql(), rows)
-    return len(rows)
 
 
 MISSES_TO_CANCEL = 2
@@ -1181,21 +1171,6 @@ def prune_booking_snapshots(end_before: str) -> int:
         return cur.rowcount
 
 
-def known_booking_ids() -> set:
-    with get_conn() as conn:
-        return {r[0] for r in conn.execute("SELECT booking_id FROM notified_bookings").fetchall()}
-
-
-def add_notified_bookings(ids) -> None:
-    ids = [(i,) for i in ids]
-    if not ids:
-        return
-    with get_conn() as conn:
-        conn.executemany(
-            "INSERT OR IGNORE INTO notified_bookings (booking_id) VALUES (?)", ids
-        )
-
-
 def get_booking_snapshots() -> dict:
     with get_conn() as conn:
         cur = conn.execute("SELECT * FROM booking_snapshots")
@@ -1246,26 +1221,6 @@ def delete_task(task_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Payments
 # ---------------------------------------------------------------------------
-def add_payment(payment: dict) -> int:
-    with get_conn() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO payments_cash (booking_id, apartment_name, amount, currency, method, paid_at, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                payment.get("booking_id"),
-                payment.get("apartment_name"),
-                payment.get("amount"),
-                payment.get("currency", "UZS"),
-                payment.get("method", "наличные"),
-                payment.get("paid_at"),
-                payment.get("note", ""),
-            ),
-        )
-        return cur.lastrowid
-
-
 # ---------------------------------------------------------------------------
 # Sync log
 # ---------------------------------------------------------------------------

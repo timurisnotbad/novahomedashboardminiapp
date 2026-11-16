@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 
-from . import config, logsetup, notify
+from . import config, logsetup
 
 logger = logging.getLogger("nova.watchdog")
 

@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from .. import auth, config, database
+from .. import auth, database
 
 router = APIRouter(prefix="/payroll", tags=["payroll"], dependencies=[Depends(auth.owner_guard)])
 

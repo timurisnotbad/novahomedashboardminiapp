@@ -4,7 +4,6 @@ A «response» is the first outgoing message after one or more guest messages in
 its time is counted from the first unanswered guest message of that burst. Automatic
 authors (assistant, auto-replies) are excluded from the people table but shown in totals."""
 import statistics
-from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from . import database

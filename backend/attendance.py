@@ -17,10 +17,6 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return 2 * 6371000 * asin(sqrt(a))
 
 
-def in_zone(lat: float, lng: float) -> bool:
-    return haversine_m(lat, lng, config.WORK_LAT, config.WORK_LNG) <= config.WORK_RADIUS_M
-
-
 def _lateness(now: datetime):
     try:
         hh, mm = (int(x) for x in config.SHIFT_START.split(":")[:2])
@@ -96,8 +92,3 @@ def check_arrival(staff_id, staff_name, lat, lng, now=None) -> dict:
     }
 
 
-def register_arrival(staff_id, staff_name, lat, lng, now=None):
-    """Backwards-compatible wrapper: returns the broadcast text on a fresh
-    arrival, else None."""
-    res = check_arrival(staff_id, staff_name, lat, lng, now)
-    return res.get("notify") if res.get("status") == "recorded" else None

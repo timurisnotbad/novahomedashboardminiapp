@@ -1812,7 +1812,6 @@ async def attendance_remind(context: ContextTypes.DEFAULT_TYPE) -> None:
         pass
     done = {r["staff_id"] for r in database.attendance_for(today)}
     dh, dm = config.ATTEND_DEADLINE_T
-    sh, sm = config.ATTEND_REMIND_T  # noqa: F841 — reminder fires at this time
     text = (
         "📍 Доброе утро! Не забудьте отметить приход: находясь на объекте, "
         "отправьте боту live-геолокацию (Прикрепить → Геопозиция → «Транслировать») "

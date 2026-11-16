@@ -31,8 +31,6 @@ API = _os.environ.get("WAZZUP_API_URL", "https://api.wazzup24.ru/v3").rstrip("/"
 MAX_MEDIA = 30 * 1024 * 1024
 # chatType in Wazzup → our channel code
 CHANNEL_BY_TYPE = {"whatsapp": "wz", "whatsgroup": "wz", "instagram": "wzig", "telegram": "wztg", "tgapi": "wztg", "viber": "wz"}
-TYPE_BY_CHANNEL = {"wz": "whatsapp", "wzig": "instagram", "wztg": "telegram"}
-
 SCHEMA = """
 -- which Wazzup channel/chat id a chat belongs to (needed to send)
 CREATE TABLE IF NOT EXISTS wazzup_chats (

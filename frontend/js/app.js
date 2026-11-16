@@ -241,35 +241,6 @@
     document.getElementById("sheet").classList.remove("hidden");
   }
 
-  // ---- Cleaning status ------------------------------------------------------
-  async function setCleaning(apt, date, status, cardEl) {
-    ui.haptic("success");
-    try {
-      await api.updateCleaningStatus(apt, status, date);
-      // update caches so re-render reflects the change
-      invalidateCleaningCaches(apt, date, status);
-      const mod = SCREENS[current].mod();
-      document.getElementById(SCREENS[current].el).innerHTML = mod.render(cache[current]);
-      applyRole();
-      ui.toast(status === "done" ? "Уборка готова" : "Уборка начата");
-    } catch (e) {
-      ui.toast("Ошибка обновления");
-    }
-  }
-
-  function invalidateCleaningCaches(apt, date, status) {
-    ["today", "tomorrow", "cleaning"].forEach((name) => {
-      const d = cache[name];
-      if (!d) return;
-      (d.cleanings || []).forEach((c) => {
-        if (c.apartment === apt && c.cleaning_date === date) c.status = status;
-      });
-      (d.checkouts || []).forEach((c) => {
-        if (c.apartment === apt) c.cleaning_status = status;
-      });
-    });
-  }
-
   // ---- Sync -----------------------------------------------------------------
   let syncing = false;
   let lastSyncAt = 0;

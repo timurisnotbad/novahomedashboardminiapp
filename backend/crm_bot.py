@@ -10,7 +10,7 @@ import time
 
 import requests
 
-from . import config, database, inbox
+from . import config, inbox
 
 logger = logging.getLogger(__name__)
 _API = "https://api.telegram.org"

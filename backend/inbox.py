@@ -840,7 +840,6 @@ def _phone_hint(m: dict) -> dict | None:
     written in the text («мой номер +998 90 …»)."""
     kind, text = m.get("kind") or "text", (m.get("text") or "")
     if kind == "contact":
-        d = re.sub(r"\D", "", text)
         digits = re.findall(r"\+?\d[\d\s\-()]{7,}\d", text)
         if not digits:
             return None

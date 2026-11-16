@@ -2,7 +2,6 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import ai, auth, cash, config, crm, crm_bot, crm_amo, crm_ext, database, inbox, logsetup, rc_push, rc_sync, reminders, scheduler, tg_channels, wazzup, docs, webpush, booking_ext
-from .routers import (bookings, cleaning, control, dashboard, finance, occupancy, payments,
+from .routers import (bookings, cleaning, control, dashboard, finance, occupancy,
                       payrecon, payroll, penalties, prices, sync, tasks)
 from .routers import crm as crm_router
 from .routers import inbox as inbox_router
@@ -113,7 +112,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1500)  # chat lists / bookings g
 # API routers — every data endpoint requires a legitimate dashboard user
 # (see auth.access_guard); owner-only routers add their own stricter guard.
 for r in (dashboard.router, bookings.router, cleaning.router,
-          occupancy.router, payments.router, sync.router, finance.router,
+          occupancy.router, sync.router, finance.router,
           tasks.router, prices.router, penalties.router, payroll.router,
           payrecon.router, control.router):
     app.include_router(r, prefix=config.API_PREFIX, dependencies=[Depends(auth.access_guard)])

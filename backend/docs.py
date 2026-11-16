@@ -112,12 +112,6 @@ def set_company(data: dict) -> dict:
 
 
 # ---- documents -------------------------------------------------------------------
-def _fmt_money(v, cur="USD") -> str:
-    v = float(v or 0)
-    s = f"{v:,.2f}".replace(",", " ")
-    return f"{s} {'$' if cur == 'USD' else cur}"
-
-
 _dmy = util.dmy
 
 
@@ -300,7 +294,6 @@ def render_pdf(doc: dict) -> bytes:
         tb = Table(rows, colWidths=widths)
         tb.setStyle(TableStyle(style))
         return tb
-    hr = lambda c=line, w=0.6: [("LINEBELOW", (0, 0), (-1, -1), w, c)]  # noqa: E731
 
     if doc["kind"] in ("invoice", "receipt"):
         head = grid([[Paragraph(f"{_sp(brand)}<br/><font size=7 color='#6B7280'>{_sp(comp.get('tagline') or '')}</font><br/><font size=8 color='#6B7280'>{contacts}</font>", st["brand"]),

@@ -356,7 +356,6 @@ def stats() -> dict:
 
 
 def _setup() -> dict:
-    from . import crm
     with database.get_conn() as conn:
         photos = conn.execute("SELECT COUNT(DISTINCT apartment) FROM crm_apartment_photos").fetchone()[0]
         descr = conn.execute("SELECT COUNT(*) FROM crm_apartment_info WHERE COALESCE(descr, '') != ''").fetchone()[0]
@@ -822,7 +821,7 @@ def availability(checkin: str, checkout: str, apartment: str = "") -> dict:
 
 
 def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
-    from . import crm, crm_amo, inbox, notify
+    from . import crm, crm_amo, inbox
     chat = ctx["chat"]
     try:
         if name == "check_availability":
@@ -889,7 +888,7 @@ def _run_tool(name: str, inp: dict, ctx: dict, state: dict) -> str:
 
 
 def _do_handover(chat_id: int, info: dict, mode: str) -> None:
-    from . import crm, inbox, notify
+    from . import crm, inbox
     text = f"🙋 ИИ передал чат человеку: {info.get('reason') or ''}\n{info.get('summary') or ''}".strip()
     with database.get_conn() as conn:
         conn.execute("UPDATE inbox_chats SET ai_paused_until = ?, ai_note = ?, ai_turns = 0, unread = CASE WHEN unread > 0 THEN unread ELSE 1 END, "
@@ -1241,21 +1240,6 @@ def clear_draft(chat_id: int) -> None:
     from . import inbox
     with database.get_conn() as conn:
         conn.execute("UPDATE inbox_chats SET ai_draft = NULL, ai_draft_photos = NULL, rev = ? WHERE id = ?", (inbox._bump(conn), chat_id))  # noqa: SLF001
-
-
-def rate(chat_id: int, good: bool) -> None:
-    """👍 / 👎 on the assistant's last reply: a liked reply becomes an example, a
-    disliked one is kept out of the examples."""
-    with database.get_conn() as conn:
-        last_out = conn.execute("SELECT text FROM inbox_messages WHERE chat_id = ? AND direction = 'out' AND author = ? ORDER BY id DESC LIMIT 1",
-                                (chat_id, AUTHOR)).fetchone()
-        last_in = conn.execute("SELECT text FROM inbox_messages WHERE chat_id = ? AND direction = 'in' AND kind = 'text' ORDER BY id DESC LIMIT 1",
-                               (chat_id,)).fetchone()
-        if last_out and last_in and last_in["text"]:
-            conn.execute("INSERT INTO ai_examples (q, a, source, chat_id, at, rating) VALUES (?, ?, 'rated', ?, ?, ?)",
-                         (last_in["text"][:1000], last_out["text"][:2000], chat_id, util.now(), 1 if good else -1))
-    if not good and last_out and last_in and enabled():
-        bg.run(learn_lesson, chat_id, last_in["text"] or "", last_out["text"] or "", "", "dislike", key=f"ai-lesson-{chat_id}")
 
 
 def test_call() -> dict:

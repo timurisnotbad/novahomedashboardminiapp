@@ -738,7 +738,6 @@
       const ok = w.status === "connected";
       const num = w.me ? "+" + (w.me.id || "").split("@")[0].split(":")[0] : "";
       const state = (good, text) => `<div class="small ${good === true ? "ok" : good === false ? "bad" : "muted"}">${text}</div>`;
-      const cfgRow = (name, hint) => `<div class="muted small">${name}: <span class="mono">${esc(hint)}</span></div>`;
       const tgForm = !tg.configured ? "" : tg.authorized ? "" : !admin ? `<div class="muted small">Вход выполняет администратор.</div>` :
         tgStep === "code" || tg.pending_phone && tgStep !== "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Код из Telegram (${esc(tg.pending_phone || "")})</label><input class="field" id="tg-code" inputmode="numeric" placeholder="12345" /></div><div><button class="btn primary" id="tg-sign">Войти</button> <button class="btn link" id="tg-again">другой номер</button></div></div>`
         : tgStep === "password" ? `<div class="form-row" style="margin-top:10px;align-items:end"><div><label class="lbl">Пароль двухэтапной защиты</label><input class="field" id="tg-pass" type="password" /></div><div><button class="btn primary" id="tg-sign-pass">Войти</button></div></div>`

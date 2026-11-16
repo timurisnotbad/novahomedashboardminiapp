@@ -335,14 +335,9 @@ def _apartment_codes(room: str) -> list[str]:
     return list(dict.fromkeys(f"{m.group(1).upper()}-{m.group(2)}" for m in re.finditer(r"\b([A-Za-zА-Я]{1,4})\s*-?\s*(\d{2,4})\b", room or "")))
 
 
-def _apartment_code(room: str) -> str:
-    m = re.search(r"\b([A-Za-zА-Я]{1,4})\s*-?\s*(\d{2,4})\b", room or "")
-    return f"{m.group(1).upper()}-{m.group(2)}" if m else ""
-
-
 def _enrich(chat_id: int, guest: str, reservation: str, p: dict):
     """Guest card from the Booking.com panel + link to the RealtyCalendar booking."""
-    from . import crm, crm_ext
+    from . import crm
     cid = crm.ensure_client_for_chat(chat_id, guest or "Гость Booking.com", "Booking.com")
     lines = [f"Booking.com № {reservation}" if reservation else "Booking.com"]
     if p.get("checkin") and p.get("checkout"):

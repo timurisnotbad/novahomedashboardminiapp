@@ -1,8 +1,6 @@
 """«Чаты» — shared WhatsApp inbox API (see backend/inbox.py)."""
 import hmac
-import mimetypes
 import re
-import uuid
 
 import asyncio
 
@@ -339,13 +337,6 @@ def message_transcribe(message_id: int, user: dict = Depends(inbox_user)):  # no
     if not text:
         raise HTTPException(status_code=424, detail="Не удалось расшифровать: см. журнал ИИ")
     return {"text": text}
-
-
-@router.post("/chats/{chat_id}/ai/rate")
-def chat_ai_rate(chat_id: int, payload: dict, user: dict = Depends(inbox_user)):  # noqa: B008
-    from .. import ai
-    ai.rate(chat_id, bool(payload.get("good")))
-    return {"ok": True}
 
 
 @router.post("/chats/{chat_id}/file")

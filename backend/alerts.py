@@ -91,7 +91,6 @@ def resolve(key: str, text: str) -> None:
 def task_reminders() -> int:
     """Every 5 minutes: a CRM task due within 30 minutes (or overdue) → its assignee
     (everyone with «tasks» on when unassigned), once per task."""
-    from . import crm
     now = datetime.now()
     soon = (now + timedelta(minutes=30)).isoformat(timespec="minutes")
     floor = (now - timedelta(hours=12)).isoformat(timespec="minutes")

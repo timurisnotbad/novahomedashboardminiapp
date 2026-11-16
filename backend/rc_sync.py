@@ -436,6 +436,7 @@ def _sync_history(today: date) -> None:
         # a failed range is tried again in an hour, not on every sync
         crm.set_setting("rc_history_claim", (now + timedelta(minutes=30)).isoformat(timespec="seconds"))
     if ok:
+        crm.set_setting("rc_history_claim", "")  # done: a later reset (new statuses found) may start it again at once
         crm.set_setting(key, today.isoformat())
         logger.info("history sync: %d past bookings", total)
         try:

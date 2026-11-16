@@ -228,24 +228,12 @@ def apartment_photo_del(photo_id: int, user: dict = Depends(admin_user)):  # noq
 
 
 # ---- RealtyCalendar prices ------------------------------------------------------------
-@router.get("/rc/rates")
-def rc_rates_status(user: dict = Depends(current_user)):  # noqa: B008
-    from .. import rc_rates
-    return rc_rates.status()
-
-
 @router.post("/rc/rates/sync")
 def rc_rates_sync(user: dict = Depends(admin_user)):  # noqa: B008
     from .. import rc_rates
     r = rc_rates.sync(force=True)
     r["status"] = rc_rates.status()
     return r
-
-
-@router.get("/rc/rates/quote")
-def rc_rates_quote(checkin: str, checkout: str, user: dict = Depends(current_user)):  # noqa: B008
-    from .. import ai
-    return ai.availability(_date(checkin), _date(checkout))
 
 
 # ---- AI assistant settings ----------------------------------------------------------
@@ -265,12 +253,6 @@ def ai_settings_save(payload: dict, user: dict = Depends(admin_user)):  # noqa: 
 def ai_stats(user: dict = Depends(current_user)):  # noqa: B008
     from .. import ai
     return ai.stats()
-
-
-@router.post("/ai/examples/import")
-def ai_examples_import(user: dict = Depends(admin_user)):  # noqa: B008
-    from .. import ai
-    return {"imported": ai.import_examples()}
 
 
 @router.post("/ai/learn")
@@ -365,11 +347,6 @@ def _date(value, default: str | None = None) -> str:
         return crm.date.fromisoformat(v).isoformat()
     except ValueError:
         raise HTTPException(status_code=400, detail="Дата в формате ГГГГ-ММ-ДД") from None
-
-
-@router.get("/report/arrivals")
-def report_arrivals(date: str | None = None, user: dict = Depends(current_user)):  # noqa: B008
-    return crm.arrivals_report(_date(date, crm.date.today().isoformat()))
 
 
 @router.post("/report/arrivals/send")
@@ -574,7 +551,6 @@ def get_client(cid: int, user: dict = Depends(current_user)):  # noqa: B008
 
 
 def _push_client_bg(cid: int, who: str, only_booking: int | None = None) -> None:
-    import threading
 
     def go():
         try:
@@ -834,11 +810,6 @@ def get_deals(pipeline: int | None = None, q: str = "", user: dict = Depends(cur
     return crm.deals(pipeline, q=q)
 
 
-@router.get("/kanban")
-def kanban(pipeline: int, q: str = "", user: dict = Depends(current_user)):  # noqa: B008
-    return crm_amo.kanban(pipeline, q)
-
-
 @router.post("/deals")
 def add_deal(payload: dict, user: dict = Depends(current_user)):  # noqa: B008
     try:
@@ -859,87 +830,6 @@ def get_deal(did: int, user: dict = Depends(current_user)):  # noqa: B008
         d["log"] = [dict(r) for r in conn.execute(
             "SELECT * FROM crm_auto_log WHERE dedupe LIKE ? ORDER BY id DESC LIMIT 10", (f"stage:%:d{did}:%",)).fetchall()]
     return d
-
-
-class NoteIn(BaseModel):
-    text: str
-
-
-@router.post("/deals/{did}/notes")
-def deal_note(did: int, payload: NoteIn, user: dict = Depends(current_user)):  # noqa: B008
-    try:
-        return crm_amo.add_note(payload.text, user["name"], deal_id=did)
-    except ValueError as exc:
-        _bad(exc)
-
-
-@router.delete("/notes/{nid}")
-def del_note(nid: int, user: dict = Depends(current_user)):  # noqa: B008
-    crm_amo.delete_note(nid)
-    return {"ok": True}
-
-
-@router.post("/clients/{cid}/notes")
-def client_note(cid: int, payload: NoteIn, user: dict = Depends(current_user)):  # noqa: B008
-    try:
-        return crm_amo.add_note(payload.text, user["name"], client_id=cid)
-    except ValueError as exc:
-        _bad(exc)
-
-
-@router.post("/deals/{did}/chats")
-def deal_link_chat(did: int, payload: LinkIn, user: dict = Depends(current_user)):  # noqa: B008
-    crm_amo.link_chat(did, payload.chat_id)
-    return {"ok": True}
-
-
-@router.delete("/deals/{did}/chats/{chat_id}")
-def deal_unlink_chat(did: int, chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
-    crm_amo.unlink_chat(did, chat_id)
-    return {"ok": True}
-
-
-class DealSendIn(BaseModel):
-    chat_id: int
-    text: str
-
-
-@router.post("/deals/{did}/send")
-def deal_send(did: int, payload: DealSendIn, user: dict = Depends(current_user)):  # noqa: B008
-    try:
-        m = inbox.send(payload.chat_id, user["name"], payload.text[:4000])
-    except inbox.BridgeError as exc:
-        raise HTTPException(status_code=424, detail=str(exc)) from exc
-    crm_amo.link_chat(did, payload.chat_id)
-    return m
-
-
-@router.get("/unsorted")
-def get_unsorted(user: dict = Depends(current_user)):  # noqa: B008
-    return crm_amo.unsorted()
-
-
-class AcceptIn(BaseModel):
-    pipeline_id: int | None = None
-
-
-@router.post("/unsorted/{chat_id}/accept")
-def accept_unsorted(chat_id: int, payload: AcceptIn, user: dict = Depends(current_user)):  # noqa: B008
-    try:
-        return crm_amo.accept(chat_id, user["id"], payload.pipeline_id)
-    except ValueError as exc:
-        _bad(exc)
-
-
-@router.post("/unsorted/{chat_id}/reject")
-def reject_unsorted(chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
-    crm_amo.reject(chat_id)
-    return {"ok": True}
-
-
-@router.get("/chats/{chat_id}/deal")
-def chat_deal(chat_id: int, user: dict = Depends(current_user)):  # noqa: B008
-    return {"deal_id": crm_amo.deal_for_chat(chat_id)}
 
 
 @router.patch("/deals/{did}")
@@ -1158,17 +1048,6 @@ def toggle_rule(rid: int, payload: ToggleIn, user: dict = Depends(admin_user)): 
 def del_rule(rid: int, user: dict = Depends(admin_user)):  # noqa: B008
     crm_ext.delete_rule(rid)
     return {"ok": True}
-
-
-@router.post("/auto/preview")
-def preview_rules(user: dict = Depends(current_user)):  # noqa: B008
-    """What the enabled booking rules would send right now (nothing is sent)."""
-    return crm_ext.run_auto_rules(dry=True)
-
-
-@router.post("/auto/run")
-def run_rules(user: dict = Depends(admin_user)):  # noqa: B008
-    return crm_ext.run_auto_rules()
 
 
 @router.get("/bookings/day")

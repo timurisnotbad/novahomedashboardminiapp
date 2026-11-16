@@ -130,7 +130,6 @@ h3 { font-size:16px; font-weight:700; }
 .pay__sum { font-weight:700; font-size:17px; }
 .pay__sub { color:var(--label-2); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pay__right { text-align:right; font-size:13px; color:var(--label-2); display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
-.day-h { font-size:13px; color:var(--label-2); font-weight:600; margin:4px 2px -6px; }
 .stats { display:grid; grid-template-columns:repeat(2, 1fr); gap:10px; }
 .stat { background:var(--card); border:1px solid var(--sep); border-radius:var(--r); padding:14px 16px; min-width:0; overflow:hidden; }
 .stat b { display:block; font-size:clamp(20px, 6vw, 26px); font-weight:700; letter-spacing:-.02em; overflow-wrap:anywhere; }

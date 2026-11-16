@@ -731,7 +731,6 @@ def _fmt(amount, currency) -> str:
 def _notify(p: dict, who: dict, action: str, before: dict | None = None) -> None:
     """Owners hear about every payment, edit and cancellation (cash is sensitive)."""
     try:
-        from . import notify
         head = {"add": "💵 Оплата принята", "edit": "✏️ Оплата изменена", "cancel": "🚫 Оплата отменена"}[action]
         text = f"{head} · {who.get('name') or 'сотрудник'}\n{summary(p)}"
         if action == "edit" and before:

@@ -40,5 +40,3 @@ def run(fn, *args, key=None, lane: str = "", **kwargs) -> bool:
     return True
 
 
-def pending() -> int:
-    return _pool._work_queue.qsize()  # noqa: SLF001 — for the health endpoint
