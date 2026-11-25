@@ -671,7 +671,7 @@ def save_rule(rid: int | None, data: dict) -> dict:
         at_time = "10:00"
     vals = (name, 1 if data.get("enabled") else 0, trig, int(data.get("offset_days") or 0), at_time,
             (data.get("hours_from") or None), (data.get("hours_to") or None),
-            data.get("channel") if data.get("channel") in ("auto", "wa", "wac", "tg", "tgbot", "ig") else "auto",
+            data.get("channel") if data.get("channel") in ("auto", "wa", "wac", "tg", "tgbot", "ig", "fb") else "auto",
             ",".join(s.strip() for s in (data.get("sources") or "").split(",") if s.strip()),
             1 if data.get("only_if_chat", True) else 0, text, crm._now())
     with database.get_conn() as conn:
@@ -843,7 +843,7 @@ def _chat_for_booking(b: dict, rule: dict) -> tuple[dict | None, str]:
         cands = pref or ([] if rule["only_if_chat"] else cands)
     if cands:
         return cands[0], ""
-    if rule["only_if_chat"] or want in ("ig", "tg", "tgbot"):
+    if rule["only_if_chat"] or want in ("ig", "fb", "tg", "tgbot"):
         return None, "нет чата с гостем"
     if not b.get("phone"):
         return None, "у брони нет телефона"

@@ -225,6 +225,9 @@ META_GRAPH = os.environ.get("META_GRAPH_URL", "https://graph.facebook.com/v21.0"
 WA_CLOUD_TOKEN = os.environ.get("WA_CLOUD_TOKEN", "").strip()        # system user / permanent token
 WA_CLOUD_PHONE_ID = os.environ.get("WA_CLOUD_PHONE_ID", "").strip()  # Phone number ID
 IG_PAGE_TOKEN = os.environ.get("IG_PAGE_TOKEN", "").strip()          # Page access token (pages_messaging + instagram_manage_messages)
+# Facebook Page (Messenger): a Page access token with pages_messaging. The same Page usually carries the
+# Instagram account, so when FB_PAGE_TOKEN is empty the Instagram token is used for Messenger too.
+FB_PAGE_TOKEN = os.environ.get("FB_PAGE_TOKEN", "").strip() or IG_PAGE_TOKEN
 IG_ACCOUNT_ID = os.environ.get("IG_ACCOUNT_ID", "").strip()          # Instagram professional account id (optional, for the status page)
 
 # ---- Telegram as a guest channel
@@ -376,7 +379,7 @@ API_PREFIX = "/api"
 # Release number. The frontend carries the same number (frontend/js/api.js) and
 # warns when the running server is older — i.e. restart_all.bat did not replace
 # the old process and the new files on disk are served by old code.
-APP_VERSION = "112"
+APP_VERSION = "113"
 
 
 def features() -> dict:
@@ -393,7 +396,7 @@ def redact(text: str) -> str:
     an error shown in the UI (bot tokens travel inside Bot API URLs)."""
     out = str(text or "")
     for sec in (BOT_TOKEN, TG_GUEST_BOT_TOKEN, WAZZUP_API_KEY, INBOX_SECRET, APP_SECRET, RC_TOKEN, OWNER_KEY, PAY_KEY,
-                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY, OPENAI_API_KEY):
+                WA_CLOUD_TOKEN, IG_PAGE_TOKEN, FB_PAGE_TOKEN, META_APP_SECRET, SMTP_PASSWORD, TG_API_HASH, ANTHROPIC_API_KEY, OPENAI_API_KEY):
         if sec and len(sec) >= 8:
             out = out.replace(sec, "***")
     return out

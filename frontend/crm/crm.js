@@ -730,6 +730,7 @@
       if (S.route !== "channels" || stale(seq)) { clearInterval(chTimer); return; }
       const selPrev = $("bk-sel") ? $("bk-sel").value : null; // the selectors textarea survives a repaint
       const wz = d.wazzup;
+      const fb = d.facebook || { configured: false, chats: 0 };
       const w = d.whatsapp, wc = d.whatsapp_cloud, ig = d.instagram, tg = d.telegram, gb = d.telegram_guest_bot, mw = d.meta_webhook;
       const ok = w.status === "connected";
       const num = w.me ? "+" + (w.me.id || "").split("@")[0].split(":")[0] : "";
@@ -781,6 +782,11 @@
           <div class="muted small">Прямое подключение к Meta без телефона и QR: номер не заблокируют, а первые 1000 диалогов в месяц бесплатны (дальше по тарифу Meta за диалог). Чатов: ${wc.chats}.</div>
           ${wc.configured ? "" : `<details class="small" style="margin-top:8px"><summary>Как подключить</summary><ol class="muted" style="margin:6px 0 0 18px"><li>developers.facebook.com → создать приложение (Business) → добавить WhatsApp.</li><li>Привязать номер (не тот, что на QR-бридже — у номера может быть только один способ).</li><li>Скопировать <b>Phone number ID</b> и постоянный токен (System User → Generate token, права whatsapp_business_messaging).</li><li>В <code>.env</code>: ${esc("WA_CLOUD_TOKEN=…, WA_CLOUD_PHONE_ID=…, META_VERIFY_TOKEN=любое слово, META_APP_SECRET=App secret")}.</li><li>Webhooks → WhatsApp → Callback URL: <span class="mono">${esc(mw.url || "")}</span>, Verify token — как в .env, подписаться на <b>messages</b>.</li><li><code>restart_all.bat</code>.</li></ol><div class="muted" style="margin-top:6px">Ограничение Meta: писать гостю первым или спустя 24 часа после его последнего сообщения можно только утверждённым шаблоном.</div></details>`}
         </div>
+        <div class="card"><h3>Facebook · Messenger страницы ${fb.page ? `<span class="muted">${esc(fb.page)}</span>` : ""}</h3>
+          ${state(fb.configured ? (fb.ok && fb.subscribed !== false) : null, !fb.configured ? "Не настроен" : !fb.ok ? "Ошибка: " + esc(fb.error || "") : fb.subscribed === false ? "Токен рабочий, но страница не подписана на сообщения — нажмите «Подписать страницу»" : `Подключён${fb.shared_token ? " · токен общий с Instagram" : ""}`)}
+          <div class="muted small">Сообщения, которые люди пишут странице в Facebook / Messenger, попадают в «Сообщения» с синим значком, ответы уходят обратно от имени страницы. Чатов: ${fb.chats}. Ответить можно в течение 24 часов после последнего сообщения человека — это правило Meta.</div>
+          ${fb.configured && fb.ok && admin ? `<div style="margin-top:8px"><button class="btn sm" id="fb-sub">${fb.subscribed ? "Подписать страницу заново" : "Подписать страницу"}</button></div>` : ""}
+          ${fb.configured && fb.ok ? "" : `<details class="small" style="margin-top:8px" ${fb.configured ? "" : "open"}><summary>Как подключить</summary><ol class="muted" style="margin:6px 0 0 18px"><li><b>developers.facebook.com</b> → My Apps → Create App (тип Business). Если приложение для Instagram / WhatsApp уже есть — используйте его.</li><li>В приложении добавить продукт <b>Messenger</b> → раздел «Access Tokens» → Add Page → выбрать вашу страницу → <b>Generate token</b>. Нужны права <span class="mono">pages_messaging</span>, <span class="mono">pages_manage_metadata</span>, <span class="mono">pages_show_list</span>.</li><li>В <code>.env</code> на сервере: <span class="mono">FB_PAGE_TOKEN=токен страницы</span>, <span class="mono">META_APP_SECRET=App secret</span> (Settings → Basic), <span class="mono">META_VERIFY_TOKEN=любое слово</span>. Затем <code>restart_all.bat</code>.</li><li>Messenger → Webhooks → Callback URL: <span class="mono">${esc(mw.url || "")}</span>, Verify token — то же слово. Подписать поля <b>messages</b>, <b>message_echoes</b>, <b>messaging_postbacks</b>.</li><li>Вернуться сюда и нажать «Подписать страницу» — CRM сама привяжет страницу к вебхуку.</li><li>Пока приложение в режиме разработки, писать странице могут только администраторы и тестировщики приложения. Чтобы писали все — App Review → запросить <span class="mono">pages_messaging</span> и переключить приложение в Live.</li></ol></details>`}</div>
         <div class="card"><h3>Instagram Direct ${ig.username ? `<span class="muted">@${esc(ig.username)}</span>` : ""}</h3>
           ${state(ig.configured ? ig.ok : null, !ig.configured ? "Не настроен" : ig.ok ? `Подключён${ig.page ? " · страница " + esc(ig.page) : ""}` : "Ошибка: " + esc(ig.error || ""))}
           <div class="muted small">Сообщения из Direct бизнес-аккаунта попадают в «Сообщения», ответы уходят обратно. Чатов: ${ig.chats}.</div>
@@ -804,6 +810,7 @@
       on("bk-import", async (e) => { const start = e.target.textContent.startsWith("Импорт"); if (start && !confirm("Запустить импорт всей истории Booking? Это займёт от 10 минут до часа, компьютер с экстранетом должен быть свободен.")) return; try { await post("/channels/booking_ext/import", { on: start }); toast(start ? "Импорт запущен" : "Импорт остановлен"); navigate(); } catch (err) { toast(err.message); } });
       on("bk-sel-save", async () => { try { await post("/channels/booking_ext/selectors", { text: $("bk-sel").value }); toast("Селекторы сохранены — расширение подхватит их в течение минуты"); } catch (err) { toast(err.message); } });
       on("wz-hook", async (e) => { e.target.disabled = true; try { const r = await post("/channels/wazzup/webhook"); toast("Вебхук подключён: " + r.url); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
+      on("fb-sub", (e) => busy(e.target, async () => { const r = await post("/channels/facebook/subscribe"); toast(r.subscribed ? "Страница подписана: сообщения Messenger будут приходить в CRM" : "Запрос отправлен, но подписка не подтверждена — проверьте права токена"); render(); }));
       on("wa-off", async () => { if (!confirm("Отключить WhatsApp? Для возврата нужно будет снова сканировать QR.")) return; try { await post("/channels/whatsapp/logout"); toast("Отключено"); render(); } catch (err) { toast(err.message); } });
       on("tg-send", async (e) => { e.target.disabled = true; try { await post("/channels/telegram/send_code", { phone: val("tg-phone") }); tgStep = "code"; toast("Код отправлен в Telegram"); render(); } catch (err) { toast(err.message); e.target.disabled = false; } });
       on("tg-again", () => { tgStep = "phone"; render(); });
@@ -1487,7 +1494,7 @@
   };
 
   // ---- auto-message rules ------------------------------------------------------------
-  const CHANNEL_NAMES = { auto: "любой доступный", wa: "WhatsApp (QR)", wac: "WhatsApp Cloud API", tg: "Telegram-аккаунт", tgbot: "Telegram-бот", ig: "Instagram" };
+  const CHANNEL_NAMES = { auto: "любой доступный", wa: "WhatsApp (QR)", wac: "WhatsApp Cloud API", tg: "Telegram-аккаунт", tgbot: "Telegram-бот", ig: "Instagram", fb: "Facebook" };
   // ---- analytics: who answers guests, how fast, when (owner) -------------------------------
   ROUTES.analytics = async () => {
     const seq = S.navSeq;

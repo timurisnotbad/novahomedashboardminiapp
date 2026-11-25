@@ -1099,7 +1099,7 @@ def import_clients() -> int:
                                    ((r["client_name"] or "").strip() or email_keep, email_keep, src, _now(), _now())).lastrowid
             by_email[email_keep] = cid
     for r in ch:
-        src = {"ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram"}.get(r["channel"] or "wa", "WhatsApp")
+        src = {"ig": "Instagram", "fb": "Facebook", "tg": "Telegram", "tgbot": "Telegram"}.get(r["channel"] or "wa", "WhatsApp")
         if r["phone"]:
             if needs(r["phone"], r["name"] or r["push_name"], r["id"]):
                 ensure_client(r["phone"], r["name"] or r["push_name"] or "", src, r["id"])

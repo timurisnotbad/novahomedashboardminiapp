@@ -113,7 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_inbox_chat_lid ON inbox_chats(lid);
 #   tg    — Telegram, the company's own account          backend/tg_channels.py
 #   tgbot — Telegram bot for guests                      backend/tg_channels.py
 CHANNELS = {"wa": "WhatsApp", "wac": "WhatsApp", "wz": "WhatsApp", "wzig": "Instagram", "wztg": "Telegram",
-            "ig": "Instagram", "tg": "Telegram", "tgbot": "Telegram-бот", "bk": "Booking.com"}
+            "ig": "Instagram", "fb": "Facebook", "tg": "Telegram", "tgbot": "Telegram-бот", "bk": "Booking.com"}
 WA_LIKE = ("wa", "wac", "wz")  # the same phone number through different transports = one chat
 STATUS_ORDER = {"failed": -1, "pending": 0, "sent": 1, "delivered": 2, "read": 3}
 PREVIEW = {
@@ -1228,6 +1228,9 @@ def _dispatch_send(channel: str, payload: dict) -> dict:
         if channel == "ig":
             from . import meta_api
             return meta_api.ig_send(payload)
+        if channel == "fb":
+            from . import meta_api
+            return meta_api.fb_send(payload)
         if channel == "tg":
             from . import tg_channels
             return tg_channels.user_send(payload)

@@ -1255,6 +1255,7 @@ def channels(user: dict = Depends(current_user)):  # noqa: B008
         "whatsapp": {**st, "chats": counts.get("wa", 0)},
         "whatsapp_cloud": {**safe("wa_cloud", meta_api.wa_status), "chats": counts.get("wac", 0)},
         "instagram": {**safe("instagram", meta_api.ig_status), "chats": counts.get("ig", 0)},
+        "facebook": {**safe("facebook", meta_api.fb_status), "chats": counts.get("fb", 0)},
         "meta_webhook": {"url": meta_api.webhook_url(), "verify_token_set": bool(config.META_VERIFY_TOKEN),
                          "app_secret_set": bool(config.META_APP_SECRET)},
         "telegram": {**safe("telegram", tg_channels.user_status), "chats": counts.get("tg", 0)},
@@ -1418,6 +1419,15 @@ async def leads_backfill(user: dict = Depends(admin_user)):  # noqa: B008
         crm.set_setting("leads_backfilled", crm._now())  # noqa: SLF001
         return out
     return await asyncio.get_event_loop().run_in_executor(None, run)
+
+
+@router.post("/channels/facebook/subscribe")
+def facebook_subscribe(user: dict = Depends(admin_user)):  # noqa: B008
+    try:
+        meta_api.fb_subscribe()
+        return meta_api.fb_status()
+    except inbox.BridgeError as exc:
+        raise HTTPException(status_code=424, detail=config.redact(str(exc))[:300]) from exc
 
 
 @router.get("/uptime")

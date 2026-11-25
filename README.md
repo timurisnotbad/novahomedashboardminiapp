@@ -6,6 +6,10 @@ Telegram-бот + Mini App для управления апартаментам�
 
 Бот: **@novahomedashboardbot** · Дашборд: **https://app.novahomedashboard.com**
 
+## Facebook (Messenger страницы)
+
+Сообщения странице Facebook приходят в CRM как отдельный канал. В приложении Meta (developers.facebook.com) добавить продукт Messenger, сгенерировать токен страницы и вписать в `.env`: `FB_PAGE_TOKEN=…` (плюс `META_APP_SECRET`, `META_VERIFY_TOKEN`; если Instagram той же страницы уже подключён, хватит `IG_PAGE_TOKEN`). Вебхук: `{WEBAPP_URL}/api/inbox/meta/webhook`, поля messages, message_echoes, messaging_postbacks. Затем CRM → Каналы → «Подписать страницу». Полная инструкция — в карточке канала.
+
 ## Уведомления CRM в отдельного бота
 
 Создайте в @BotFather второго бота и впишите его токен в `.env`: `CRM_BOT_TOKEN=…`. После перезапуска сервера личные уведомления CRM (чаты без ответа, задачи, брони, ассистент, оплаты) приходят от него, основной бот дашборда занимается уборками и группами. Каждый сотрудник привязывает CRM-бота один раз: CRM → «Telegram-уведомления» → команда /link КОД в чат с CRM-ботом (сначала Start). Ответ на уведомление о сообщении уходит гостю.

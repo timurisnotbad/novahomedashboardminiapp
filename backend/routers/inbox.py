@@ -575,7 +575,7 @@ def meta_verify(request: Request):
 async def meta_webhook(request: Request):
     # Nothing to receive until Meta is configured WITH its app secret: an open
     # webhook would let anyone inject «guest» messages and make the server fetch URLs
-    if not config.META_APP_SECRET or not (meta_api.wa_configured() or meta_api.ig_configured()):
+    if not config.META_APP_SECRET or not (meta_api.wa_configured() or meta_api.ig_configured() or meta_api.fb_configured()):
         raise HTTPException(status_code=404)
     if int(request.headers.get("content-length") or 0) > 1_000_000:
         raise HTTPException(status_code=413)

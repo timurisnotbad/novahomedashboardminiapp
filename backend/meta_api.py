@@ -8,6 +8,7 @@ WhatsApp Cloud API needs WA_CLOUD_TOKEN + WA_CLOUD_PHONE_ID; Instagram needs
 IG_PAGE_TOKEN (a Page access token of the Facebook Page linked to the
 Instagram professional account). See README, «Каналы».
 """
+import os
 import hashlib
 import hmac
 import logging
@@ -27,6 +28,10 @@ MAX_MEDIA = 30 * 1024 * 1024
 
 def wa_configured() -> bool:
     return bool(config.WA_CLOUD_TOKEN and config.WA_CLOUD_PHONE_ID)
+
+
+def fb_configured() -> bool:
+    return bool(config.FB_PAGE_TOKEN)
 
 
 def ig_configured() -> bool:
@@ -312,6 +317,142 @@ def ig_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Facebook Page — Messenger (webhook object «page», field «messages»)
+# ---------------------------------------------------------------------------
+_fb_names: dict[str, str | None] = {}
+
+
+def _fb_name(psid: str) -> str | None:
+    """The person's name by page-scoped id; None when Meta does not give it (the chat is titled «Facebook» then)."""
+    if psid in _fb_names:
+        return _fb_names[psid]
+    try:
+        d = _graph("GET", psid, config.FB_PAGE_TOKEN, params={"fields": "first_name,last_name,name"}, timeout=10)
+        nm = d.get("name") or " ".join(x for x in (d.get("first_name"), d.get("last_name")) if x) or None
+    except Exception:  # noqa: BLE001
+        nm = None
+    if len(_fb_names) > 5000:
+        _fb_names.clear()
+    _fb_names[psid] = nm
+    return nm
+
+
+def _fb_event(ev: dict) -> dict | None:
+    msg = ev.get("message")
+    if not msg:
+        pb = ev.get("postback")  # a button of the page's menu / «Get started»
+        if not pb or not (ev.get("sender") or {}).get("id"):
+            return None
+        psid = ev["sender"]["id"]
+        return {"channel": "fb", "id": "fb:" + (pb.get("mid") or uuid.uuid4().hex), "jid": f"fb:{psid}", "phone": "", "from_me": False,
+                "push_name": _fb_name(psid), "at": _iso(int(ev.get("timestamp") or 0) / 1000), "kind": "text", "text": pb.get("title") or pb.get("payload") or "Нажал кнопку"}
+    echo = bool(msg.get("is_echo"))
+    other = (ev.get("recipient") if echo else ev.get("sender")) or {}
+    psid = other.get("id")
+    if not psid:
+        return None
+    out = {"channel": "fb", "id": "fb:" + (msg.get("mid") or uuid.uuid4().hex), "jid": f"fb:{psid}", "phone": "",
+           "from_me": echo, "push_name": None if echo else _fb_name(psid),
+           "at": _iso(int(ev.get("timestamp") or 0) / 1000), "kind": "text", "text": msg.get("text") or ""}
+    if (msg.get("reply_to") or {}).get("mid"):
+        out["quoted_id"] = "fb:" + msg["reply_to"]["mid"]
+    for att in msg.get("attachments") or []:
+        t = att.get("type")
+        payload = att.get("payload") or {}
+        url = payload.get("url")
+        if t == "location":
+            c = payload.get("coordinates") or {}
+            if c.get("lat") is not None:
+                out.update(kind="location", lat=c.get("lat"), lng=c.get("long"))
+            break
+        if t in ("fallback", "template", "share"):  # a shared link or post
+            out["text"] = (out["text"] + " " + (url or att.get("title") or "")).strip() or "Поделился(ась) ссылкой"
+            continue
+        out["kind"] = {"image": "image", "video": "video", "audio": "audio", "file": "document"}.get(t, "other")
+        if url:
+            try:
+                from . import netsafe
+                content, mime = netsafe.safe_get(url, netsafe.META_HOSTS, MAX_MEDIA, 60)
+                out["media"] = _save_media(content, mime, url.split("?")[0])
+                out["mime"] = mime
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fb media refused/failed: %s", exc)
+        break
+    return out
+
+
+def _handle_fb_entry(entry: dict) -> None:
+    for ev in entry.get("messaging") or entry.get("standby") or []:
+        try:
+            m = _fb_event(ev)
+            if m:
+                inbox.store_message(m, notify=True)
+        except Exception:  # noqa: BLE001
+            logger.exception("facebook event failed")
+
+
+def _fb_post(body: dict) -> dict:
+    """Send inside the 24-hour window; later than that Meta takes only a «human agent» reply (7 days, needs the
+    Human Agent permission on the app) — try it before giving up with a clear message."""
+    try:
+        return _graph("POST", "me/messages", config.FB_PAGE_TOKEN, json={**body, "messaging_type": "RESPONSE"})
+    except inbox.BridgeError as exc:
+        if not re.search(r"outside (of )?(the )?allowed window|2018278", str(exc), re.I):
+            raise
+    try:
+        return _graph("POST", "me/messages", config.FB_PAGE_TOKEN, json={**body, "messaging_type": "MESSAGE_TAG", "tag": "HUMAN_AGENT"})
+    except inbox.BridgeError as exc:
+        raise inbox.BridgeError("Прошло больше 24 часов с последнего сообщения гостя — Facebook не даёт написать первым. "
+                                "Ответ в течение 7 дней возможен после одобрения права «Human Agent» в приложении Meta.") from exc
+
+
+def fb_send(payload: dict) -> dict:
+    if not fb_configured():
+        raise inbox.BridgeError("Facebook не настроен (FB_PAGE_TOKEN)")
+    psid = payload["jid"].split(":", 1)[1]
+    base = {"recipient": {"id": psid}}
+    if payload.get("media"):
+        mime = payload.get("mime") or ""
+        t = "image" if mime.startswith("image/") else "video" if mime.startswith("video/") else "audio" if mime.startswith("audio/") else "file"
+        link = _media_public_url(payload["media"])
+        if not link.startswith("https://"):
+            raise inbox.BridgeError("Для отправки файлов в Facebook нужен публичный https-адрес (WEBAPP_URL)")
+        data = _fb_post({**base, "message": {"attachment": {"type": t, "payload": {"url": link, "is_reusable": False}}}})
+        if (payload.get("text") or "").strip():  # Messenger has no captions: the text follows as its own message
+            try:
+                _fb_post({**base, "message": {"text": payload["text"].strip()}})
+            except inbox.BridgeError as exc:
+                logger.warning("fb caption after file failed: %s", exc)
+    else:
+        data = _fb_post({**base, "message": {"text": payload.get("text") or ""}})
+    return {"id": "fb:" + (data.get("message_id") or uuid.uuid4().hex)}
+
+
+def fb_status() -> dict:
+    if not fb_configured():
+        return {"configured": False}
+    try:
+        d = _graph("GET", "me", config.FB_PAGE_TOKEN, params={"fields": "name,id"}, timeout=10)
+        out = {"configured": True, "ok": True, "page": d.get("name"), "page_id": d.get("id"), "shared_token": not os.environ.get("FB_PAGE_TOKEN", "").strip()}
+        try:  # is the page subscribed to this app's webhook for messages?
+            sub = _graph("GET", "me/subscribed_apps", config.FB_PAGE_TOKEN, params={"fields": "subscribed_fields"}, timeout=10)
+            fields = [f for a in sub.get("data") or [] for f in a.get("subscribed_fields") or []]
+            out["subscribed"] = "messages" in fields
+        except inbox.BridgeError:
+            out["subscribed"] = None
+        return out
+    except inbox.BridgeError as exc:
+        return {"configured": True, "ok": False, "error": str(exc)}
+
+
+def fb_subscribe() -> dict:
+    """Subscribe the Page to this app's webhook (messages, echoes, postbacks) — the step people forget in the Meta console."""
+    if not fb_configured():
+        raise inbox.BridgeError("Facebook не настроен (FB_PAGE_TOKEN)")
+    return _graph("POST", "me/subscribed_apps", config.FB_PAGE_TOKEN, params={"subscribed_fields": "messages,message_echoes,messaging_postbacks"})
+
+
+# ---------------------------------------------------------------------------
 # Webhook entry point
 # ---------------------------------------------------------------------------
 def handle_webhook(data: dict) -> None:
@@ -327,6 +468,8 @@ def _handle(data: dict) -> None:
             for ch in entry.get("changes") or []:
                 if ch.get("field") == "messages":
                     _handle_wa_change(ch.get("value") or {})
+        elif obj == "page" and fb_configured():
+            _handle_fb_entry(entry)  # Messenger of the Facebook Page
         elif obj in ("instagram", "page"):
             _handle_ig_entry(entry)
         else:
